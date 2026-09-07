@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <Title>LumiSoft Net</Title>
+    <Authors>LumiSoft</Authors>
+    <Description>Freeware open source SMTP,POP3,IMAP client/server components. MIME,Mail,DNS,FTP components.</Description>
+    <AssemblyVersion>10.0</AssemblyVersion>
+    <FileVersion>10.0</FileVersion>
+    <InformationalVersion>10.0</InformationalVersion>
+    <VersionPrefix>10.0</VersionPrefix>
+    <PackageLicenseFile>license.txt</PackageLicenseFile>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <PackageId>LumiSoft.Net.dll</PackageId>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="ABNF\ABFN.cs" />
+    <Compile Remove="ABNF\ABFN_Group.cs" />
+    <Compile Remove="ABNF\ABNF_Alternation.cs" />
+    <Compile Remove="ABNF\ABNF_BinVal.cs" />
+    <Compile Remove="ABNF\ABNF_CharVal.cs" />
+    <Compile Remove="ABNF\ABNF_Concatenation.cs" />
+    <Compile Remove="ABNF\ABNF_DecVal.cs" />
+    <Compile Remove="ABNF\ABNF_Element.cs" />
+    <Compile Remove="ABNF\ABNF_HexVal.cs" />
+    <Compile Remove="ABNF\ABNF_Option.cs" />
+    <Compile Remove="ABNF\ABNF_ProseVal.cs" />
+    <Compile Remove="ABNF\ABNF_Repetition.cs" />
+    <Compile Remove="ABNF\ABNF_Rule.cs" />
+    <Compile Remove="ABNF\ABNF_RuleName.cs" />
+    <Compile Remove="Media\Codec\Audio\ILBC.cs" />
+    <Compile Remove="POP3\Server\AuthUser_EventArgs.cs" />
+    <Compile Remove="RTP\Debug\wfrm_RTP_Debug.cs" />
+    <Compile Remove="SIP\Debug\wfrm_SIP_Debug.cs" />
+    <Compile Remove="URI\TEL_Uri.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\license.txt">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\readme.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="ABNF\ABFN.cs" />
+    <None Include="ABNF\ABFN_Group.cs" />
+    <None Include="ABNF\ABNF_Alternation.cs" />
+    <None Include="ABNF\ABNF_BinVal.cs" />
+    <None Include="ABNF\ABNF_CharVal.cs" />
+    <None Include="ABNF\ABNF_Concatenation.cs" />
+    <None Include="ABNF\ABNF_DecVal.cs" />
+    <None Include="ABNF\ABNF_Element.cs" />
+    <None Include="ABNF\ABNF_HexVal.cs" />
+    <None Include="ABNF\ABNF_Option.cs" />
+    <None Include="ABNF\ABNF_ProseVal.cs" />
+    <None Include="ABNF\ABNF_Repetition.cs" />
+    <None Include="ABNF\ABNF_Rule.cs" />
+    <None Include="ABNF\ABNF_RuleName.cs" />
+    <None Include="Media\Codec\Audio\ILBC.cs" />
+    <None Include="RTP\Debug\wfrm_RTP_Debug.cs" />
+    <None Include="SIP\Debug\wfrm_SIP_Debug.cs" />
+    <None Include="URI\TEL_Uri.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.2" />
+  </ItemGroup>
+
+</Project>
