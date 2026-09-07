@@ -77,6 +77,45 @@ namespace LumiSoft.Net.SMTP
         }
 
 
+        #region static method TryParse
+
+        /// <summary>
+        /// Attempts to parse an SMTP enhanced status code from its string representation.
+        /// </summary>
+        /// <param name="value">
+        /// The enhanced status code string in <c>class.subject.detail</c> format.
+        /// </param>
+        /// <param name="result">
+        /// When the method returns, contains the parsed enhanced status code if parsing succeeded.
+        /// </param>
+        /// <returns>
+        /// <c>true</c> if the value was successfully parsed; otherwise <c>false</c>.
+        /// </returns>
+        public static bool TryParse(string value,out SMTP_t_EnhancedStatusCode? result)
+        {
+            result = null;
+
+            if(string.IsNullOrWhiteSpace(value)){
+                return false;
+            }
+
+            var parts = value.Split('.');
+            if (parts.Length != 3){
+                return false;
+            }
+
+            if (!int.TryParse(parts[0], out int cls)) return false;
+            if (!int.TryParse(parts[1], out int subj)) return false;
+            if (!int.TryParse(parts[2], out int det)) return false;
+
+            result = new SMTP_t_EnhancedStatusCode(cls,subj,det);
+
+            return true;
+        }
+
+        #endregion
+
+
         #region static method Parse
 
         /// <summary>

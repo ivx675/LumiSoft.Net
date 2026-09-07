@@ -115,13 +115,10 @@ namespace LumiSoft.Net.SMTP
             if(line.Length > 4){
                 text = line.Substring(4);
 
-                // Check if we have a enhached status code                
-                try{
-                    string[] stausCode_text = text.Split(' ',2);
-                    enhachedStatusCode = SMTP_t_EnhancedStatusCode.Parse(stausCode_text[0]);
+                string[] stausCode_text = text.Split(' ',2);
+                // Check if we have a enhached status code
+                if(SMTP_t_EnhancedStatusCode.TryParse(stausCode_text[0],out enhachedStatusCode)){
                     text = stausCode_text[1];
-                }
-                catch{ 
                 }
             }
 
