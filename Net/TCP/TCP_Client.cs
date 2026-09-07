@@ -349,7 +349,7 @@ namespace LumiSoft.Net.TCP
                     socket.Bind(m_pLocalEP);
                 }
 
-                LogAddText("Connecting " + string.Join(" -> ",addresses.Select(a => a.ToString())) + ".");
+                LogAddText("Connecting " + string.Join(" -> ",addresses.Select(a => a.ToString() + ":" + port)) + ".");
 
                 await socket.ConnectAsync(addresses,port,cancellationToken);
                 m_IsConnected = true;
