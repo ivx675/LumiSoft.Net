@@ -6,27 +6,27 @@ using System.Text;
 namespace LumiSoft.Net
 {
     /// <summary>
-    /// This class specifies TCP client based connection security.
+    /// Specifies the security mode used for a TCP client connection.
     /// </summary>
     public enum TcpClientSecurity
     {
         /// <summary>
-        /// No security(connection not encrypted).
+        /// No security; the connection is not encrypted.
         /// </summary>
         None = 0,
 
         /// <summary>
-        /// Use SSL for connection security.
+        /// Use SSL to secure the connection.
         /// </summary>
         SSL = 1,
 
         /// <summary>
-        /// Use TLS for connection security.
+        /// Use TLS to secure the connection.
         /// </summary>
         TLS = 2,
 
         /// <summary>
-        /// Use TLS for connection security, if remote server supports it.
+        /// Use TLS if the remote server supports it.
         /// </summary>
         UseTlsIfSupported = 3,
     }
