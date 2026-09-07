@@ -652,10 +652,10 @@ namespace LumiSoft.Net.SMTP.Client
 				throw new InvalidOperationException("You must connect first.");
 			}
             if(userName == null){
-                throw new ArgumentNullException("userName");
+                throw new ArgumentNullException(nameof(userName));
             }
             if(password == null){
-                throw new ArgumentNullException("userName");
+                throw new ArgumentNullException(nameof(password));
             }
             ArgumentNullException.ThrowIfNull(this.RemoteEndPoint);
 
@@ -1767,12 +1767,12 @@ namespace LumiSoft.Net.SMTP.Client
 
             using var cts = new CancellationTokenSource(this.Timeout);
 
-            return RestAsync(cts.Token).GetAwaiter().GetResult();
+            return RsetAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method RestAsync
+        #region method RsetAsync
 
         /// <summary>
         /// Sends the SMTP <c>RSET</c> command to abort the current mail transaction
@@ -1801,7 +1801,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
         /// the final reply code that represents the outcome of the operation.
         /// </returns>
-        public async ValueTask<SMTP_ServerResponse> RestAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<SMTP_ServerResponse> RsetAsync(CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -1868,12 +1868,12 @@ namespace LumiSoft.Net.SMTP.Client
 
             using var cts = new CancellationTokenSource(this.Timeout);
 
-            return NoopAsyn(cts.Token).GetAwaiter().GetResult();
+            return NoopAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method NoopAsyn
+        #region method NoopAsync
 
         /// <summary>
         /// Sends the SMTP <c>NOOP</c> command to verify that the server is responsive
@@ -1901,7 +1901,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
         /// the final reply code that represents the outcome of the operation.
         /// </returns>
-        public async ValueTask<SMTP_ServerResponse> NoopAsyn(CancellationToken cancellationToken = default)
+        public async ValueTask<SMTP_ServerResponse> NoopAsync(CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -2014,8 +2014,9 @@ namespace LumiSoft.Net.SMTP.Client
             ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             List<SMTP_t_ReplyLine> replyLines = new List<SMTP_t_ReplyLine>();
+            Memory<byte>           lineBuffer = new byte[8000];
             while(true){
-                ReadLineResult responseline = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException,cancellationToken);
+                ReadLineResult responseline = await this.TcpStream.ReadLineAsync(lineBuffer,SizeExceededAction.JunkAndThrowException,cancellationToken);
                 // Server closed connection.
                 if(responseline.BytesInBuffer == 0){
                     throw new IOException("SMTP server closed connection.");
