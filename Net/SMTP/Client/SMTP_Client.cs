@@ -1,65 +1,41 @@
 
+using LumiSoft.Net.AUTH;
+using LumiSoft.Net.DNS;
+using LumiSoft.Net.DNS.Client;
+using LumiSoft.Net.IO;
+using LumiSoft.Net.Log;
+using LumiSoft.Net.Mail;
+using LumiSoft.Net.MIME;
+using LumiSoft.Net.TCP;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Principal;
 using System.Text;
-using LumiSoft.Net.AUTH;
-using LumiSoft.Net.DNS;
-using LumiSoft.Net.DNS.Client;
-using LumiSoft.Net.IO;
-using LumiSoft.Net.Mail;
-using LumiSoft.Net.MIME;
-using LumiSoft.Net.TCP;
 
 namespace LumiSoft.Net.SMTP.Client
 {
     /// <summary>
-    /// This class implements SMTP client. Defined in RFC 5321.
+    /// Provides a full SMTP client implementation for sending email messages over
+    /// SMTP or ESMTP. The class supports connection setup, greeting handling,
+    /// capability discovery, optional TLS upgrade via STARTTLS, optional
+    /// authentication, envelope commands, and message transmission.
+    /// 
+    /// <para>
+    /// The client can be used in both simple one‑shot scenarios (via QuickSend and
+    /// QuickSendAsync) or in advanced manual mode where each SMTP command is issued
+    /// explicitly. It supports sending messages from streams or from
+    /// <see cref="Mail_Message"/> instances.
+    /// </para>
+    /// 
+    /// <para>
+    /// The implementation follows RFC 5321 and related extensions, including EHLO
+    /// feature parsing, SIZE support, and STARTTLS negotiation.
+    /// </para>
     /// </summary>
-	/// <example>
-    /// Simple way:
-    /// <code>
-	/// /*
-	///  To make this code to work, you need to import following namespaces:
-	///  using LumiSoft.Net.SMTP.Client; 
-	/// */
-    /// 
-    /// // You can send any valid SMTP message here, from disk,memory, ... or
-    /// // you can use LumiSoft.Net.Mail classes to compose valid SMTP mail message.
-    /// 
-    /// // SMTP_Client.QuickSendSmartHost(...
-    /// or
-    /// // SMTP_Client.QuickSend(...
-    /// </code>
-    /// 
-    /// Advanced way:
-	/// <code> 
-	/// /*
-	///  To make this code to work, you need to import following namespaces:
-	///  using LumiSoft.Net.SMTP.Client; 
-	/// */
-	/// 
-	/// using(SMTP_Client smtp = new SMTP_Client()){      
-	///		smtp.Connect("hostName",WellKnownPorts.SMTP); 
-    ///		smtp.EhloHelo("mail.domain.com");
-    ///     // Authenticate if target server requires.
-    ///     // smtp.Auth(smtp.AuthGetStrongestMethod("user","password"));
-    ///     smtp.MailFrom("sender@domain.com");
-    ///     // Repeat this for all recipients.
-    ///     smtp.RcptTo("to@domain.com");
-    /// 
-    ///     // Send message to server.
-    ///     // You can send any valid SMTP message here, from disk,memory, ... or
-    ///     // you can use LumiSoft.Net.Mail classes to compose valid SMTP mail message.
-    ///     // smtp.SendMessage(.... .
-    ///     
-    ///     smtp.Disconnect();
-	///	}
-	/// </code>
-	/// </example>
     public class SMTP_Client : TCP_Client
     {
         private string?          m_LocalHostName      = null;
@@ -1390,6 +1366,9 @@ namespace LumiSoft.Net.SMTP.Client
             if(m_MailFrom == null){
                 throw new InvalidOperationException("Call MailFrom or MailFromAsync first.");
             }
+            if(string.IsNullOrEmpty(to)){
+                throw new ArgumentException("Argument 'to' cannot be empty.",nameof(to));
+            }
 
             /* RFC 5321 4.1.1.3. RCPT.
                 rcpt = "RCPT TO:" ( "<Postmaster@" Domain ">" / "<Postmaster>" / Forward-path ) [SP Rcpt-parameters] CRLF
@@ -1607,7 +1586,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
         /// the final reply code that represents the outcome of the operation.
         /// </returns>
-        public ValueTask<SMTP_ServerResponse> SendMessageAsync(Mail_Message message,bool useBdatIfPossibe,CancellationToken cancellationToken = default)
+        public async ValueTask<SMTP_ServerResponse> SendMessageAsync(Mail_Message message,bool useBdatIfPossibe,CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(message);
 
@@ -1615,7 +1594,7 @@ namespace LumiSoft.Net.SMTP.Client
                 message.ToStream(stream);
                 stream.Position = 0;
 
-                return SendMessageAsync(stream,useBdatIfPossibe,cancellationToken);
+                return await SendMessageAsync(stream,useBdatIfPossibe,cancellationToken);
             }
         }
 
@@ -2093,14 +2072,666 @@ namespace LumiSoft.Net.SMTP.Client
 
         #endregion
 
-                
+         
         #region static method QuickSend
+
+        /// <summary>
+        /// Sends an SMTP message to a remote server using a fully automated sequence that
+        /// performs connection establishment, optional TLS negotiation, optional
+        /// authentication, and message transmission. This method provides
+        /// a high‑level convenience wrapper around the <see cref="SMTP_Client"/> class,
+        /// enabling one‑shot message delivery without manually issuing SMTP commands.
+        /// </summary>
+        /// <param name="localEP">
+        /// Optional local endpoint to bind the underlying TCP socket. When specified,
+        /// the connection attempt is restricted to remote addresses matching the same
+        /// <see cref="AddressFamily"/>.
+        /// </param>
+        /// <param name="localHost">
+        /// Optional host name to present in the <c>EHLO</c>/<c>HELO</c> command.  
+        /// When <c>null</c>, the machine's local host name is used.
+        /// </param>
+        /// <param name="host">
+        /// The remote SMTP server host name or IP address. Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="port">
+        /// The remote SMTP port number. Must be between 1 and 65535.
+        /// </param>
+        /// <param name="addressFamily">
+        /// Specifies which IP protocol to prefer when connecting (IPv4, IPv6, or Unspecified).
+        /// 
+        /// When <see cref="AddressFamily.Unspecified"/> is used, the client automatically
+        /// chooses the appropriate protocol based on the server’s available addresses.
+        /// </param>
+        /// <param name="security">
+        /// Defines how the connection should be secured.  
+        /// <see cref="TcpClientSecurity.SSL"/> uses immediate SSL when connecting;  
+        /// <see cref="TcpClientSecurity.TLS"/> upgrades the connection with STARTTLS;  
+        /// <see cref="TcpClientSecurity.UseTlsIfSupported"/> enables TLS only if the server supports it.
+        /// </param>
+        /// <param name="sslOptions">
+        /// Optional TLS configuration used SSL or STARTTLS.  
+        /// When <c>null</c>, the SMTP client applies a permissive legacy‑compatible
+        /// configuration suitable for older servers.
+        /// </param>
+        /// <param name="userName">
+        /// Optional user name for SMTP authentication. When provided together with
+        /// <paramref name="password"/>, the strongest mutually supported SASL mechanism is
+        /// selected automatically.
+        /// </param>
+        /// <param name="password">
+        /// Optional password used for SMTP authentication.
+        /// </param>
+        /// <param name="from">
+        /// The SMTP envelope sender address used in the <c>MAIL FROM</c> command.
+        /// </param>
+        /// <param name="to">
+        /// The SMTP envelope recipient list used in repeated <c>RCPT TO</c> commands.
+        /// Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="message">The mail message to send.
+        /// </param>
+        /// <param name="logger">
+        /// Optional logger instance used to record protocol activity.
+        /// </param>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="host"/> is empty or when no recipients are specified.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="port"/> is outside the valid range 1–65535.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="to"/> or <paramref name="message"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="SMTP_ClientException">
+        /// Thrown when any SMTP command (EHLO/HELO, STARTTLS, AUTH, MAIL FROM, RCPT TO,
+        /// or DATA/BDAT) receives a non‑successful reply from the server.
+        /// </exception>
+        public static ValueTask QuickSend(
+            IPEndPoint? localEP,
+            string? localHost,
+            string host,
+            int port,
+            AddressFamily addressFamily,
+            TcpClientSecurity security,
+            SslClientAuthenticationOptions? sslOptions,
+            string? userName,
+            string? password,
+            string from,
+            string[] to,
+            Mail_Message message,
+            Logger? logger)
+        {
+            return QuickSendAsync(localEP,localHost,host,port,addressFamily,security,sslOptions,userName,password,from,to,message,logger);
+        }
+
+        /// <summary>
+        /// Sends an SMTP message to a remote server using a fully automated sequence that
+        /// performs connection establishment, optional TLS negotiation, optional
+        /// authentication, and message transmission. This method provides
+        /// a high‑level convenience wrapper around the <see cref="SMTP_Client"/> class,
+        /// enabling one‑shot message delivery without manually issuing SMTP commands.
+        /// </summary>
+        /// <param name="localEP">
+        /// Optional local endpoint to bind the underlying TCP socket. When specified,
+        /// the connection attempt is restricted to remote addresses matching the same
+        /// <see cref="AddressFamily"/>.
+        /// </param>
+        /// <param name="localHost">
+        /// Optional host name to present in the <c>EHLO</c>/<c>HELO</c> command.  
+        /// When <c>null</c>, the machine's local host name is used.
+        /// </param>
+        /// <param name="host">
+        /// The remote SMTP server host name or IP address. Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="port">
+        /// The remote SMTP port number. Must be between 1 and 65535.
+        /// </param>
+        /// <param name="addressFamily">
+        /// Specifies which IP protocol to prefer when connecting (IPv4, IPv6, or Unspecified).
+        /// 
+        /// When <see cref="AddressFamily.Unspecified"/> is used, the client automatically
+        /// chooses the appropriate protocol based on the server’s available addresses.
+        /// </param>
+        /// <param name="security">
+        /// Defines how the connection should be secured.  
+        /// <see cref="TcpClientSecurity.SSL"/> uses immediate SSL when connecting;  
+        /// <see cref="TcpClientSecurity.TLS"/> upgrades the connection with STARTTLS;  
+        /// <see cref="TcpClientSecurity.UseTlsIfSupported"/> enables TLS only if the server supports it.
+        /// </param>
+        /// <param name="sslOptions">
+        /// Optional TLS configuration used SSL or STARTTLS.  
+        /// When <c>null</c>, the SMTP client applies a permissive legacy‑compatible
+        /// configuration suitable for older servers.
+        /// </param>
+        /// <param name="userName">
+        /// Optional user name for SMTP authentication. When provided together with
+        /// <paramref name="password"/>, the strongest mutually supported SASL mechanism is
+        /// selected automatically.
+        /// </param>
+        /// <param name="password">
+        /// Optional password used for SMTP authentication.
+        /// </param>
+        /// <param name="from">
+        /// The SMTP envelope sender address used in the <c>MAIL FROM</c> command.
+        /// </param>
+        /// <param name="to">
+        /// The SMTP envelope recipient list used in repeated <c>RCPT TO</c> commands.
+        /// Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="message">
+        /// The stream containing the message to send.  
+        /// The message is sent starting from the stream’s current position.
+        /// </param>
+        /// <param name="logger">
+        /// Optional logger instance used to record protocol activity.
+        /// </param>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="host"/> is empty or when no recipients are specified.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="port"/> is outside the valid range 1–65535.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="to"/> or <paramref name="message"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="SMTP_ClientException">
+        /// Thrown when any SMTP command (EHLO/HELO, STARTTLS, AUTH, MAIL FROM, RCPT TO,
+        /// or DATA/BDAT) receives a non‑successful reply from the server.
+        /// </exception>
+        public static ValueTask QuickSend(
+            IPEndPoint? localEP,
+            string? localHost,
+            string host,
+            int port,
+            AddressFamily addressFamily,
+            TcpClientSecurity security,
+            SslClientAuthenticationOptions? sslOptions,
+            string? userName,
+            string? password,
+            string from,
+            string[] to,
+            Stream message,
+            Logger? logger)
+        {
+            return QuickSendAsync(localEP,localHost,host,port,addressFamily,security,sslOptions,userName,password,from,to,message,logger);
+        }
+
+        #endregion
+
+        #region static method QuickSend
+
+        /// <summary>
+        /// Sends an SMTP message to a remote server using a fully automated sequence that
+        /// performs connection establishment, optional TLS negotiation, optional
+        /// authentication, and message transmission. This method provides
+        /// a high‑level convenience wrapper around the <see cref="SMTP_Client"/> class,
+        /// enabling one‑shot message delivery without manually issuing SMTP commands.
+        /// </summary>
+        /// <param name="localEP">
+        /// Optional local endpoint to bind the underlying TCP socket. When specified,
+        /// the connection attempt is restricted to remote addresses matching the same
+        /// <see cref="AddressFamily"/>.
+        /// </param>
+        /// <param name="localHost">
+        /// Optional host name to present in the <c>EHLO</c>/<c>HELO</c> command.  
+        /// When <c>null</c>, the machine's local host name is used.
+        /// </param>
+        /// <param name="host">
+        /// The remote SMTP server host name or IP address. Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="port">
+        /// The remote SMTP port number. Must be between 1 and 65535.
+        /// </param>
+        /// <param name="addressFamily">
+        /// Specifies which IP protocol to prefer when connecting (IPv4, IPv6, or Unspecified).
+        /// 
+        /// When <see cref="AddressFamily.Unspecified"/> is used, the client automatically
+        /// chooses the appropriate protocol based on the server’s available addresses.
+        /// </param>
+        /// <param name="security">
+        /// Defines how the connection should be secured.  
+        /// <see cref="TcpClientSecurity.SSL"/> uses immediate SSL when connecting;  
+        /// <see cref="TcpClientSecurity.TLS"/> upgrades the connection with STARTTLS;  
+        /// <see cref="TcpClientSecurity.UseTlsIfSupported"/> enables TLS only if the server supports it.
+        /// </param>
+        /// <param name="sslOptions">
+        /// Optional TLS configuration used SSL or STARTTLS.  
+        /// When <c>null</c>, the SMTP client applies a permissive legacy‑compatible
+        /// configuration suitable for older servers.
+        /// </param>
+        /// <param name="userName">
+        /// Optional user name for SMTP authentication. When provided together with
+        /// <paramref name="password"/>, the strongest mutually supported SASL mechanism is
+        /// selected automatically.
+        /// </param>
+        /// <param name="password">
+        /// Optional password used for SMTP authentication.
+        /// </param>
+        /// <param name="from">
+        /// The SMTP envelope sender address used in the <c>MAIL FROM</c> command.
+        /// </param>
+        /// <param name="to">
+        /// The SMTP envelope recipient list used in repeated <c>RCPT TO</c> commands.
+        /// Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="message">The mail message to send.
+        /// </param>
+        /// <param name="logger">
+        /// Optional logger instance used to record protocol activity.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel any asynchronous network or I/O operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous send operation.  
+        /// The task completes when the message has been fully transmitted and the SMTP
+        /// session has been terminated.
+        /// </returns>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="host"/> is empty or when no recipients are specified.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="port"/> is outside the valid range 1–65535.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="to"/> or <paramref name="message"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="SMTP_ClientException">
+        /// Thrown when any SMTP command (EHLO/HELO, STARTTLS, AUTH, MAIL FROM, RCPT TO,
+        /// or DATA/BDAT) receives a non‑successful reply from the server.
+        /// </exception>
+        public async static ValueTask QuickSendAsync(
+            IPEndPoint? localEP,
+            string? localHost,
+            string host,
+            int port,
+            AddressFamily addressFamily,
+            TcpClientSecurity security,
+            SslClientAuthenticationOptions? sslOptions,
+            string? userName,
+            string? password,
+            string from,
+            string[] to,
+            Mail_Message message,
+            Logger? logger,
+            CancellationToken cancellationToken = default)
+        {
+            if(message == null){
+                throw new ArgumentNullException(nameof(message));
+            }
+
+            using(var stream = new MemoryStreamEx(1000000)){
+                message.ToStream(stream);
+                stream.Position = 0;
+
+                await QuickSendAsync(
+                    localEP,
+                    localHost,
+                    host,
+                    port,
+                    addressFamily,
+                    security,
+                    sslOptions,
+                    userName,
+                    password,
+                    from,
+                    to,
+                    stream,
+                    logger,
+                    cancellationToken
+                );
+            }
+        }
+
+        /// <summary>
+        /// Sends an SMTP message to a remote server using a fully automated sequence that
+        /// performs connection establishment, optional TLS negotiation, optional
+        /// authentication, and message transmission. This method provides
+        /// a high‑level convenience wrapper around the <see cref="SMTP_Client"/> class,
+        /// enabling one‑shot message delivery without manually issuing SMTP commands.
+        /// </summary>
+        /// <param name="localEP">
+        /// Optional local endpoint to bind the underlying TCP socket. When specified,
+        /// the connection attempt is restricted to remote addresses matching the same
+        /// <see cref="AddressFamily"/>.
+        /// </param>
+        /// <param name="localHost">
+        /// Optional host name to present in the <c>EHLO</c>/<c>HELO</c> command.  
+        /// When <c>null</c>, the machine's local host name is used.
+        /// </param>
+        /// <param name="host">
+        /// The remote SMTP server host name or IP address. Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="port">
+        /// The remote SMTP port number. Must be between 1 and 65535.
+        /// </param>
+        /// <param name="addressFamily">
+        /// Specifies which IP protocol to prefer when connecting (IPv4, IPv6, or Unspecified).
+        /// 
+        /// When <see cref="AddressFamily.Unspecified"/> is used, the client automatically
+        /// chooses the appropriate protocol based on the server’s available addresses.
+        /// </param>
+        /// <param name="security">
+        /// Defines how the connection should be secured.  
+        /// <see cref="TcpClientSecurity.SSL"/> uses immediate SSL when connecting;  
+        /// <see cref="TcpClientSecurity.TLS"/> upgrades the connection with STARTTLS;  
+        /// <see cref="TcpClientSecurity.UseTlsIfSupported"/> enables TLS only if the server supports it.
+        /// </param>
+        /// <param name="sslOptions">
+        /// Optional TLS configuration used SSL or STARTTLS.  
+        /// When <c>null</c>, the SMTP client applies a permissive legacy‑compatible
+        /// configuration suitable for older servers.
+        /// </param>
+        /// <param name="userName">
+        /// Optional user name for SMTP authentication. When provided together with
+        /// <paramref name="password"/>, the strongest mutually supported SASL mechanism is
+        /// selected automatically.
+        /// </param>
+        /// <param name="password">
+        /// Optional password used for SMTP authentication.
+        /// </param>
+        /// <param name="from">
+        /// The SMTP envelope sender address used in the <c>MAIL FROM</c> command.
+        /// </param>
+        /// <param name="to">
+        /// The SMTP envelope recipient list used in repeated <c>RCPT TO</c> commands.
+        /// Cannot be <c>null</c> or empty.
+        /// </param>
+        /// <param name="message">
+        /// The stream containing the message to send.  
+        /// The message is sent starting from the stream’s current position.
+        /// </param>
+        /// <param name="logger">
+        /// Optional logger instance used to record protocol activity.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel any asynchronous network or I/O operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous send operation.  
+        /// The task completes when the message has been fully transmitted and the SMTP
+        /// session has been terminated.
+        /// </returns>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="host"/> is empty or when no recipients are specified.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="port"/> is outside the valid range 1–65535.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="to"/> or <paramref name="message"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="SMTP_ClientException">
+        /// Thrown when any SMTP command (EHLO/HELO, STARTTLS, AUTH, MAIL FROM, RCPT TO,
+        /// or DATA/BDAT) receives a non‑successful reply from the server.
+        /// </exception>
+        public async static ValueTask QuickSendAsync(
+            IPEndPoint? localEP,
+            string? localHost,
+            string host,
+            int port,
+            AddressFamily addressFamily,
+            TcpClientSecurity security,
+            SslClientAuthenticationOptions? sslOptions,
+            string? userName,
+            string? password,
+            string from,
+            string[] to,
+            Stream message,
+            Logger? logger,
+            CancellationToken cancellationToken = default)
+        {
+            if(string.IsNullOrEmpty(host)){
+                throw new ArgumentException("Argument 'host' cannot be null or empty.",nameof(host));
+            }
+            if(port <= 0 || port > 65535){
+                throw new ArgumentOutOfRangeException(nameof(port),"Port must be between 1 and 65535.");
+            }
+            if(to == null){
+                throw new ArgumentNullException("Argument 'to' cannot be null or empty.",nameof(to));
+            }
+            if(to.Length == 0){
+                throw new ArgumentException("No recipients specified.",nameof(to));
+            }
+            if(message == null){
+                throw new ArgumentNullException("Argument 'message' cannot be null or empty.",nameof(message));
+            }
+
+            long messageSize = message.CanSeek ? (message.Length - message.Position) : -1;
+
+            using(SMTP_Client smtp = new SMTP_Client()){
+                smtp.Logger = logger;
+                await smtp.ConnectAsync(localEP,host,port,addressFamily,security == TcpClientSecurity.SSL,sslOptions,cancellationToken);
+                await smtp.EhloHeloAsync(localHost != null ? localHost : Dns.GetHostName(),cancellationToken);
+                if(security == TcpClientSecurity.TLS || (security == TcpClientSecurity.UseTlsIfSupported && smtp.SupportsCapability(SMTP_ServiceExtensions.STARTTLS))){
+                    await smtp.StartTlsAsync(sslOptions,cancellationToken);
+                    await smtp.EhloHeloAsync(localHost != null ? localHost : Dns.GetHostName(),cancellationToken);
+                }
+                if(!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)){
+                    await smtp.AuthAsync(smtp.AuthGetStrongestMethod(userName,password),cancellationToken);
+                }
+                await smtp.MailFromAsync(from,messageSize,cancellationToken);
+                foreach(string t in to){
+                    await smtp.RcptToAsync(t,cancellationToken);
+                }
+                await smtp.SendMessageAsync(message,true,cancellationToken);
+            }
+        }
+
+        #endregion
+
+        #region Properties Implementation
+
+        /// <summary>
+        /// Gets the host name that was presented to the SMTP server during the EHLO/HELO command.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public string? LocalHostName
+        {
+            get{ 
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
                 
+                return m_LocalHostName; 
+            }
+        }
+
+        /// <summary>
+        /// Gets the SMTP server host name reported in the EHLO/HELO response.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public string? RemoteHostName
+        {
+            get{
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
+
+                return m_RemoteHostName; 
+            }
+        }
+
+        /// <summary>
+        /// Gets the greeting text sent by the SMTP server during connection.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public string GreetingText
+        {
+            get{ 
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
+
+                return m_GreetingText; 
+            }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether the connected SMTP server supports ESMTP.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public bool IsEsmtpSupported
+        {
+            get{
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
+
+                return m_IsEsmtpSupported; 
+            }
+        }
+
+        /// <summary>
+        /// Gets the ESMTP extension lines advertised by the connected SMTP server.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public string[] EsmtpFeatures
+        {
+            get{ 
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
+
+                return m_pEsmtpFeatures.ToArray(); 
+            }
+        }
+
+        /// <summary>
+        /// Gets the SASL authentication mechanisms advertised by the connected SMTP server.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public string[] SaslAuthMethods
+        {
+            get{
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
+
+                // Search AUTH entry.
+                foreach(string feature in this.EsmtpFeatures){
+                    string featureName = feature.Split(' ')[0];
+                    if(string.Equals(featureName,SMTP_ServiceExtensions.AUTH,StringComparison.InvariantCultureIgnoreCase)){
+                        // Remove AUTH<SP> and split authentication methods.
+                        return feature.Substring(4).Trim().Split(' ');
+                    }
+                }
+
+                return new string[0];
+            }
+        }
+
+        /// <summary>
+        /// Gets the maximum message size, in bytes, advertised by the SMTP server.
+        /// A value of <c>-1</c> indicates that no size limit was reported.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public long MaxAllowedMessageSize
+        {
+            get{ 
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+                    throw new InvalidOperationException("You must connect first.");
+                }
+
+                return m_MaxMessageSize; 
+            }
+        }
+
+        /// <summary>
+        /// Gets the authenticated user identity for the current SMTP session, or <c>null</c>
+        /// if no authentication has been performed.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        public override GenericIdentity? AuthenticatedUserIdentity
+        {
+            get{ 
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+                if(!this.IsConnected){
+				    throw new InvalidOperationException("You must connect first.");
+			    }
+
+                return m_pAuthdUserIdentity; 
+            }
+        }
+
+        #endregion
+
+
+        //------- OBSOLETE  
+
+
+        #region static method QuickSend
+
         /// <summary>
         /// Sends specified mime message.
         /// </summary>
         /// <param name="message">Message to send.</param>
         /// <exception cref="ArgumentNullException">Is raised when <b>message</b> is null.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSend(Mail_Message message)
         {
             if(message == null){
@@ -2152,6 +2783,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when <b>from</b>,<b>to</b> or <b>message</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSend(string from,string to,Stream message)
         {
             QuickSend(null,from,to,message);
@@ -2167,6 +2799,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when <b>from</b>,<b>to</b> or <b>message</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSend(string? localHost,string from,string to,Stream message)
         {
             if(from == null){
@@ -2205,6 +2838,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b> or <b>message</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string host,int port,bool ssl,Mail_Message message)
         {
             if(message == null){
@@ -2227,6 +2861,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b> or <b>message</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string? localHost,string host,int port,TcpClientSecurity security,string userName,string password,Mail_Message message)
         {
             QuickSendSmartHost(localHost,host,port,security == TcpClientSecurity.SSL,userName,password,message);
@@ -2245,6 +2880,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b> or <b>message</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string? localHost,string host,int port,bool ssl,string? userName,string? password,Mail_Message message)
         {
             if(message == null){
@@ -2296,6 +2932,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>message</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string host,int port,string from,string[] to,Stream message)
         {
             QuickSendSmartHost(null,host,port,false,null,null,from,to,message);
@@ -2313,6 +2950,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string host,int port,bool ssl,string from,string[] to,Stream message)
         {
             QuickSendSmartHost(null,host,port,ssl,null,null,from,to,message);
@@ -2331,6 +2969,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string? localHost,string host,int port,bool ssl,string from,string[] to,Stream message)
         {
             QuickSendSmartHost(localHost,host,port,ssl,null,null,from,to,message);
@@ -2351,6 +2990,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string? localHost,string host,int port,bool ssl,string? userName,string? password,string from,string[] to,Stream message)
         {
             QuickSendSmartHost(localHost,host,port,(ssl == true ? TcpClientSecurity.SSL : TcpClientSecurity.None),userName,password,from,to,message);
@@ -2371,6 +3011,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
         /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
+        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
         public static void QuickSendSmartHost(string? localHost,string host,int port,TcpClientSecurity security,string? userName,string? password,string from,string[] to,Stream message)
         {
             if(host == null){
@@ -2422,176 +3063,6 @@ namespace LumiSoft.Net.SMTP.Client
         }
 
         #endregion
-
-
-        #region Properties Implementation
-
-        /// <summary>
-        /// Gets host name which we reported to SMTP server.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is connected.</exception>
-        public string? LocalHostName
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-                
-                return m_LocalHostName; 
-            }
-        }
-
-        /// <summary>
-        /// Gets SMTP server host name which EHLO/HELO reported to us.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public string? RemoteHostName
-        {
-            get{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-
-                return m_RemoteHostName; 
-            }
-        }
-
-        /// <summary>
-        /// Gets greeting text which was sent by SMTP server.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public string GreetingText
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-
-                return m_GreetingText; 
-            }
-        }
-
-        /// <summary>
-        /// Gets if connected SMTP server suports ESMTP.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public bool IsEsmtpSupported
-        {
-            get{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-
-                return m_IsEsmtpSupported; 
-            }
-        }
-
-        /// <summary>
-        /// Gets what ESMTP features are supported by connected SMTP server.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public string[] EsmtpFeatures
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-
-                return m_pEsmtpFeatures.ToArray(); 
-            }
-        }
-
-        /// <summary>
-        /// Gets SMTP server supported SASL authentication method.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public string[] SaslAuthMethods
-        {
-            get{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-
-                // Search AUTH entry.
-                foreach(string feature in this.EsmtpFeatures){
-                    string featureName = feature.Split(' ')[0];
-                    if(string.Equals(featureName,SMTP_ServiceExtensions.AUTH,StringComparison.InvariantCultureIgnoreCase)){
-                        // Remove AUTH<SP> and split authentication methods.
-                        return feature.Substring(4).Trim().Split(' ');
-                    }
-                }
-
-                return new string[0];
-            }
-        }
-
-        /// <summary>
-        /// Gets maximum message size in bytes what SMTP server accepts. Value -1 means not known.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public long MaxAllowedMessageSize
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-                    throw new InvalidOperationException("You must connect first.");
-                }
-
-                return m_MaxMessageSize; 
-            }
-        }
-
-
-        /// <summary>
-        /// Gets session authenticated user identity, returns null if not authenticated.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and SMTP client is not connected.</exception>
-        public override GenericIdentity? AuthenticatedUserIdentity
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-				    throw new InvalidOperationException("You must connect first.");
-			    }
-
-                return m_pAuthdUserIdentity; 
-            }
-        }
-                
-        #endregion
-
-                
-        //------- OBSOLETE  
 
     }
 }
