@@ -1,53 +1,51 @@
+using LumiSoft.Net.SMTP;
 using System;
 using System.Collections.Generic;
 using System.Text;
 
 namespace LumiSoft.Net.POP3.Client
-{
+{    
     /// <summary>
-    /// POP3 client exception.
+    /// Represents an exception raised during a POP3 client operation.
+    /// The exception encapsulates the POP3 server response that caused
+    /// the failure, allowing callers to inspect the status indicator,
+    /// optional response code, and any diagnostic text returned by the server.
     /// </summary>
     public class POP3_ClientException : Exception
     {
-        private string m_StatusCode   = "";
-        private string m_ResponseText = "";
-
+        private POP3_ServerResponse m_pResponse;
+        
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="POP3_ClientException"/> class
+        /// using the specified POP3 server response.
         /// </summary>
-        /// <param name="responseLine">IMAP server response line.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>responseLine</b> is null.</exception>
-        public POP3_ClientException(string responseLine) : base(responseLine)
+        /// <param name="response">
+        /// The POP3 server response associated with the failure.  
+        /// Must contain a valid POP3 status line beginning with <c>+OK</c> or <c>-ERR</c>.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="response"/> is <c>null</c>.
+        /// </exception>
+        public POP3_ClientException(POP3_ServerResponse response)
         {
-            if(responseLine == null){
-                throw new ArgumentNullException("responseLine");
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
             }
 
-            // <status-code> SP <response-text>
-            string[] code_text = responseLine.Split(new char[]{ },2);
-            m_StatusCode = code_text[0];
-            if(code_text.Length == 2){
-                m_ResponseText = code_text[1];
-            }
+            m_pResponse = response;
         }
 
 
         #region Properties Implementation
 
         /// <summary>
-        /// Gets POP3 server error status code.
+        /// Gets the POP3 server response associated with the exception.
+        /// The response provides access to the status indicator (<c>+OK</c> or <c>-ERR</c>),
+        /// any optional POP3 response code (RESP-CODES), and the server's diagnostic text.
         /// </summary>
-        public string StatusCode
+        public POP3_ServerResponse ServerResponse
         {
-            get{ return m_StatusCode; }
-        }
-
-        /// <summary>
-        /// Gets POP3 server response text after status code.
-        /// </summary>
-        public string ResponseText
-        {
-            get{ return m_ResponseText; }
+            get { return m_pResponse; }
         }
 
         #endregion

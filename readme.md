@@ -4,12 +4,15 @@ A cross‑platform .NET networking library providing **client and server compone
 
 ---
 
-## ✨ Features
+## Features
 
 ### Mail Protocols
-- **SMTP Client & Server**
-- **POP3 Client & Server**
-- **IMAP Client & Server**
+- **SMTP Client (STARTTLS, AUTH, SIZE, DSN, BINARYMIME, CHUNKING, ENHANCEDSTATUSCODES, Socks5, http-connect)**
+- **POP3 Client (STLS, UIDL, SASL, TOP, USER, RESP-CODES, Socks5, http-connect)**
+- **IMAP Client**
+- **SMTP Server**
+- **POP3 Server**
+- **IMAP Server**
 - **MIME** message creation and parsing
 
 ### Networking Components
@@ -21,7 +24,26 @@ A cross‑platform .NET networking library providing **client and server compone
 
 ---
 
-## 📦 Installation
+## Version History
+
+### 10.1.0 (09.09.2026)
+
+#### SMTP Client
+- Complete rewrite with fully modern async/await implementation  
+- Added Socks5 and http-connect proxy support  
+- Improved STARTTLS handling  
+- Updated SASL authentication pipeline  
+- Better error handling and session state management  
+
+#### POP3 Client
+- Complete rewrite with fully modern async/await implementation  
+- Added Socks5 and http-connect proxy support  
+- Improved TOP, UIDL, and partial RETR handling  
+- Full MIME integration including partial MIME parsing 
+
+---
+
+## Installation
 
 Example:
 
