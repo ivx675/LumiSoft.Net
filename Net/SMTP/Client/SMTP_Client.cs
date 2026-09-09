@@ -1940,7 +1940,7 @@ namespace LumiSoft.Net.SMTP.Client
         /// </param>
         /// <param name="log">Specifies whether the command is logged.</param>
         /// <param name="cancellationToken">
-        /// A token that may be used to cancel the asynchronous read operation.
+        /// A token that may be used to cancel the asynchronous operation.
         /// </param>
         /// <returns>
         /// A <see cref="ValueTask"/> representing the asynchronous write operation.
@@ -1977,34 +1977,41 @@ namespace LumiSoft.Net.SMTP.Client
         #region method ReadResponseAsync
 
         /// <summary>
-        /// Reads an SMTP server reply consisting of one or more reply lines.
+        /// Reads a complete SMTP server response consisting of one or more reply lines.
         /// </summary>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous read operation.
         /// </param>
         /// <returns>
-        /// An array of <see cref="SMTP_t_ReplyLine"/> objects representing the complete
-        /// multiline SMTP reply returned by the server.
+        /// A <see cref="SMTP_ServerResponse"/> instance containing all reply lines returned
+        /// by the server, including any continuation lines and the final reply line.
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown when the client instance has already been disposed.
         /// </exception>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when the underlying TCP stream is null.
+        /// Thrown when the underlying TCP stream is <c>null</c>.
         /// </exception>
         /// <exception cref="IOException">
         /// Thrown when the SMTP server closes the connection before a complete reply is received.
         /// </exception>
         /// <exception cref="DataSizeExceededException">
-        /// Thrown when the server returns more than the allowed maximum number of multiline
-        /// reply lines (100), indicating an excessively large or malformed reply.
+        /// Thrown when the server returns more than the allowed maximum number of reply lines
+        /// (100), indicating an excessively large or malformed multi‑line reply.
         /// </exception>
         /// <remarks>
-        /// This method reads SMTP reply lines until the final line is encountered, as indicated
-        /// by the reply-line continuation marker defined in RFC 5321.  
-        /// Each line is parsed into an <see cref="SMTP_t_ReplyLine"/> instance.  
-        /// If the reply exceeds the configured safety limit of 100 lines, the operation is aborted
-        /// and a <see cref="DataSizeExceededException"/> is thrown.
+        /// This method reads SMTP reply lines until the final reply line is encountered, as
+        /// defined in RFC 5321 section 4.2.  
+        /// 
+        /// A multi‑line SMTP reply consists of one or more lines that begin with the same
+        /// 3‑digit reply code. Continuation lines use the <c>reply-code "-"</c> format, and
+        /// the final line uses <c>reply-code SP</c> followed by the reply text.  
+        /// 
+        /// Each line is parsed into an <see cref="SMTP_t_ReplyLine"/> instance, including
+        /// optional enhanced status codes (RFC 3463 / RFC 5248) when present.  
+        /// 
+        /// When the terminating reply line is read, the method returns an
+        /// <see cref="SMTP_ServerResponse"/> containing all collected reply lines.
         /// </remarks>
         private async ValueTask<SMTP_ServerResponse> ReadResponseAsync(CancellationToken cancellationToken = default)
         {
@@ -2522,6 +2529,7 @@ namespace LumiSoft.Net.SMTP.Client
 
         #endregion
 
+
         #region Properties Implementation
 
         /// <summary>
@@ -2722,348 +2730,7 @@ namespace LumiSoft.Net.SMTP.Client
         #endregion
 
 
-        //------- OBSOLETE  
-
-
-        #region static method QuickSend
-
-        /// <summary>
-        /// Sends specified mime message.
-        /// </summary>
-        /// <param name="message">Message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>message</b> is null.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSend(Mail_Message message)
-        {
-            if(message == null){
-                throw new ArgumentNullException("message");
-            }
-
-            string from = "";
-            if(message.From != null && message.From.Count > 0){
-                from = ((Mail_t_Mailbox)message.From[0]).Address;
-            }
-
-            List<string> recipients = new List<string>();
-            if(message.To != null){
-				Mail_t_Mailbox[] addresses = message.To.Mailboxes;	
-				foreach(Mail_t_Mailbox address in addresses){
-					recipients.Add(address.Address);
-				}
-			}
-			if(message.Cc != null){
-				Mail_t_Mailbox[] addresses = message.Cc.Mailboxes;				
-				foreach(Mail_t_Mailbox address in addresses){
-					recipients.Add(address.Address);
-				}
-			}
-			if(message.Bcc != null){
-				Mail_t_Mailbox[] addresses = message.Bcc.Mailboxes;				
-				foreach(Mail_t_Mailbox address in addresses){
-					recipients.Add(address.Address);
-				}
-
-                // We must hide BCC
-                message.Bcc.Clear();
-			}
-
-            foreach(string recipient in recipients){
-                MemoryStream ms = new MemoryStream();
-                message.ToStream(ms,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.Q,Encoding.UTF8),Encoding.UTF8);
-                ms.Position = 0;
-                QuickSend(null,from,recipient,ms);
-            }
-        }
-
-        /// <summary>
-        /// Sends message directly to email domain. Domain email sever resolve order: MX recordds -> A reords if no MX.
-        /// </summary>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipient email.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>from</b>,<b>to</b> or <b>message</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSend(string from,string to,Stream message)
-        {
-            QuickSend(null,from,to,message);
-        }
-
-        /// <summary>
-        /// Sends message directly to email domain. Domain email sever resolve order: MX recordds -> A reords if no MX.
-        /// </summary>
-        /// <param name="localHost">Host name which is reported to SMTP server.</param>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipient email.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>from</b>,<b>to</b> or <b>message</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSend(string? localHost,string from,string to,Stream message)
-        {
-            if(from == null){
-                throw new ArgumentNullException("from");
-            }
-            if(from != "" && !SMTP_Utils.IsValidAddress(from)){
-                throw new ArgumentException("Argument 'from' has invalid value.");
-            }
-            if(to == null){
-                throw new ArgumentNullException("to");
-            }
-            if(to == ""){
-                throw new ArgumentException("Argument 'to' value must be specified.");
-            }
-            if(!SMTP_Utils.IsValidAddress(to)){
-                throw new ArgumentException("Argument 'to' has invalid value.");
-            }            
-            if(message == null){
-                throw new ArgumentNullException("message");
-            }
-
-            QuickSendSmartHost(localHost,Dns_Client.Static.GetEmailHosts(to)[0].HostName,25,false,from,new string[]{to},message);
-        }
-
-        #endregion
-
-        #region static method QuickSendSmartHost
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="ssl">Specifies if connected via SSL.</param>
-        /// <param name="message">Mail message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b> or <b>message</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string host,int port,bool ssl,Mail_Message message)
-        {
-            if(message == null){
-                throw new ArgumentNullException("message");
-            }
-
-            QuickSendSmartHost(null,host,port,ssl,null,null,message);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="localHost">Host name which is reported to SMTP server. Value null means local computer name is used.</param>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="security">Specifies connection security.</param>
-        /// <param name="userName">SMTP server user name. This value may be null, then authentication not used.</param>
-        /// <param name="password">SMTP server password.</param>
-        /// <param name="message">Mail message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b> or <b>message</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string? localHost,string host,int port,TcpClientSecurity security,string userName,string password,Mail_Message message)
-        {
-            QuickSendSmartHost(localHost,host,port,security == TcpClientSecurity.SSL,userName,password,message);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="localHost">Host name which is reported to SMTP server. Value null means local computer name is used.</param>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="ssl">Specifies if connected via SSL.</param>
-        /// <param name="userName">SMTP server user name. This value may be null, then authentication not used.</param>
-        /// <param name="password">SMTP server password.</param>
-        /// <param name="message">Mail message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b> or <b>message</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string? localHost,string host,int port,bool ssl,string? userName,string? password,Mail_Message message)
-        {
-            if(message == null){
-                throw new ArgumentNullException("message");
-            }
-
-            string from = "";
-            if(message.From != null && message.From.Count > 0){
-                from = ((Mail_t_Mailbox)message.From[0]).Address;
-            }
-
-            List<string> recipients = new List<string>();
-            if(message.To != null){
-				Mail_t_Mailbox[] addresses = message.To.Mailboxes;	
-				foreach(Mail_t_Mailbox address in addresses){
-					recipients.Add(address.Address);
-				}
-			}
-			if(message.Cc != null){
-				Mail_t_Mailbox[] addresses = message.Cc.Mailboxes;				
-				foreach(Mail_t_Mailbox address in addresses){
-					recipients.Add(address.Address);
-				}
-			}
-			if(message.Bcc != null){
-				Mail_t_Mailbox[] addresses = message.Bcc.Mailboxes;				
-				foreach(Mail_t_Mailbox address in addresses){
-					recipients.Add(address.Address);
-				}
-
-                // We must hide BCC
-                message.Bcc.Clear();
-			}
-
-            MemoryStream ms = new MemoryStream();
-            message.ToStream(ms,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.Q,Encoding.UTF8),Encoding.UTF8);
-            ms.Position = 0;
-            QuickSendSmartHost(localHost,host,port,ssl,userName,password,from,recipients.ToArray(),ms);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipients email addresses.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>message</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string host,int port,string from,string[] to,Stream message)
-        {
-            QuickSendSmartHost(null,host,port,false,null,null,from,to,message);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="ssl">Specifies if connected via SSL.</param>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipients email addresses.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string host,int port,bool ssl,string from,string[] to,Stream message)
-        {
-            QuickSendSmartHost(null,host,port,ssl,null,null,from,to,message);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="localHost">Host name which is reported to SMTP server. Value null means local computer name is used.</param>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="ssl">Specifies if connected via SSL.</param>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipients email addresses.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string? localHost,string host,int port,bool ssl,string from,string[] to,Stream message)
-        {
-            QuickSendSmartHost(localHost,host,port,ssl,null,null,from,to,message);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="localHost">Host name which is reported to SMTP server. Value null means local computer name is used.</param>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="ssl">Specifies if connected via SSL.</param>
-        /// <param name="userName">SMTP server user name. This value may be null, then authentication not used.</param>
-        /// <param name="password">SMTP server password.</param>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipients email addresses.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string? localHost,string host,int port,bool ssl,string? userName,string? password,string from,string[] to,Stream message)
-        {
-            QuickSendSmartHost(localHost,host,port,(ssl == true ? TcpClientSecurity.SSL : TcpClientSecurity.None),userName,password,from,to,message);
-        }
-
-        /// <summary>
-        /// Sends message by using specified smart host.
-        /// </summary>
-        /// <param name="localHost">Host name which is reported to SMTP server. Value null means local computer name is used.</param>
-        /// <param name="host">Host name or IP address.</param>
-        /// <param name="port">Host port.</param>
-        /// <param name="security">Specifies connection security.</param>
-        /// <param name="userName">SMTP server user name. This value may be null, then authentication not used.</param>
-        /// <param name="password">SMTP server password.</param>
-        /// <param name="from">Sender email what is reported to SMTP server.</param>
-        /// <param name="to">Recipients email addresses.</param>
-        /// <param name="message">Raw message to send.</param>
-        /// <exception cref="ArgumentNullException">Is raised when argument <b>host</b>,<b>from</b>,<b>to</b> or <b>stream</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the method arguments has invalid value.</exception>
-        /// <exception cref="SMTP_ClientException">Is raised when SMTP server returns error.</exception>
-        [Obsolete("Use new QuickSend/QuickSendAsync instead. This method will be removed.")]
-        public static void QuickSendSmartHost(string? localHost,string host,int port,TcpClientSecurity security,string? userName,string? password,string from,string[] to,Stream message)
-        {
-            if(host == null){
-                throw new ArgumentNullException("host");
-            }
-            if(host == ""){
-                throw new ArgumentException("Argument 'host' value may not be empty.");
-            }
-            if(port < 1){
-                throw new ArgumentException("Argument 'port' value must be >= 1.");
-            }
-            if(from == null){
-                throw new ArgumentNullException("from");
-            }
-            if(from != "" && !SMTP_Utils.IsValidAddress(from)){
-                throw new ArgumentException("Argument 'from' has invalid value.");
-            }
-            if(to == null){
-                throw new ArgumentNullException("to");
-            }
-            if(to.Length == 0){
-                throw new ArgumentException("Argument 'to' must contain at least 1 recipient.");
-            }
-            foreach(string t in to){
-                if(!SMTP_Utils.IsValidAddress(t)){
-                    throw new ArgumentException("Argument 'to' has invalid value '" + t + "'.");
-                }
-            }
-            if(message == null){
-                throw new ArgumentNullException("message");
-            }
-
-            using(SMTP_Client smtp = new SMTP_Client()){
-                smtp.Connect(host,port,security == TcpClientSecurity.SSL);
-                if(security == TcpClientSecurity.TLS || (security == TcpClientSecurity.UseTlsIfSupported && smtp.SupportsCapability(SMTP_ServiceExtensions.STARTTLS))){
-                    smtp.EhloHelo(localHost != null ? localHost : Dns.GetHostName());
-                    smtp.StartTls(null);
-                }
-                smtp.EhloHelo(localHost != null ? localHost : Dns.GetHostName());
-                if(!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)){
-                    smtp.Auth(smtp.AuthGetStrongestMethod(userName,password));
-                }
-                smtp.MailFrom(from,-1);
-                foreach(string t in to){
-                    smtp.RcptTo(t);
-                }
-                smtp.SendMessage(message);
-            }
-        }
-
-        #endregion
+        //------- OBSOLETE 
 
     }
 }
