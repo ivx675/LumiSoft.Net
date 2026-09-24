@@ -1,7 +1,9 @@
-using System;
-using System.IO;
-using System.Text;
+﻿using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Unicode;
 
 namespace LumiSoft.Net.IMAP
 {
@@ -89,94 +91,6 @@ namespace LumiSoft.Net.IMAP
         #endregion
 
 
-        #region method ACL_to_String
-
-        /// <summary>
-		/// Converts IMAP_ACL_Flags to string.
-		/// </summary>
-		/// <param name="flags">Flags to convert.</param>
-		/// <returns></returns>
-		public static string ACL_to_String(IMAP_ACL_Flags flags)
-		{
-			string retVal = "";
-			if((flags & IMAP_ACL_Flags.l) != 0){
-				retVal += "l";
-			}
-			if((flags & IMAP_ACL_Flags.r) != 0){
-				retVal += "r";
-			}
-			if((flags & IMAP_ACL_Flags.s) != 0){
-				retVal += "s";
-			}
-			if((flags & IMAP_ACL_Flags.w) != 0){
-				retVal += "w";
-			}
-			if((flags & IMAP_ACL_Flags.i) != 0){
-				retVal += "i";
-			}			
-			if((flags & IMAP_ACL_Flags.p) != 0){
-				retVal += "p";
-			}
-			if((flags & IMAP_ACL_Flags.c) != 0){
-				retVal += "c";
-			}
-			if((flags & IMAP_ACL_Flags.d) != 0){
-				retVal += "d";
-			}
-			if((flags & IMAP_ACL_Flags.a) != 0){
-				retVal += "a";
-			}
-
-			return retVal;
-		}
-
-		#endregion
-
-		#region method ACL_From_String
-
-		/// <summary>
-		/// Parses IMAP_ACL_Flags from string.
-		/// </summary>
-		/// <param name="aclString">String from where to convert</param>
-		/// <returns></returns>
-		public static IMAP_ACL_Flags ACL_From_String(string aclString)
-		{
-			IMAP_ACL_Flags retVal = IMAP_ACL_Flags.None;
-			aclString = aclString.ToLower();
-			if(aclString.IndexOf('l') > -1){
-				retVal |= IMAP_ACL_Flags.l;
-			}
-			if(aclString.IndexOf('r') > -1){
-				retVal |= IMAP_ACL_Flags.r;
-			}
-			if(aclString.IndexOf('s') > -1){
-				retVal |= IMAP_ACL_Flags.s;
-			}
-			if(aclString.IndexOf('w') > -1){
-				retVal |= IMAP_ACL_Flags.w;
-			}
-			if(aclString.IndexOf('i') > -1){
-				retVal |= IMAP_ACL_Flags.i;
-			}
-			if(aclString.IndexOf('p') > -1){
-				retVal |= IMAP_ACL_Flags.p;
-			}
-			if(aclString.IndexOf('c') > -1){
-				retVal |= IMAP_ACL_Flags.c;
-			}
-			if(aclString.IndexOf('d') > -1){
-				retVal |= IMAP_ACL_Flags.d;
-			}
-			if(aclString.IndexOf('a') > -1){
-				retVal |= IMAP_ACL_Flags.a;
-			}
-
-			return retVal;
-		}
-
-		#endregion
-
-
 		#region method ParseDate
 
 		/// <summary>
@@ -238,7 +152,7 @@ namespace LumiSoft.Net.IMAP
 
 		/// <summary>
 		/// Encodes specified data with IMAP modified UTF7 encoding. Defined in RFC 3501 5.1.3.  Mailbox International Naming Convention.
-		/// Example: �� is encoded to &amp;APYA9g-.
+		/// Example: öö is encoded to &amp;APYA9g-.
 		/// </summary>
 		/// <param name="text">Text to encode.</param>
 		/// <returns></returns>
@@ -286,7 +200,7 @@ namespace LumiSoft.Net.IMAP
 				// Not allowed char, encode it
 				else{
 					// Superfluous shifts are not allowed. 
-					// For example: �� may not encoded as &APY-&APY-, but must be &APYA9g-.
+					// For example: öö may not encoded as &APY-&APY-, but must be &APYA9g-.
 
 					// Get all continuous chars that need encoding and encode them as one block
 					MemoryStream encodeBlock = new MemoryStream();
@@ -321,7 +235,7 @@ namespace LumiSoft.Net.IMAP
 
 		/// <summary>
 		/// Decodes IMAP modified UTF7 encoded data. Defined in RFC 3501 5.1.3.  Mailbox International Naming Convention.
-		/// Example: &amp;APYA9g- is decoded to ��.
+		/// Example: &amp;APYA9g- is decoded to öö.
 		/// </summary>
 		/// <param name="text">Text to encode.</param>
 		/// <returns></returns>
@@ -423,7 +337,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <param name="mailbox">Mailbox name.</param>
         /// <param name="encoding">Mailbox name encoding mechanism.</param>
-        /// <returns>Renturns encoded mailbox name.</returns>
+        /// <returns>Renturns quoted encoded mailbox name.</returns>
         /// <exception cref="ArgumentNullException">Is raised when <b>mailbox</b> is null reference.</exception>
         public static string EncodeMailbox(string mailbox,IMAP_Mailbox_Encoding encoding)
         {
@@ -436,15 +350,22 @@ namespace LumiSoft.Net.IMAP
                 uQUOTED-CHAR  = QUOTED-CHAR / UTF8-2 / UTF8-3 / UTF8-4
             */
 
-            if(encoding == IMAP_Mailbox_Encoding.ImapUtf7){
-                return "\"" + IMAP_Utils.Encode_IMAP_UTF7_String(mailbox) + "\"";
-            }
-            else if(encoding == IMAP_Mailbox_Encoding.ImapUtf8){
-                return "\"" + mailbox + "\"";
-            }
-            else{
-                return "\"" + mailbox + "\"";
-            }
+            string encoded;
+			if (encoding == IMAP_Mailbox_Encoding.ImapUtf7){
+				encoded = IMAP_Utils.Encode_IMAP_UTF7_String(mailbox);
+			}
+			else if (encoding == IMAP_Mailbox_Encoding.ImapUtf8){
+				encoded = mailbox;
+			}
+			else{
+				encoded = mailbox;
+			}
+
+			// Escape internal quotes inside the mailbox name
+			encoded = encoded.Replace("\"", "\\\"");
+
+			// Wrap in IMAP quoted string
+			return "\"" + encoded + "\"";
         }
 
         #endregion
@@ -523,87 +444,146 @@ namespace LumiSoft.Net.IMAP
         #region static method MustUseLiteralString
 
         /// <summary>
-        /// Gets if specified string must be sent as IMAP literal-string.
-        /// </summary>
-        /// <param name="value">String value.</param>
-        /// <param name="utf8StringSupported">Specifies if RFC 5738 IMAP UTF-8 string is supported.</param>
-        /// <returns>Returns true if string must be sent as literal-string.</returns>
-        public static bool MustUseLiteralString(string value,bool utf8StringSupported)
-        {
-            if(value != null){
-                foreach(char c in value){
-                    if(!utf8StringSupported && c > 126){
-                        return true;
-                    }
-                    else if(char.IsControl(c)){
-                        return true;
-                    }
-                }
-            }
+		/// Determines whether the given IMAP string must be encoded as a literal
+		/// instead of a quoted string, according to RFC 3501 and RFC 6855 rules.
+		/// </summary>
+		/// <param name="value">
+		/// The string to evaluate. A null value never requires a literal.
+		/// </param>
+		/// <param name="utf8">
+		/// Indicates whether UTF‑8 quoted strings are allowed (UTF8=USER or UTF8=ACCEPT).
+		/// </param>
+		/// <returns>
+		/// True if the string contains characters that cannot appear in ASCII or
+		/// UTF‑8 quoted strings; otherwise false.
+		/// </returns>
+		/// <remarks>
+		/// A literal is required when the value contains non‑ASCII characters while
+		/// UTF‑8 is unavailable, a double quote, a backslash when UTF‑8 quoting is used,
+		/// or any control character such as CR, LF, or NUL.
+		/// </remarks>
+        public static bool MustUseLiteralString(string? value,bool utf8)
+		{
+			if(value == null){
+				return false;
+			}
 
-            return false;
-        }
+			/*
+			   RFC 6855 — UTF‑8 Quoted Strings and IMAP Literals
+
+			   IMAP string values may be transmitted using one of three encodings:
+
+				   1. Quoted string (ASCII)
+				   2. UTF‑8 quoted string (RFC 6855)
+				   3. Literal (RFC 3501)
+
+			   -----------------------------------------------------------------------
+			   1. ASCII Quoted String
+			   -----------------------------------------------------------------------
+				   quoted-string = DQUOTE *QUOTED-CHAR DQUOTE
+
+				   QUOTED-CHAR = %x01-7F except DQUOTE / "\" / CR / LF
+
+				   Used when:
+					 - All characters are 7‑bit ASCII
+					 - No control characters
+					 - No DQUOTE, backslash, CR, or LF
+
+			   -----------------------------------------------------------------------
+			   2. UTF‑8 Quoted String (UTF8=USER or UTF8=ACCEPT)
+			   -----------------------------------------------------------------------
+				   utf8-quoted = DQUOTE *UQUOTED-CHAR DQUOTE
+
+				   UQUOTED-CHAR = UTF8-CHAR except DQUOTE / "\" / CR / LF
+
+				   Notes:
+					 - UTF‑8 quoted strings MUST NOT contain DQUOTE, "\" , CR, or LF.
+					 - UTF‑8 quoted strings MUST be used for userid when UTF8=USER
+					   capability is advertised, unless forbidden characters appear.
+
+				   A UTF‑8 quoted string is simply:
+					   "päev"
+					   "Jüri"
+					   "用户"
+
+				   Forbidden examples (must use literal instead):
+					   "pa\"ev"   ; contains DQUOTE
+					   "pa\ev"    ; contains backslash
+					   "pa\n"     ; contains LF
+					   "pa\r"     ; contains CR
+			*/
+
+			foreach (char c in value){
+				// UTF‑8 not supported → any non‑ASCII forces literal
+				if(!utf8 && c > 0x7F){
+					return true;
+				}
+
+				// DQUOTE not allowed in quoted strings
+				if(c == '"'){
+					return true;
+				}
+
+				// DQUOTE not allowed in quoted strings
+				if(utf8 && c == '\\'){
+					return true;
+				}
+
+				// Control characters (CR, LF, NUL, etc.) force literal
+				if(char.IsControl(c)){
+					return true;
+				}
+			}
+
+			return false;
+		}
+
 
         #endregion
 
-        #region static method ImapStringToByte
+        #region static method IsValidLiteralHeader
 
         /// <summary>
-        /// Converts IMAP string to byte[].
+        /// Determines whether the specified string is a valid IMAP literal or literal+ header.
         /// </summary>
-        /// <param name="charset">Charset to use for string encodings.</param>
-        /// <param name="utf8StringSupported">Specifies if RFC 5738 IMAP UTF-8 string is supported.</param>
-        /// <param name="value">String value.</param>
-        /// <returns>Returns IMAP string as byte[].</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>charset</b> is null reference.</exception>
-        public static byte[] ImapStringToByte(Encoding charset,bool utf8StringSupported,string value)
-        {
-            if(charset == null){
-                throw new ArgumentNullException("charset");
-            }
+        /// <param name="header">Literal header string, e.g. "{12}" or "{12+}".</param>
+        /// <returns>
+        /// True if the header is a syntactically valid literal or literal+ header; otherwise false.
+        /// </returns>
+        public static bool IsValidLiteralHeader(string header)
+		{
+			if (string.IsNullOrEmpty(header)){
+				return false;
+			}
 
-            if(value == null){
-                return Encoding.ASCII.GetBytes("NIL");
-            }
-            else if(value == ""){
-                return Encoding.ASCII.GetBytes("\"\"");
-            }
+			// Must be at least "{0}" → length >= 3
+			if (header.Length < 3 || header[0] != '{' || header[^1] != '}'){
+				return false;
+			}
 
-            bool has8BitChars    = false;
-            bool hasControlChars = false;
-            foreach(char c in value){
-                if(c > 127){
-                    has8BitChars = true;
-                }
-                else if(char.IsControl(c)){
-                    hasControlChars = true;
-                }
-            }
+			// Extract inner part: "12" or "12+"
+			string inner = header.Substring(1, header.Length - 2);
 
-            // We must use IMAP literal string.
-            if(hasControlChars || (!utf8StringSupported && has8BitChars)){
-                byte[] buffer2 = charset.GetBytes(value);
-                byte[] buffer1 = Encoding.ASCII.GetBytes("{" + buffer2.Length + "}\r\n");
-                
-                byte[] buffer = new byte[buffer1.Length + buffer2.Length];
-                Array.Copy(buffer1,buffer,buffer1.Length);
-                Array.Copy(buffer2,0,buffer,buffer1.Length,buffer2.Length);
 
-                return buffer;
-            }
-            // Use IMAP utf8-quoted string. RFC 5738.
-            else if(utf8StringSupported){
-                // utf8-quoted   = "*" DQUOTE *UQUOTED-CHAR DQUOTE
+			// Check for literal+
+			if (inner.EndsWith("+", StringComparison.Ordinal)){
+				inner = inner.Substring(0, inner.Length - 1);
+			}
 
-                return Encoding.UTF8.GetBytes("*" + TextUtils.QuoteString(value));
-            }
-            // Use IMAP quoted string.
-            else{
-                return charset.GetBytes(TextUtils.QuoteString(value));
-            }
-        }
+			// Must be digits only
+			if (!int.TryParse(inner, out int count)){
+				return false;
+			}
 
-        #endregion
+			// RFC: literal count must be >= 0
+			if (count < 0){
+				return false;
+			}
+
+			return true;
+		}
+
+		#endregion
 
 
 

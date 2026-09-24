@@ -9,158 +9,102 @@ using LumiSoft.Net.IMAP.Client;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// This class represents IMAP FETCH response ENVELOPE data-item. Defined in RFC 3501 7.4.2.
+    /// This class represents the IMAP FETCH response ENVELOPE data-item.
     /// </summary>
+    /// <remarks>
+    /// The ENVELOPE structure provides a summary of the message's header fields,
+    /// including date, subject, address lists, and message identifiers. 
+    /// </remarks>
     public class IMAP_t_Fetch_r_i_Envelope : IMAP_t_Fetch_r_i
     {
-        private DateTime          m_Date      = DateTime.MinValue;
-        private string?           m_Subject   = null;
-        private Mail_t_Address[]? m_pFrom     = null;
-        private Mail_t_Address[]? m_pSender   = null;
-        private Mail_t_Address[]? m_pReplyTo  = null;
-        private Mail_t_Address[]? m_pTo       = null;
-        private Mail_t_Address[]? m_pCc       = null;
-        private Mail_t_Address[]? m_pBcc      = null;
-        private string?           m_InReplyTo = null;
-        private string?           m_MessageID = null;
-
-        /// <summary>
-        /// Default constructor.
-        /// </summary>
-        /// <param name="date">Message <b>Date</b> header value.</param>
-        /// <param name="subject">Message <b>Subject</b> header value.</param>
-        /// <param name="from">Message <b>From</b> header value.</param>
-        /// <param name="sender">Message <b>Sender</b> header value.</param>
-        /// <param name="replyTo">Message <b>Reply-To</b> header value.</param>
-        /// <param name="to">Message <b>To</b> header value.</param>
-        /// <param name="cc">Message <b>Cc</b> header value.</param>
-        /// <param name="bcc">Message <b>Bcc</b> header value.</param>
-        /// <param name="inReplyTo">Message <b>In-Reply-To</b> header value.</param>
-        /// <param name="messageID">Message <b>Message-ID</b> header value.</param>
-        public IMAP_t_Fetch_r_i_Envelope(DateTime date,string? subject,Mail_t_Address[]? from,Mail_t_Address[]? sender,Mail_t_Address[]? replyTo,Mail_t_Address[]? to,Mail_t_Address[]? cc,Mail_t_Address[]? bcc,string? inReplyTo,string? messageID)
+        private IMAP_t_Envelope m_pEnvelope;
+		    
+		/// <summary>
+		/// Initializes a new instance of the <see cref="IMAP_t_Fetch_r_i_Envelope"/>
+		/// class using the specified ENVELOPE element.
+		/// </summary>
+		/// <param name="envelope">
+		/// The ENVELOPE element describing the message’s header fields. This value
+		/// must not be <c>null</c>.
+		/// </param>
+        public IMAP_t_Fetch_r_i_Envelope(IMAP_t_Envelope envelope)
         {
-            m_Date      = date;
-            m_Subject   = subject;
-            m_pFrom     = from;
-            m_pSender   = sender;
-            m_pReplyTo  = replyTo;
-            m_pTo       = to;
-            m_pCc       = cc;
-            m_pBcc      = bcc;
-            m_InReplyTo = inReplyTo;
-            m_MessageID = messageID;
+            if(envelope == null){
+                throw new ArgumentNullException(nameof(envelope));
+            }
+
+            m_pEnvelope = envelope;
         }
 
 
-        #region static method Parse
+        #region method ParseAsync
 
         /// <summary>
-        /// Parses IMAP FETCH ENVELOPE from reader.
+        /// Parses an IMAP <c>ENVELOPE</c> FETCH data item.
         /// </summary>
-        /// <param name="r">Fetch reader.</param>
-        /// <returns>Returns parsed envelope.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>r</b> is null reference.</exception>
-        public static IMAP_t_Fetch_r_i_Envelope Parse(StringReader r)
+        /// <remarks>
+        /// Expects the reader at the <c>ENVELOPE</c> atom and consumes the full
+        /// parenthesized structure:
+        /// <code>
+        /// (date subject from sender reply-to to cc bcc in-reply-to message-id)
+        /// </code>
+        /// </remarks>
+        /// <param name="imapReader">Reader positioned at an ENVELOPE data item.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>Parsed ENVELOPE FETCH data-item structure.</returns>
+        /// <exception cref="ParseException">
+        /// Thrown if the ENVELOPE syntax is malformed.
+        /// </exception>
+        internal static async Task<IMAP_t_Fetch_r_i_Envelope> ParseAsync(_IMAP_Reader imapReader,CancellationToken cancellationToken = default)
         {
-            if(r == null){
-                throw new ArgumentNullException("r");
-            }
+            ArgumentNullException.ThrowIfNull(imapReader);
 
-            /* RFC 3501 7.4.2. FETCH Response.
-                ENVELOPE
-                 A parenthesized list that describes the envelope structure of a
-                 message.  This is computed by the server by parsing the
-                 [RFC-2822] header into the component parts, defaulting various
-                 fields as necessary.
+            /* IMAP FETCH Data Item: ENVELOPE
+               Reference: RFC 3501, Section 7.4.2
 
-                 The fields of the envelope structure are in the following
-                 order: date, subject, from, sender, reply-to, to, cc, bcc,
-                 in-reply-to, and message-id.  The date, subject, in-reply-to,
-                 and message-id fields are strings.  The from, sender, reply-to,
-                 to, cc, and bcc fields are parenthesized lists of address
-                 structures.
+               ENVELOPE returns a structured summary of key message header fields without
+               requiring the client to fetch the full header.
 
-                 An address structure is a parenthesized list that describes an
-                 electronic mail address.  The fields of an address structure
-                 are in the following order: personal name, [SMTP]
-                 at-domain-list (source route), mailbox name, and host name.
+               Syntax (FETCH response):
+                   ENVELOPE SP envelope-structure
 
-                 [RFC-2822] group syntax is indicated by a special form of
-                 address structure in which the host name field is NIL.  If the
-                 mailbox name field is also NIL, this is an end of group marker
-                 (semi-colon in RFC 822 syntax).  If the mailbox name field is
-                 non-NIL, this is a start of group marker, and the mailbox name
-                 field holds the group name phrase.
+               Envelope structure:
+                   (date subject from sender reply-to to cc bcc in-reply-to message-id)
 
-                 If the Date, Subject, In-Reply-To, and Message-ID header lines
-                 are absent in the [RFC-2822] header, the corresponding member
-                 of the envelope is NIL; if these header lines are present but
-                 empty the corresponding member of the envelope is the empty
-                 string.
+               Example:
+                   S: * 12 FETCH (ENVELOPE
+                        ("Mon, 18 Sep 2023 14:22:10 +0000"
+                         "Meeting Tomorrow"
+                         (("Alice" NIL "alice" "example.com"))
+                         (("Alice" NIL "alice" "example.com"))
+                         (("Alice" NIL "alice" "example.com"))
+                         (("Bob" NIL "bob" "example.com"))
+                         NIL
+                         NIL
+                         "<CAF12345@example.com>"
+                         "<MSGID-98765@example.com>"))
 
-                    Note: some servers may return a NIL envelope member in the
-                    "present but empty" case.  Clients SHOULD treat NIL and
-                    empty string as identical.
+               Field notes:
+                 • date          – "Date:" header field, IMAP string or NIL.
+                 • subject       – "Subject:" header field, IMAP string or NIL.
+                 • from          – Address list from "From:" header, NIL or list.
+                 • sender        – Address list from "Sender:" header, NIL or list.
+                 • reply-to      – Address list from "Reply-To:" header, NIL or list.
+                 • to            – Address list from "To:" header, NIL or list.
+                 • cc            – Address list from "Cc:" header, NIL or list.
+                 • bcc           – Address list from "Bcc:" header, NIL or list.
+                 • in-reply-to   – "In-Reply-To:" header field, IMAP string or NIL.
+                 • message-id    – "Message-ID:" header field, IMAP string or NIL.
 
-                    Note: [RFC-2822] requires that all messages have a valid
-                    Date header.  Therefore, the date member in the envelope can
-                    not be NIL or the empty string.
-
-                    Note: [RFC-2822] requires that the In-Reply-To and
-                    Message-ID headers, if present, have non-empty content.
-                    Therefore, the in-reply-to and message-id members in the
-                    envelope can not be the empty string.
-
-                 If the From, To, cc, and bcc header lines are absent in the
-                 [RFC-2822] header, or are present but empty, the corresponding
-                 member of the envelope is NIL.
-
-                 If the Sender or Reply-To lines are absent in the [RFC-2822]
-                 header, or are present but empty, the server sets the
-                 corresponding member of the envelope to be the same value as
-                 the from member (the client is not expected to know to do
-                 this).
-
-                    Note: [RFC-2822] requires that all messages have a valid
-                    From header.  Therefore, the from, sender, and reply-to
-                    members in the envelope can not be NIL.
+               All string fields may be NIL. Address lists may be NIL or empty. The parser
+               must read the parenthesized structure exactly as defined in RFC 3501.
             */
-                        
-            // Read "date".
-            DateTime date = DateTime.MinValue;
-            string? dateS = r.ReadWord();            
-            if(!string.IsNullOrEmpty(dateS) && !dateS.Equals("NIL",StringComparison.InvariantCultureIgnoreCase)){
-                date = MIME_Utils.ParseRfc2822DateTime(dateS);
+
+            if(!string.Equals("ENVELOPE", imapReader.ReadAtom(), StringComparison.OrdinalIgnoreCase)){
+                throw new ParseException("Invalid FETCH response: ENVELOPE data-item not found.");
             }
-
-            // Read "subject".
-            string subject = ReadAndDecodeWord(r);
-
-            // Read "from"
-            Mail_t_Address[]? from = ReadAddresses(r);
-            
-            //Read "sender"
-            Mail_t_Address[]? sender = ReadAddresses(r);
-            
-            // Read "reply-to"
-            Mail_t_Address[]? replyTo = ReadAddresses(r);
-            
-            // Read "to"
-            Mail_t_Address[]? to = ReadAddresses(r);
-            
-            // Read "cc"
-            Mail_t_Address[]? cc = ReadAddresses(r);
-            
-            // Read "bcc"
-            Mail_t_Address[]? bcc = ReadAddresses(r);
-            
-            // Read "in-reply-to"
-            string? inReplyTo = r.ReadWord();
-            
-            // Read "message-id"
-            string? messageID = r.ReadWord();
-
-            return new IMAP_t_Fetch_r_i_Envelope(date,subject,from,sender,replyTo,to,cc,bcc,inReplyTo,messageID);
+                        
+            return new IMAP_t_Fetch_r_i_Envelope(await IMAP_t_Envelope.ParseAsync(imapReader,cancellationToken));
         }
 
         #endregion
@@ -343,117 +287,7 @@ namespace LumiSoft.Net.IMAP
 
 		#endregion
 
-
-        #region static method ReadAddresses
-
-        /// <summary>
-        /// Reads parenthesized list of addresses.
-        /// </summary>
-        /// <param name="r">String reader.</param>
-        /// <returns>Returns read addresses.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>r</b> is null reference.</exception>
-        private static Mail_t_Address[]? ReadAddresses(StringReader r)
-        {
-            if(r == null){
-                throw new ArgumentNullException("r");
-            }
-
-            /* RFC 3501 7.4.2. 
-                An address structure is a parenthesized list that describes an
-                electronic mail address.  The fields of an address structure
-                are in the following order: personal name, [SMTP]
-                at-domain-list (source route), mailbox name, and host name.
-
-                [RFC-2822] group syntax is indicated by a special form of
-                address structure in which the host name field is NIL.  If the
-                mailbox name field is also NIL, this is an end of group marker
-                (semi-colon in RFC 822 syntax).  If the mailbox name field is
-                non-NIL, this is a start of group marker, and the mailbox name
-                field holds the group name phrase.
-
-                ADDRESS = "(" addr-name addr-adl addr-mailbox addr-host ")"
-
-            */
         
-            r.ReadToFirstChar();
-            if(r.StartsWith("NIL",false)){
-                r.ReadWord();
-
-                return null;
-            }
-            else{
-                List<Mail_t_Address> retVal = new List<Mail_t_Address>();
-                
-                StringReader addressesReader = new StringReader(r.ReadParenthesized());
-                addressesReader.ReadToFirstChar();
-
-                while(addressesReader.Available > 0){
-                    // Eat address starting "(".
-                    if(addressesReader.StartsWith("(")){
-                        addressesReader.ReadSpecifiedLength(1);
-                    }
-
-                    string  personalName = ReadAndDecodeWord(addressesReader);
-                    string? atDomainList = addressesReader.ReadWord();
-                    string  mailboxName  = addressesReader.ReadWord() ?? "";
-                    string  hostName     = addressesReader.ReadWord() ?? "";
-
-                    retVal.Add(new Mail_t_Mailbox(personalName,mailboxName + "@" + hostName));
-
-                    // Eat address ending ")".
-                    if(addressesReader.EndsWith(")")){
-                        addressesReader.ReadSpecifiedLength(1);
-                    }
-
-                    addressesReader.ReadToFirstChar();
-                }               
-
-                return retVal.ToArray();
-            }
-        }
-
-        #endregion
-
-        #region static method ReadAndDecodeWord
-                
-        /// <summary>
-        /// Reads and decodes word from reader.
-        /// </summary>
-        /// <param name="r">String reader.</param>
-        /// <returns>Returns decoded word.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>r</b> is null reference.</exception>
-        private static string ReadAndDecodeWord(StringReader r)
-        {            
-            if(r == null){
-                throw new ArgumentNullException("r");
-            }
-
-            r.ReadToFirstChar();
-
-            // We have string-literal.
-            if(r.SourceString.StartsWith("{")){
-                int literalSize = Convert.ToInt32(r.ReadParenthesized());
-                // Literal has CRLF ending, skip it.
-                r.ReadSpecifiedLength(2);
-                                                
-                return MIME_Encoding_EncodedWord.DecodeTextS(r.ReadSpecifiedLength(literalSize));
-            }
-            else{
-                string? word = r.ReadWord();
-                if(word == null){
-                    throw new ParseException("Excpetcted quoted-string or string-literal, but non available.");
-                }
-                else if(string.Equals(word,"NIL",StringComparison.InvariantCultureIgnoreCase)){
-                    return "";
-                }
-                else{
-                    return MIME_Encoding_EncodedWord.DecodeTextS(word);
-                }
-            }
-        }
-
-        #endregion
-
         #region private static method ConstructAddresses
 
 		/// <summary>
@@ -548,85 +382,19 @@ namespace LumiSoft.Net.IMAP
 
 
         #region Properties implementation
-
+                
         /// <summary>
-        /// Gets message <b>Date</b> header field value. Value DateTime.Min means no <b>Date</b> header field.
-        /// </summary>
-        public DateTime Date
+		/// Gets the ENVELOPE element associated with this FETCH response item.
+		/// </summary>
+		/// <remarks>
+		/// The ENVELOPE element provides the message’s header information such as
+		/// date, subject, address fields, and message identifiers. This property
+		/// exposes the <see cref="IMAP_t_Envelope"/> instance supplied when the
+		/// FETCH ENVELOPE data item was constructed.
+		/// </remarks>
+        public IMAP_t_Envelope Envelope
         {
-            get{ return m_Date; }
-        }
-
-        /// <summary>
-        /// Gets message <b>Subject</b> header field value. Value null means no <b>Subject</b> header field.
-        /// </summary>
-        public string? Subject
-        {
-            get{ return m_Subject; }
-        }
-
-        /// <summary>
-        /// Gets message <b>From</b> header field value. Value null means no <b>From</b> header field.
-        /// </summary>
-        public Mail_t_Address[]? From
-        {
-            get{ return m_pFrom; }
-        }
-
-        /// <summary>
-        /// Gets message <b>Sender</b> header field value. Value null means no <b>Sender</b> header field.
-        /// </summary>
-        public Mail_t_Address[]? Sender
-        {
-            get{ return m_pSender; }
-        }
-
-        /// <summary>
-        /// Gets message <b>Reply-To</b> header field value. Value null means no <b>Reply-To</b> header field.
-        /// </summary>
-        public Mail_t_Address[]? ReplyTo
-        {
-            get{ return m_pReplyTo; }
-        }
-
-        /// <summary>
-        /// Gets message <b>To</b> header field value. Value null means no <b>To</b> header field.
-        /// </summary>
-        public Mail_t_Address[]? To
-        {
-            get{ return m_pTo; }
-        }
-
-        /// <summary>
-        /// Gets message <b>Cc</b> header field value. Value null means no <b>Cc</b> header field.
-        /// </summary>
-        public Mail_t_Address[]? Cc
-        {
-            get{ return m_pCc; }
-        }
-
-        /// <summary>
-        /// Gets message <b>Bcc</b> header field value. Value null means no <b>Bcc</b> header field.
-        /// </summary>
-        public Mail_t_Address[]? Bcc
-        {
-            get{ return m_pBcc; }
-        }
-        
-        /// <summary>
-        /// Gets message <b>In-Reply-To</b> header field value. Value null means no <b>In-Reply-To</b> header field.
-        /// </summary>
-        public string? InReplyTo
-        {
-            get{ return m_InReplyTo; }
-        }
-        
-        /// <summary>
-        /// Gets message <b>Message-ID</b> header field value. Value null means no <b>Message-ID</b> header field.
-        /// </summary>
-        public string? MessageID
-        {
-            get{ return m_MessageID; }
+            get{ return m_pEnvelope; }
         }
 
         #endregion

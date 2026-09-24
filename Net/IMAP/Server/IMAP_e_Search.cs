@@ -13,7 +13,7 @@ namespace LumiSoft.Net.IMAP.Server
     public class IMAP_e_Search : EventArgs
     {
         private IMAP_r_ServerStatus m_pResponse;
-        private IMAP_Search_Key     m_pCriteria;
+        private IMAP_t_Search_Key     m_pCriteria;
 
         /// <summary>
         /// Default constructor.
@@ -21,7 +21,7 @@ namespace LumiSoft.Net.IMAP.Server
         /// <param name="criteria">Serach criteria.</param>
         /// <param name="response">Default IMAP server response.</param>
         /// <exception cref="ArgumentNullException">Is raised when <b>criteria</b> or <b>response</b> is null reference.</exception>
-        internal IMAP_e_Search(IMAP_Search_Key criteria,IMAP_r_ServerStatus response)
+        internal IMAP_e_Search(IMAP_t_Search_Key criteria,IMAP_r_ServerStatus response)
         {
             ArgumentNullException.ThrowIfNull(response);
             if (criteria == null){
@@ -69,7 +69,7 @@ namespace LumiSoft.Net.IMAP.Server
         /// <summary>
         /// Gets search criteria.
         /// </summary>
-        public IMAP_Search_Key Criteria
+        public IMAP_t_Search_Key Criteria
         {
             get{ return m_pCriteria; }
         }

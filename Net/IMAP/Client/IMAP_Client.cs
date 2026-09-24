@@ -1,430 +1,196 @@
-﻿using System;
-using System.IO;
-using System.Collections.Generic;
-using System.Text;
-using System.Security.Principal;
-using System.Threading;
-using System.Net.Security;
-
-using LumiSoft.Net.IO;
-using LumiSoft.Net.TCP;
-using LumiSoft.Net.AUTH;
+﻿using LumiSoft.Net.AUTH;
 using LumiSoft.Net.IMAP;
+using LumiSoft.Net.IO;
 using LumiSoft.Net.MIME;
-using System.Text.Unicode;
+using LumiSoft.Net.POP3;
+using LumiSoft.Net.POP3.Client;
+using LumiSoft.Net.TCP;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Security;
+using System.Reflection;
+using System.Security.Authentication;
+using System.Security.Principal;
+using System.Text;
 
 namespace LumiSoft.Net.IMAP.Client
 {
     /// <summary>
-    /// IMAP v4 Client. Defined in RFC 3501.
+    /// Represents an IMAP4rev1 client capable of connecting to an IMAP server,
+    /// authenticating a user, selecting mailboxes, retrieving messages, issuing
+    /// IMAP commands, and managing server-side message state.
     /// </summary>
-	/// <example>
-	/// <code>
-	/// /*
-	///  To make this code to work, you need to import following namespaces:
-	///  using LumiSoft.Net.IMAP.Client; 
-	/// */
-	/// 
-	/// using(IMAP_Client imap = new IMAP_Client()){
-    ///     imap.Connect("host",143);
-    ///     // Call Capability even if you don't care about capabilities, it also controls IMAP client features.
-    ///     imap.Capability();
-    ///     
-    ///     imap.Authenticate(... choose auth method ...);
-    /// 
-    ///     // Do do your stuff ...
-    /// }
-	/// </code>
-	/// </example>
+    /// <remarks>
+    /// <para>
+    /// This client implements the core IMAP4rev1 protocol as defined in RFC 3501,
+    /// including support for authentication, mailbox selection, message fetching,
+    /// message copying, message flag manipulation, and folder listing. The client
+    /// maintains a persistent TCP connection to the server and processes all IMAP
+    /// responses according to the protocol's tagged and untagged response model.
+    /// </para>
+    /// </remarks>
     public class IMAP_Client : TCP_Client
-    {
-        #region class Settings
-
-        /// <summary>
-        /// This class represents IMAP client settings.
-        /// </summary>
-        public class SettingsHolder
-        {
-            private int m_ResponseLineSize = 512000;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            internal SettingsHolder()
-            {
-            }
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets or sets maximum allowed IMAP server response line in bytes.
-            /// </summary>
-            /// <exception cref="ArgumentException">Is raised when value less than 32000(32kb) is set.</exception>
-            public int ResponseLineSize
-            {
-                get{ return m_ResponseLineSize; }
-
-                set{
-                    if(value < 32000){
-                        throw new ArgumentException("Value must be >= 32000(32kb).","value");
-                    }
-
-                    m_ResponseLineSize = value;
-                }
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        #region class CmdLine
-
-        /// <summary>
-        /// This class represent IMAP single command line.
-        /// </summary>
-        internal class CmdLine
-        {
-            private byte[] m_pData;
-            private string m_LogText;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="data">Command line data.</param>
-            /// <param name="logText">Command line log text.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>data</b> or <b>logText</b> is null reference.</exception>
-            public CmdLine(byte[] data,string logText)
-            {
-                if(data == null){
-                    throw new ArgumentNullException("data");
-                }
-                if(logText == null){
-                    throw new ArgumentNullException("logText");
-                }
-
-                m_pData   = data;
-                m_LogText = logText;
-            }
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets command line data.
-            /// </summary>
-            public byte[] Data
-            {
-                get{ return m_pData; }
-            }
-
-            /// <summary>
-            /// Gets command line data.
-            /// </summary>
-            public string LogText
-            {
-                get{ return m_LogText; }
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        #region class CmdAsyncOP
-
-        /// <summary>
-        /// This class is base class for simple(request -> response) IMAP commands.
-        /// </summary>
-        public abstract class CmdAsyncOP<T> : IDisposable,IAsyncOP where T:IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private List<CmdLine>                      m_pCmdLines;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-                        
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public CmdAsyncOP(EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                m_pCallback = callback;
-
-                m_pCmdLines = new List<CmdLine>();
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    // Force inhereted class to fill command line info.
-                    OnInitCmdLine(owner);
-
-                    SendCmdAndReadRespAsyncOP op = new SendCmdAndReadRespAsyncOP(m_pCmdLines.ToArray(),m_pCallback);
-                    op.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        try{
-                            // Command send/receive failed.
-                            if(op.Error != null){
-                                ArgumentNullException.ThrowIfNull(e.Value.Error);
-
-                                m_pException = e.Value.Error;
-                                m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                            }
-                            // Command send/receive succeeded.
-                            else{
-                                ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                                m_pFinalResponse = op.FinalResponse;
-
-                                // IMAP server returned error response.
-                                if(m_pFinalResponse.IsError){
-                                    m_pException = new IMAP_ClientException(m_pFinalResponse);
-                                }
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        finally{
-                            op.Dispose();
-                        }
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(op)){
-                        try{
-                            // Command send/receive failed.
-                            if(op.Error != null){
-                                m_pException = op.Error;
-                                m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                            }
-                            // Command send/receive succeeded.
-                            else{
-                                ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                                m_pFinalResponse = op.FinalResponse;                                
-
-                                // IMAP server returned error response.
-                                if (m_pFinalResponse.IsError){
-                                    m_pException = new IMAP_ClientException(m_pFinalResponse);
-                                }
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        finally{
-                            op.Dispose();
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region abstract method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected abstract void OnInitCmdLine(IMAP_Client imap);
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-                        
-            /// <summary>
-            /// Gets command lines.
-            /// </summary>
-            internal List<CmdLine> CmdLines
-            {
-                get{ return m_pCmdLines; }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<T>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<T>((T)((object)this)));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-   
-        private GenericIdentity?            m_pAuthenticatedUser = null;
+    {   
+        private Memory<byte>                m_LineReadBuffer     = new Memory<byte>(new byte[128000]);
+        private GenericIdentity?            m_pAuthdUserIdentity = null;
         private string                      m_GreetingText       = "";
         private int                         m_CommandIndex       = 1;
         private List<string>?               m_pCapabilities      = null;
+        private bool                        m_LiteralPluss       = false;
+        private bool                        m_Utf8User           = false;
+        private bool                        m_Utf8Search         = false;
         private IMAP_Client_SelectedFolder? m_pSelectedFolder    = null;
         private IMAP_Mailbox_Encoding       m_MailboxEncoding    = IMAP_Mailbox_Encoding.ImapUtf7;
-        private IdleAsyncOP?                m_pIdle              = null;
-        private SettingsHolder              m_pSettings;
+        private Task?                       m_pIdle              = null;
 
         /// <summary>
         /// Default constructor.
         /// </summary>
         public IMAP_Client()
         {
-            m_pSettings = new SettingsHolder();
         }
 
+        
+        #region override method OnConnectedAsync
+
+        /// <summary>
+        /// Handles the initial IMAP server greeting received immediately after the TCP
+        /// connection is established. According to RFC 3501 section 7.1.1, the server
+        /// must send a single untagged status response beginning with the asterisk
+        /// (<c>*</c>) tag. The greeting indicates whether the server is ready for
+        /// authentication (<c>OK</c>), has pre-authenticated the session (<c>PREAUTH</c>),
+        /// or is closing the connection (<c>BYE</c>).
+        /// 
+        /// This method reads the greeting line, verifies that it is an untagged status
+        /// response (<see cref="IMAP_r_u_ServerStatus"/>), and checks whether the status
+        /// code represents an error condition. A greeting with a non-OK status code
+        /// (<c>NO</c>, <c>BAD</c>, or <c>BYE</c>) results in an <see cref="IMAP_ClientException"/>
+        /// being thrown. For valid greetings, the human-readable greeting text is stored
+        /// for later use.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server greeting is not an untagged status response or when
+        /// the greeting contains an error status code.
+        /// </exception>
+        protected override async ValueTask OnConnectedAsync(CancellationToken cancellationToken = default)
+        {
+            /* RFC 3501 section 7.1.1 — IMAP Server Greeting
+
+               The IMAP server sends a single greeting line immediately after the TCP
+               connection is established. The greeting is always untagged and begins
+               with the asterisk ("*") response tag.
+
+               Greeting = "* " (resp-cond-auth / resp-cond-bye) CRLF
+
+               resp-cond-auth = ("OK" SP resp-text) /
+                                ("PREAUTH" SP resp-text)
+
+               resp-cond-bye  = "BYE" SP resp-text
+
+               resp-text      = [ resp-code ] SP text
+                                ; resp-text never contains IMAP literals
+                                ; resp-code is optional and enclosed in "[" ... "]"
+
+               resp-code      = "[" atom *(SP atom) "]"
+                                ; e.g. [CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED]
+
+               Examples:
+                 * OK IMAP4rev1 Service Ready
+                 * OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR] Dovecot ready.
+                 * PREAUTH IMAP server logged in as admin
+                 * BYE Server shutting down
+            */
+
+            var response = await ReadResponseAsync(true,cancellationToken);
+            if(response is not IMAP_r_u_ServerStatus){
+                throw new IMAP_ClientException(new IMAP_r_ServerStatus("*","BAD",response?.ToString() ?? ""));
+            }
+            var responseSatus = (IMAP_r_u_ServerStatus)response;
+
+            if(responseSatus.IsError){                
+                throw new IMAP_ClientException(new IMAP_r_ServerStatus("*",responseSatus.ResponseCode,responseSatus.ResponseText));
+            }
+            else{
+                m_GreetingText = responseSatus.ResponseText;
+            }
+        }
+
+        #endregion
 
         #region override method Disconnect
 
 		/// <summary>
-		/// Closes connection to IMAP server.
-		/// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not connected.</exception>
+        /// Disconnects from the IMAP server by invoking the asynchronous
+        /// <see cref="DisconnectAsync(bool, CancellationToken)"/> method with
+        /// <c>sendQuit</c> set to <c>true</c> and waiting for its completion.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This synchronous wrapper creates a <see cref="CancellationTokenSource"/>
+        /// using the client's configured <see cref="Timeout"/> value and blocks until
+        /// the asynchronous disconnect operation completes. The underlying
+        /// <see cref="DisconnectAsync(bool, CancellationToken)"/> method optionally
+        /// sends the IMAP <c>LOGOUT</c> command, reads the server's final response,
+        /// resets all session state, and closes the connection.
+        /// </para>
+        /// <para>
+        /// Any exceptions thrown by the asynchronous disconnect sequence are
+        /// propagated to the caller of this method.
+        /// </para>
+        /// </remarks>
 		public override void Disconnect()
 		{
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            DisconnectAsync(true,cts.Token).GetAwaiter().GetResult();
+		}
+
+		#endregion
+        
+        #region method DisconnectAsync
+
+        /// <summary>
+        /// Disconnects from the IMAP server and optionally sends the <c>LOGOUT</c>
+        /// command before closing the underlying connection. According to RFC 3501
+        /// section 6.1.3, the <c>LOGOUT</c> command requests that the server terminate
+        /// the session and return a final tagged status response, typically followed
+        /// by an untagged <c>* BYE</c> notification.
+        /// 
+        /// When <paramref name="sendQuit"/> is <c>true</c>, this method sends a
+        /// <c>LOGOUT</c> command using a new command tag and reads the server's final
+        /// response. Any exceptions raised during transmission or reception of the
+        /// logout sequence are suppressed, and the connection is closed regardless.
+        /// 
+        /// After the logout sequence (or immediately if <paramref name="sendQuit"/>
+        /// is <c>false</c>), all client session state is reset, including the
+        /// authenticated user, greeting text, command index, cached capabilities,
+        /// selected folder, and mailbox encoding.
+        /// </summary>
+        /// <param name="sendQuit">
+        /// If <c>true</c>, the IMAP <c>LOGOUT</c> command is sent and the server's
+        /// final response is read before disconnecting. If <c>false</c>, the client
+        /// disconnects without issuing <c>LOGOUT</c>.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous write or read
+        /// operations performed during the logout sequence.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous disconnect
+        /// operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not currently connected.
+        /// </exception>
+        public async ValueTask DisconnectAsync(bool sendQuit,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -432,395 +198,213 @@ namespace LumiSoft.Net.IMAP.Client
                 throw new InvalidOperationException("IMAP client is not connected.");
             }
 
-			try{
-                // Send LOGOUT command to server.                
-                WriteLine((m_CommandIndex++).ToString("d5") + " LOGOUT");
-			}
-			catch{
-			}
+            try{            
+                if(sendQuit){
+                    await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " LOGOUT\r\n",true,cancellationToken);
 
-            try{
-                base.Disconnect(); 
+                    _= await ReadFinalResponseAsync(true,null,cancellationToken);
+                }
             }
             catch{
             }
 
             // Reset state varibles.
-            m_pAuthenticatedUser = null;
+            m_pAuthdUserIdentity = null;
             m_GreetingText       = "";
             m_CommandIndex       = 1;
             m_pCapabilities      = null;
             m_pSelectedFolder    = null;
             m_MailboxEncoding    = IMAP_Mailbox_Encoding.ImapUtf7;
-		}
 
-		#endregion
+            base.Disconnect(); 
+        }
+
+        #endregion
 
 
         #region method StartTls
 
         /// <summary>
-        /// Switches connection to secure connection.
+        /// Executes the IMAP <c>STARTTLS</c> command synchronously by invoking
+        /// <see cref="StartTlsAsync(SslClientAuthenticationOptions, CancellationToken)"/>
+        /// and blocking until the operation completes. The STARTTLS command,
+        /// defined in RFC 3501 section 6.2.1, requests that the server begin TLS
+        /// negotiation on the existing IMAP connection.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void StartTls()
+        /// <remarks>
+        /// <para>
+        /// This synchronous wrapper creates a <see cref="CancellationTokenSource"/>
+        /// using the client's configured <see cref="Timeout"/> value and waits for
+        /// the asynchronous STARTTLS operation to finish. If the server accepts the
+        /// command with an <c>OK</c> completion response, the method performs the TLS
+        /// handshake and upgrades the underlying connection to a secure
+        /// <see cref="SslStream"/>.
+        /// </para>
+        /// <para>
+        /// After a successful TLS negotiation, the client MUST discard all previous
+        /// IMAP protocol state and MUST issue a new <c>CAPABILITY</c> command, as
+        /// required by RFC 3501. Any capabilities advertised before STARTTLS MUST NOT
+        /// be used after the secure channel is established.
+        /// </para>
+        /// <para>
+        /// Any exceptions raised by the underlying asynchronous operation—including
+        /// server rejection (<c>NO</c>/<c>BAD</c>) or TLS handshake failures—are
+        /// propagated to the caller.
+        /// </para>
+        /// </remarks>
+        /// <param name="sslOptions">
+        /// Optional TLS configuration used when creating the secure stream. If
+        /// <c>null</c>, default TLS settings are applied.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, when the client is already
+        /// authenticated, or when the connection is already secure.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server rejects the <c>STARTTLS</c> command.
+        /// </exception>
+        /// <exception cref="AuthenticationException">
+        /// Thrown when the TLS handshake fails after the server accepts STARTTLS.
+        /// </exception>
+        public void StartTls(SslClientAuthenticationOptions? sslOptions)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(this.IsSecureConnection){
-                throw new InvalidOperationException("Connection is already secure.");
-            }
-            if(this.IsAuthenticated){
-                throw new InvalidOperationException("STARTTLS is only valid in not-authenticated state.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            using(StartTlsAsyncOP op = new StartTlsAsyncOP(null,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<StartTlsAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.StartTlsAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }            
+            StartTlsAsync(sslOptions,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
         #region method StartTlsAsync
 
-        #region class StartTlsAsyncOP
-
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.StartTlsAsync"/> asynchronous operation.
+        /// Sends the IMAP <c>STARTTLS</c> command to the server and, if accepted,
+        /// upgrades the existing plaintext connection to a secure TLS connection
+        /// using the provided <see cref="SslClientAuthenticationOptions"/>.
+        /// STARTTLS is defined in RFC 3501 section 6.2.1.
         /// </summary>
-        public class StartTlsAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                               m_pLock          = new object();
-            private AsyncOP_State                        m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                           m_pException     = null;
-            private RemoteCertificateValidationCallback? m_pCertCallback  = null;
-            private IMAP_r_ServerStatus?                 m_pFinalResponse = null;
-            private IMAP_Client?                         m_pImapClient    = null;
-            private bool                                 m_RiseCompleted  = false;
-            private EventHandler<EventArgs<IMAP_r_u>>?   m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="certCallback">SSL server certificate validation callback. Value null means any certificate is accepted.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public StartTlsAsyncOP(RemoteCertificateValidationCallback? certCallback,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {                
-                m_pCertCallback = certCallback;
-                m_pCallback     = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 3501 6.2.1. STARTTLS Command.
-                        Arguments:  none
-
-                        Responses:  no specific response for this command
-
-                        Result:     OK - starttls completed, begin TLS negotiation
-                                    BAD - command unknown or arguments invalid
-
-                        A [TLS] negotiation begins immediately after the CRLF at the end
-                        of the tagged OK response from the server.  Once a client issues a
-                        STARTTLS command, it MUST NOT issue further commands until a
-                        server response is seen and the [TLS] negotiation is complete.
-
-                        The server remains in the non-authenticated state, even if client
-                        credentials are supplied during the [TLS] negotiation.  This does
-                        not preclude an authentication mechanism such as EXTERNAL (defined
-                        in [SASL]) from using client identity determined by the [TLS]
-                        negotiation.
-
-                        Once [TLS] has been started, the client MUST discard cached
-                        information about server capabilities and SHOULD re-issue the
-                        CAPABILITY command.  This is necessary to protect against man-in-
-                        the-middle attacks which alter the capabilities list prior to
-                        STARTTLS. 
-                    */
-
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " STARTTLS\r\n");
-                    string cmdLineLog = Encoding.UTF8.GetString(cmdLine).TrimEnd();
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        ProcessCmdResult(e.Value);
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        ProcessCmdResult(args);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ProcessCmdResult
-
-            /// <summary>
-            /// Processes STARTTLS command result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProcessCmdResult(SendCmdAndReadRespAsyncOP op)
-            {
-                ArgumentNullException.ThrowIfNull(m_pImapClient);
-
-                try {
-                    // Command send/receive failed.
-                    if(op.Error != null){
-                        m_pException = op.Error;
-                    }
-                    // Command send/receive succeeded.
-                    else{
-                        ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                        m_pFinalResponse = op.FinalResponse;
-
-                        // IMAP server returned error response.
-                        if(op.FinalResponse.IsError){
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        // IMAP server returned success response.
-                        else{
-                            // Start TLS/SSl handshake.
-                            TCP_Client.SwitchToSecureAsyncOP tlsOP = new SwitchToSecureAsyncOP(m_pCertCallback);
-                            tlsOP.CompletedAsync += delegate(object? sender,EventArgs<SwitchToSecureAsyncOP> e){
-                                if(e.Value.Error != null){
-                                    m_pException = e.Value.Error;
-                                }
-                          
-                                SetState(AsyncOP_State.Completed);
-                            };
-                            // Operation completed synchronously.
-                            if(!m_pImapClient.SwitchToSecureAsync(tlsOP)){
-                                if(tlsOP.Error != null){
-                                    m_pException = tlsOP.Error;
-                                }
-
-                                SetState(AsyncOP_State.Completed);
-                            }
-                        }
-                    }
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<StartTlsAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<StartTlsAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes STARTTLS command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="StartTlsAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool StartTlsAsync(StartTlsAsyncOP op)
+        /// <remarks>
+        /// <para>
+        /// When the client issues <c>STARTTLS</c>, the server replies with a
+        /// tagged completion response. If the server returns <c>OK</c>, the client
+        /// MUST immediately begin TLS negotiation on the current TCP connection.
+        /// If the server returns <c>NO</c> or <c>BAD</c>, TLS is not available and
+        /// the command fails.
+        /// </para>
+        /// <para>
+        /// After a successful TLS handshake, the client MUST discard all previous
+        /// IMAP protocol state and MUST issue a new <c>CAPABILITY</c> command.
+        /// Any capabilities advertised before STARTTLS MUST NOT be used after the
+        /// secure channel is established. This requirement ensures that capability
+        /// changes related to authentication mechanisms or security extensions are
+        /// correctly reflected.
+        /// </para>
+        /// <para>
+        /// STARTTLS is only valid in the non‑authenticated state. Once the client
+        /// has authenticated, the command MUST NOT be used. The command also cannot
+        /// be issued if the connection is already secure.
+        /// </para>
+        /// </remarks>
+        /// <param name="sslOptions">
+        /// Optional TLS configuration used when creating the <see cref="SslStream"/>
+        /// after the server accepts STARTTLS. If <c>null</c>, default TLS settings
+        /// are applied.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous write or read
+        /// operations associated with sending the command and performing the TLS
+        /// handshake.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous STARTTLS
+        /// negotiation and TLS upgrade process.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, when the client is already
+        /// authenticated, or when the connection is already secure.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server rejects the <c>STARTTLS</c> command with a
+        /// <c>NO</c> or <c>BAD</c> completion response.
+        /// </exception>
+        /// <exception cref="System.Security.Authentication.AuthenticationException">
+        /// Thrown when the TLS handshake fails after the server accepts STARTTLS.
+        /// </exception>
+        public async ValueTask StartTlsAsync(SslClientAuthenticationOptions? sslOptions,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
             if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
+				throw new InvalidOperationException("You must connect first.");
+			}
+			if(this.IsAuthenticated){
+				throw new InvalidOperationException("The STLS command is only valid in non-authenticated state.");
+			}
             if(this.IsSecureConnection){
                 throw new InvalidOperationException("Connection is already secure.");
             }
-            if(this.IsAuthenticated){
-                throw new InvalidOperationException("STARTTLS is only valid in not-authenticated state.");
-            }          
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            /* RFC 3501 section 6.2.1 — STARTTLS Command
+
+               The STARTTLS command requests that the server begin TLS negotiation
+               over the existing IMAP connection. If the server supports TLS, it
+               replies with a  OK completion response and the client MUST immediately
+               begin the TLS handshake. If the server does not support TLS, it replies
+               with a NO or BAD completion response.
+
+               STARTTLS-Command = tag SP "STARTTLS" CRLF
+
+               Server Responses:
+                 - If TLS is available:
+                       tag SP "OK" SP resp-text CRLF
+                       (Client MUST begin TLS handshake immediately)
+                 - If TLS is not available:
+                       tag SP "NO" SP resp-text CRLF
+                       or
+                       tag SP "BAD" SP resp-text CRLF
+
+               Notes:
+                 - After a successful TLS negotiation, the client MUST discard all
+                   previous IMAP protocol state and MUST issue a new CAPABILITY
+                   command. Any capabilities advertised before STARTTLS MUST NOT be
+                   used after TLS is established.
+                 - STARTTLS is only valid in the non-authenticated state. Once the
+                   client has authenticated, STARTTLS MUST NOT be used.
+                 - The server MUST NOT advertise LOGINDISABLED after TLS is active.
+                 - STARTTLS does not change the selected mailbox; however, because
+                   the client MUST treat the session as new, it MUST reissue any
+                   required commands (e.g., SELECT).
+
+               Example:
+                 C: A001 STARTTLS
+                 S: A001 OK Begin TLS negotiation
+                 (TLS handshake begins)
+                 C: A002 CAPABILITY
+                 S: * CAPABILITY IMAP4rev1 AUTH=PLAIN IDLE UIDPLUS
+                 S: A002 OK CAPABILITY completed
+            */
+
+
+            await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " STARTTLS\r\n",true,cancellationToken);
+
+            var serverResponse = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(serverResponse.IsSuccess){
+                LogAddText("Starting TLS handshake.");
+
+                await SwitchToSecureAsync(sslOptions,cancellationToken);
+
+                LogAddText("TLS handshake completed successfully.");
+            }
+            else{
+                throw new IMAP_ClientException(serverResponse);
+            }
         }
 
         #endregion
@@ -829,17 +413,101 @@ namespace LumiSoft.Net.IMAP.Client
         #region method Login
 
         /// <summary>
-        /// Authenticates user using IMAP-LOGIN method.
+        /// Performs a synchronous IMAP <c>LOGIN</c> operation using the specified
+        /// username and password. This method is a blocking wrapper around
+        /// <see cref="LoginAsync(string,string,CancellationToken)"/> and will not
+        /// return until authentication has completed or the operation times out.
         /// </summary>
-        /// <param name="user">User name.</param>
-        /// <param name="password">Password.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>user</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
+        /// <param name="user">
+        /// The IMAP username. The value must not be <c>null</c> or empty. The username
+        /// is encoded as either a quoted string or a literal depending on its content.
+        /// </param>
+        /// <param name="password">
+        /// The IMAP password. As with the username, the password is encoded either as
+        /// a quoted string or a literal segment based on its content.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, is already authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="user"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="user"/> is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns a <c>NO</c> or <c>BAD</c> response to the
+        /// <c>LOGIN</c> command.
+        /// </exception>
+        /// <remarks>
+        /// This method creates a <see cref="CancellationTokenSource"/> using the
+        /// client's configured timeout and then invokes <c>LoginAsync</c> in a
+        /// synchronous manner via <c>GetAwaiter().GetResult()</c>. Any exceptions
+        /// thrown by the asynchronous operation are propagated directly to the caller.
+        /// 
+        /// Because this method blocks the calling thread, it should be used only in
+        /// environments where synchronous IMAP operations are appropriate. For
+        /// asynchronous workflows, <see cref="LoginAsync(string,string,CancellationToken)"/>
+        /// should be used instead.
+        /// </remarks>
         public void Login(string user,string password)
         {            
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            LoginAsync(user,password,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method LoginAsync
+
+        /// <summary>
+        /// Sends an IMAP <c>LOGIN</c> command using the supplied username and password,
+        /// performing authentication according to RFC 3501. The method constructs the
+        /// command using quoted strings or literal segments as required and transitions
+        /// the client into the authenticated state upon success.
+        /// </summary>
+        /// <param name="user">
+        /// The IMAP username. The value may be sent either as a quoted string or as a
+        /// literal depending on whether it contains characters that require literal
+        /// encoding.
+        /// </param>
+        /// <param name="password">
+        /// The IMAP password. As with the username, the password is encoded either as a
+        /// quoted string or a literal segment based on its content. Literal encoding is
+        /// used when the password contains characters that cannot appear safely inside
+        /// a quoted string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous authentication
+        /// operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, is already authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if the <paramref name="user"/> parameter is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if the <paramref name="user"/> parameter is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns a <c>NO</c> or <c>BAD</c> response to the
+        /// <c>LOGIN</c> command.
+        /// </exception>
+        public async ValueTask LoginAsync(string user,string password,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -858,345 +526,228 @@ namespace LumiSoft.Net.IMAP.Client
             if(user == string.Empty){
                 throw new ArgumentException("Argument 'user' value must be specified.");
             }
-                        
-            using(LoginAsyncOP op = new LoginAsyncOP(user,password,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<LoginAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.LoginAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-                    wait.Close();
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            /* RFC 3501 section 6.2.3 — LOGIN Command
+
+               The LOGIN command requests that the server authenticate the client
+               using a plaintext username and password. LOGIN is only permitted
+               in the non-authenticated state. If authentication succeeds, the
+               server transitions the session to the authenticated state.
+
+               LOGIN-Command = tag SP "LOGIN" SP userid SP password CRLF
+
+               Server Responses:
+                 - On success:
+                       tag SP "OK" SP resp-text CRLF
+                 - On failure:
+                       tag SP "NO" SP resp-text CRLF
+                 - On protocol error:
+                       tag SP "BAD" SP resp-text CRLF
+
+               Notes:
+                 - The LOGIN command transmits credentials in plaintext and SHOULD NOT
+                   be used without a secure channel (e.g., after STARTTLS).
+                 - Servers MAY disable LOGIN until TLS is active by advertising the
+                   LOGINDISABLED capability.
+                 - If authentication succeeds, the server MUST NOT send a PREAUTH
+                   response; PREAUTH is only permitted in the initial greeting.
+                 - After successful LOGIN, the client is in the authenticated state
+                   and may issue mailbox-selection commands such as SELECT or EXAMINE.
+                 - LOGIN is mutually exclusive with AUTHENTICATE; clients SHOULD prefer
+                   SASL mechanisms when available.
+
+               Example:
+                 C: A001 LOGIN "fred" "secret"
+                 S: A001 OK LOGIN completed
+
+                 C: A002 LOGIN "fred" "wrongpass"
+                 S: A002 NO LOGIN failed
+
+                 C: A003 LOGIN
+                 S: A003 BAD Missing arguments
+            */
+
+            List<CommandPart> cmdItems = new List<CommandPart> ();
+            StringBuilder     cmdLine  = new StringBuilder();
+            string            cmdTag   = (m_CommandIndex++).ToString("d5");
+
+            cmdLine.Append($"{cmdTag} LOGIN");
+
+            // User must be literal string.
+            if(IMAP_Utils.MustUseLiteralString(user,m_Utf8User)){
+                byte[] literal = Encoding.UTF8.GetBytes(user);
+
+                cmdLine.Append(" {" + literal.Length + "}\r\n");
+                cmdItems.Add(new CommandPart(false,cmdLine.ToString(),null));
+                cmdItems.Add(new CommandPart(true,null,literal));
+                cmdLine.Clear();
+            }
+            // User normal quoted string.
+            else{
+                cmdLine.Append($" \"{user}\"");
+            }
+
+            // Password must be literal string.
+            if(IMAP_Utils.MustUseLiteralString(password,false)){
+                byte[] literal = Encoding.UTF8.GetBytes(password);
+
+                cmdLine.Append(" {" + literal.Length + "}\r\n");
+                cmdItems.Add(new CommandPart(false,cmdLine.ToString(),null));
+                cmdItems.Add(new CommandPart(true,null,literal));
+                cmdLine.Clear();
+            }
+            // Password normal quoted string.
+            else{
+                cmdLine.Append($" \"{password}\"");
+            }
+
+            // Command line terminator.
+            cmdLine.Append("\r\n");
+            cmdItems.Add(new CommandPart(false,cmdLine.ToString(),null));
+
+            bool isDebug = false;
+            #if DEBUG
+                isDebug = true;
+            #else
+                LogAddWrite(0,$"{cmdTag} LOGIN <username omitted> <password omitted>");
+            #endif
+
+            await SendCommandAsync(cmdItems.ToArray(),isDebug,cancellationToken);
+            
+            var response = await ReadFinalResponseAsync(isDebug,null,cancellationToken);
+            if(response.IsSuccess){
+                m_pAuthdUserIdentity = new GenericIdentity(user,"IMAP-LOGIN");
+            }
+            else{
+                throw new IMAP_ClientException(response);
             }
         }
 
         #endregion
 
-        #region method LoginAsync
-
-        #region class LoginAsyncOP
+        #region method AuthGetStrongestMethod
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.LoginAsync"/> asynchronous operation.
+        /// Selects the strongest SASL authentication mechanism supported by both the
+        /// IMAP server and this client. Mechanisms are evaluated in the following
+        /// preference order: NTLM (when applicable), DIGEST-MD5, CRAM-MD5, LOGIN,
+        /// and PLAIN.
         /// </summary>
-        public class LoginAsyncOP : IDisposable,IAsyncOP
+        /// <param name="userName">
+        /// The user name for authentication. For NTLM, this may include a domain
+        /// prefix in the form <c>DOMAIN\username</c>.
+        /// </param>
+        /// <param name="password">
+        /// The user password.
+        /// </param>
+        /// <returns>
+        /// An <see cref="AUTH_SASL_Client"/> instance representing the strongest
+        /// supported authentication mechanism.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="userName"/> or <paramref name="password"/> is
+        /// <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if any argument contains an invalid value.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Thrown if the IMAP server does not advertise any SASL mechanisms, or if
+        /// none of the advertised mechanisms are supported by this client.
+        /// </exception>
+        public AUTH_SASL_Client AuthGetStrongestMethod(string userName,string password)
         {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private string                             m_User;
-            private string                             m_Password;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="user">User login name.</param>
-            /// <param name="password">User password.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>user</b> or <b>password</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public LoginAsyncOP(string user,string password,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                if(user == null){
-                    throw new ArgumentNullException("user");
-                }
-                if(string.IsNullOrEmpty(user)){
-                    throw new ArgumentException("Argument 'user' value must be specified.","user");
-                }
-                if(password == null){
-                    throw new ArgumentNullException("password");
-                }
-
-                m_User      = user;
-                m_Password  = password;
-                m_pCallback = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 3501 6.2.3.  LOGIN Command
-                        Arguments:  user name
-                                    password
-
-                        Responses:  no specific responses for this command
-
-                        Result:     OK - login completed, now in authenticated state
-                                    NO - login failure: user name or password rejected
-                                    BAD - command unknown or arguments invalid
-
-                        The LOGIN command identifies the client to the server and carries
-                        the plaintext password authenticating this user.
-
-                        A server MAY include a CAPABILITY response code in the tagged OK
-                        response to a successful LOGIN command in order to send
-                        capabilities automatically.  It is unnecessary for a client to
-                        send a separate CAPABILITY command if it recognizes these
-                        automatic capabilities.
-                    */
-
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " LOGIN " + TextUtils.QuoteString(m_User) + " " + TextUtils.QuoteString(m_Password) + "\r\n");
-                    string cmdLineLog = (m_pImapClient.m_CommandIndex - 1).ToString("d5") + " LOGIN " + TextUtils.QuoteString(m_User) + " <PASSWORD-REMOVED>";
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        try{
-                            // Command send/receive failed.
-                            if(args.Error != null){
-                                m_pException = e.Value.Error;
-                            }
-                            // Command send/receive succeeded.
-                            else{
-                                ArgumentNullException.ThrowIfNull(args.FinalResponse);
-
-                                m_pFinalResponse = args.FinalResponse;
-
-                                // IMAP server returned error response.
-                                if(args.FinalResponse.IsError){
-                                    m_pException = new IMAP_ClientException(args.FinalResponse);
-                                }
-                                // IMAP server returned success response.
-                                else{
-                                    m_pImapClient.m_pAuthenticatedUser = new GenericIdentity(m_User,"IMAP-LOGIN");
-                                }
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        finally{
-                            args.Dispose();
-                        }
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        try{
-                            // Command send/receive failed.
-                            if(args.Error != null){
-                                m_pException = args.Error;
-                            }
-                            // Command send/receive succeeded.
-                            else{
-                                ArgumentNullException.ThrowIfNull(args.FinalResponse);
-
-                                m_pFinalResponse = args.FinalResponse;
-
-                                // IMAP server returned error response.
-                                if(args.FinalResponse.IsError){
-                                    m_pException = new IMAP_ClientException(args.FinalResponse);
-                                }
-                                // IMAP server returned success response.
-                                else{
-                                    m_pImapClient.m_pAuthenticatedUser = new GenericIdentity(m_User,"IMAP-LOGIN");
-                                }
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        finally{
-                            args.Dispose();
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<LoginAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<LoginAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
+            return AuthGetStrongestMethod(null,userName,password);
         }
 
-        #endregion
-
         /// <summary>
-        /// Executes LOGIN command.
+        /// Selects the strongest SASL authentication mechanism supported by both the
+        /// IMAP server and this client. Mechanisms are evaluated in the following
+        /// preference order: NTLM (when applicable), DIGEST-MD5, CRAM-MD5, LOGIN,
+        /// and PLAIN.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="LoginAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool LoginAsync(LoginAsyncOP op)
+        /// <param name="domain">
+        /// Optional domain name used by mechanisms that require it, such as NTLM.
+        /// </param>
+        /// <param name="userName">
+        /// The user name for authentication. For NTLM, this may include a domain
+        /// prefix in the form <c>DOMAIN\username</c>.
+        /// </param>
+        /// <param name="password">
+        /// The user password.
+        /// </param>
+        /// <returns>
+        /// An <see cref="AUTH_SASL_Client"/> instance representing the strongest
+        /// supported authentication mechanism.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="userName"/> or <paramref name="password"/> is
+        /// <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if any argument contains an invalid value.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Thrown if the IMAP server does not advertise any SASL mechanisms, or if
+        /// none of the advertised mechanisms are supported by this client.
+        /// </exception>
+        public AUTH_SASL_Client AuthGetStrongestMethod(string? domain,string userName,string password)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
             if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
+				throw new InvalidOperationException("You must connect first.");
+			}
+            if(userName == null){
+                throw new ArgumentNullException(nameof(userName));
             }
-            if(this.IsAuthenticated){
-                throw new InvalidOperationException("Connection is already authenticated.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            if(password == null){
+                throw new ArgumentNullException(nameof(password));
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
+            ArgumentNullException.ThrowIfNull(this.RemoteEndPoint);
 
-            return op.Start(this);
+            List<string> authMethods = new List<string>(this.SaslAuthMethods);
+            if(authMethods.Count == 0){
+                throw new NotSupportedException("IMAP server does not support authentication.");
+            }
+            else if(authMethods.Contains("NTLM") && (!string.IsNullOrEmpty(domain) || userName.IndexOf('\\') > -1)){
+                if(!string.IsNullOrEmpty(domain)){
+                    return new AUTH_SASL_Client_Ntlm(domain,userName, password);
+                }
+                else{
+                    string[] domainUsername = userName.Split('\\');
+
+                    return new AUTH_SASL_Client_Ntlm(domainUsername[0],domainUsername[1],password);
+                }
+            }
+            else if(authMethods.Contains("DIGEST-MD5")){
+                return new AUTH_SASL_Client_DigestMd5("POP3",this.RemoteEndPoint.Address.ToString(),userName,password);
+            }
+            else if(authMethods.Contains("CRAM-MD5")){
+                return new AUTH_SASL_Client_CramMd5(userName,password);
+            }
+            else if(authMethods.Contains("LOGIN")){
+                return new AUTH_SASL_Client_Login(userName,password);
+            }
+            else if(authMethods.Contains("PLAIN")){
+                return new AUTH_SASL_Client_Plain(userName,password);
+            }
+            else{
+                throw new NotSupportedException("We don't support any of the IMAP server authentication methods.");
+            }
         }
 
         #endregion
@@ -1204,15 +755,120 @@ namespace LumiSoft.Net.IMAP.Client
         #region method Authenticate
 
         /// <summary>
-        /// Sends AUTHENTICATE command to IMAP server.
+        /// Performs a synchronous IMAP <c>AUTHENTICATE</c> operation using the specified
+        /// SASL mechanism. This method is a blocking wrapper around
+        /// <see cref="AuthenticateAsync(AUTH_SASL_Client, CancellationToken)"/> and will
+        /// not return until the SASL authentication exchange has completed.
         /// </summary>
-        /// <param name="sasl">SASL authentication.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>sasl</b> is null reference.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when IMAP server returns error.</exception>
+        /// <param name="sasl">
+        /// The SASL client mechanism instance responsible for generating and processing
+        /// base64-encoded challenge/response data. The mechanism name must match one of
+        /// the SASL mechanisms advertised by the server in the CAPABILITY response.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, is already authenticated, or if the
+        /// <paramref name="sasl"/> parameter is <c>null</c>.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns a <c>NO</c> or <c>BAD</c> status during the
+        /// authentication exchange.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method creates a <see cref="CancellationTokenSource"/> using the
+        /// client's configured timeout and invokes <c>AuthenticateAsync</c> in a
+        /// synchronous manner via <c>GetAwaiter().GetResult()</c>. Any exceptions
+        /// thrown by the asynchronous operation are propagated directly to the caller.
+        /// </para>
+        ///
+        /// <para>
+        /// Because this method blocks the calling thread, it should be used only in
+        /// environments where synchronous IMAP operations are appropriate. For
+        /// asynchronous workflows, <see cref="AuthenticateAsync(AUTH_SASL_Client, CancellationToken)"/>
+        /// should be used instead.
+        /// </para>
+        /// </remarks>
         public void Authenticate(AUTH_SASL_Client sasl)
         {            
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            AuthenticateAsync(sasl,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method AuthenticateAsync
+
+        /// <summary>
+        /// Performs IMAP authentication using the <c>AUTHENTICATE</c> command and the
+        /// specified SASL mechanism. This method implements the SASL challenge/response
+        /// exchange defined in RFC 3501, RFC 4422, and RFC 4959 (SASL-IR).
+        /// </summary>
+        /// <param name="sasl">
+        /// The SASL client mechanism instance responsible for generating and processing
+        /// base64-encoded challenge/response data. The mechanism name must match one of
+        /// the SASL mechanisms advertised by the server in the CAPABILITY response.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the authentication operation.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous authentication
+        /// exchange. The method completes when the server returns a final tagged
+        /// <c>OK</c>, <c>NO</c>, or <c>BAD</c> response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, is already authenticated, or if the
+        /// SASL mechanism is <c>null</c>.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns a <c>NO</c> or <c>BAD</c> status during the
+        /// authentication exchange.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>AUTHENTICATE</c> command initiates a SASL authentication sequence.
+        /// After sending the mechanism name (and optional initial response when the
+        /// server advertises the <c>SASL-IR</c> capability), the client and server
+        /// exchange base64-encoded challenge/response data until the server returns a
+        /// final tagged status response.
+        /// </para>
+        ///
+        /// <para>
+        /// Protocol rules:
+        /// </para>
+        /// <list type="bullet">
+        /// <item><description>
+        /// The server sends continuation prompts (<c>+</c>) containing base64-encoded
+        /// challenge data.
+        /// </description></item>
+        /// <item><description>
+        /// The client responds with base64-encoded data generated by the SASL
+        /// mechanism.
+        /// </description></item>
+        /// <item><description>
+        /// The exchange continues until the server sends a tagged <c>OK</c>,
+        /// <c>NO</c>, or <c>BAD</c> response.
+        /// </description></item>
+        /// <item><description>
+        /// If the server advertises <c>SASL-IR</c>, the client MAY send an initial
+        /// response on the same line as the <c>AUTHENTICATE</c> command.
+        /// </description></item>
+        /// </list>
+        ///
+        /// <para>
+        /// Upon receiving a tagged <c>OK</c> response, the client transitions into the
+        /// authenticated state and records the authenticated identity.
+        /// </para>
+        /// </remarks>
+        public async ValueTask AuthenticateAsync(AUTH_SASL_Client sasl,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -1221,366 +877,239 @@ namespace LumiSoft.Net.IMAP.Client
 			}
             if(this.IsAuthenticated){
                 throw new InvalidOperationException("Connection is already authenticated.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(sasl == null){
-                throw new ArgumentNullException("sasl");
-            }
-                        
-            using(AuthenticateAsyncOP op = new AuthenticateAsyncOP(sasl)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<AuthenticateAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.AuthenticateAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-                    
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method AuthenticateAsync
-
-        #region class AuthenticateAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.AuthenticateAsync"/> asynchronous operation.
-        /// </summary>
-        public class AuthenticateAsyncOP : IDisposable,IAsyncOP
-        {
-            private object           m_pLock         = new object();
-            private AsyncOP_State    m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?       m_pException    = null;
-            private IMAP_Client?     m_pImapClient   = null;
-            private AUTH_SASL_Client m_pSASL;
-            private bool             m_RiseCompleted = false;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="sasl">SASL authentication.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>sasl</b> is null reference.</exception>
-            public AuthenticateAsyncOP(AUTH_SASL_Client sasl)
-            {
-                if(sasl == null){
-                    throw new ArgumentNullException("sasl");
-                }
-
-                m_pSASL = sasl;
+                throw new ArgumentNullException(nameof(sasl));
             }
 
-            #region method Dispose
+            /* RFC 3501 section 6.2.2 — AUTHENTICATE Command
+               RFC 4959 — SASL Initial Client Response Capability (SASL-IR)
+               RFC 4422 — Simple Authentication and Security Layer (SASL) Framework
 
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
+               The AUTHENTICATE command initiates a SASL authentication exchange between
+               the client and server. Unlike LOGIN, which transmits credentials in
+               plaintext, AUTHENTICATE uses a challenge/response mechanism defined by the
+               selected SASL mechanism.
+
+               AUTHENTICATE-Command = tag SP "AUTHENTICATE" SP auth-type [SP initial-response] CRLF
+
+               SASL Exchange:
+                 - After receiving the AUTHENTICATE command, the server sends a
+                   continuation response ("+") containing a base64-encoded challenge.
+                 - The client responds with base64-encoded data appropriate for the SASL
+                   mechanism.
+                 - This challenge/response cycle continues until the server returns a
+                   tagged OK, NO, or BAD response.
+
+               Initial Client Response (RFC 4959 — SASL-IR):
+                 - Servers advertise support for initial client responses using the
+                   "SASL-IR" capability.
+                 - If SASL-IR is present, the client MAY send an initial response on the
+                   same line as the AUTHENTICATE command.
+                 - If the initial response is empty, the client sends "=" (base64 of empty
+                   string).
+                 - If SASL-IR is NOT advertised, the client MUST NOT send an initial
+                   response and must wait for the server's first continuation prompt.
+
+               Server Responses:
+                 - "+" SP base64-challenge CRLF
+                 - tag SP "OK" SP resp-text CRLF      — authentication succeeded
+                 - tag SP "NO" SP resp-text CRLF      — authentication failed
+                 - tag SP "BAD" SP resp-text CRLF     — command rejected or malformed
+
+               Notes:
+                 - AUTHENTICATE does not use IMAP literal syntax ({N}). All SASL data is
+                   transmitted as base64-encoded lines terminated by CRLF.
+                 - The server MUST advertise supported SASL mechanisms via CAPABILITY.
+                 - The client SHOULD prefer AUTHENTICATE over LOGIN when secure mechanisms
+                   are available.
+                 - Servers MAY disable plaintext mechanisms (e.g., PLAIN) until TLS is
+                   active by advertising LOGINDISABLED.
+                 - The client MUST NOT send additional IMAP commands until the SASL
+                   exchange completes.
+
+               Example (PLAIN with SASL-IR):
+                 C: A001 AUTHENTICATE PLAIN AHJlZEBleGFtcGxlLmNvbQBwYXNzd29yZA==
+                 S: A001 OK Authentication successful
+
+               Example (PLAIN without SASL-IR):
+                 C: A002 AUTHENTICATE PLAIN
+                 S: +
+                 C: AHJlZEBleGFtcGxlLmNvbQBwYXNzd29yZA==
+                 S: A002 OK Authentication successful
+
+               Example (CRAM-MD5):
+                 C: A003 AUTHENTICATE CRAM-MD5
+                 S: + PDEyMzQuNTY3ODkwMTIzNEBleGFtcGxlLmNvbT4=
+                 C: cmVkIDBmYzE5Y2QzYjYzYzY5YzQzYzQzYzQzYzQz
+                 S: A003 OK CRAM-MD5 authentication successful
+            */
+
+            string authCommand;
+            if(sasl.SupportsInitialResponse && SupportsCapability("SASL-IR")){
+                authCommand = (m_CommandIndex++).ToString("d5") + " AUTHENTICATE " + sasl.Name + " " + Convert.ToBase64String(sasl.Continue(null)) + "\r\n";
+            }
+            else{
+                authCommand = (m_CommandIndex++).ToString("d5") + " AUTHENTICATE " + sasl.Name + "\r\n";
+            }
+
+            await SendCommandLineAsync(authCommand,false,cancellationToken);
+            #if DEBUG
+                LogAddWrite(authCommand.Length,authCommand.Trim());
+            #else
+                LogAddWrite(authCommand.Length,"Client response sent.");
+            #endif
+
+            while(true){
+                var serverResponse = await ReadFinalResponseAsync(true,null,cancellationToken);
                 
-                m_pException  = null;
-                m_pImapClient = null;
+                // Authentication suceeded.
+                if(serverResponse.IsSuccess){
+                    m_pAuthdUserIdentity = new GenericIdentity(sasl.UserName,sasl.Name);
 
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
-                m_pImapClient = owner;
-
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-
-                    /* RFC 3501 6.2.2.  AUTHENTICATE Command.
-
-                        Arguments:  authentication mechanism name
-
-                        Responses:  continuation data can be requested
-
-                        Result:     OK - authenticate completed, now in authenticated state
-                                    NO - authenticate failure: unsupported authentication
-                                         mechanism, credentials rejected
-                                    BAD - command unknown or arguments invalid,
-                                          authentication exchange cancelled
-                    */
-
-                    if (m_pSASL.SupportsInitialResponse && m_pImapClient.SupportsCapability("SASL-IR")){
-                        byte[] buffer = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " AUTHENTICATE " + m_pSASL.Name + " " + Convert.ToBase64String(m_pSASL.Continue(null)) + "\r\n");
-                            
-                        // Log
-                        m_pImapClient.LogAddWrite(buffer.Length,Encoding.UTF8.GetString(buffer).TrimEnd());
-
-                        // Start command sending.
-                        m_pImapClient.TcpStream.BeginWrite(buffer,0,buffer.Length,this.AuthenticateCommandSendingCompleted,null);
-                    }
-                    else{
-                        byte[] buffer = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " AUTHENTICATE " + m_pSASL.Name + "\r\n");
-
-                        // Log
-                        m_pImapClient.LogAddWrite(buffer.Length,(m_pImapClient.m_CommandIndex++).ToString("d5") + " AUTHENTICATE " + m_pSASL.Name);
-
-                        // Start command sending.
-                        m_pImapClient.TcpStream.BeginWrite(buffer,0,buffer.Length,this.AuthenticateCommandSendingCompleted,null);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + x.Message,x);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
                     return;
                 }
+                // Continue authenticating.
+                else if(serverResponse.IsContinue){
+                    // + base64Data, we need to decode it and pass to SASL auth mechanism.
 
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
+                    // Pass server response to SASL authentication.
+                    byte[] saslResponse = sasl.Continue(Convert.FromBase64String(serverResponse.ResponseText.Trim()));
+                    
+                    string clientResponse;
+                    // SASL auth requested canel. Cancel reply is not encoded single token '='.
+                    if(saslResponse.Length == 1 && saslResponse[0] == '='){
+                        clientResponse = "=";
                     }
-                }
-            }
-
-            #endregion
-
-            #region method AuthenticateCommandSendingCompleted
-
-            /// <summary>
-            /// Is called when AUTHENTICATE command sending has finished.
-            /// </summary>
-            /// <param name="ar">Asynchronous result.</param>
-            private void AuthenticateCommandSendingCompleted(IAsyncResult ar)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-
-                    m_pImapClient.TcpStream.EndWrite(ar);
-
-                    // Read IMAP server response.
-                    ReadFinalResponseAsyncOP op = new ReadFinalResponseAsyncOP(null);
-                    op.CompletedAsync += delegate(object? s,EventArgs<ReadFinalResponseAsyncOP> e){
-                        AuthenticateReadResponseCompleted(op);
-                    };
-                    if(!m_pImapClient.ReadFinalResponseAsync(op)){
-                        AuthenticateReadResponseCompleted(op);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient?.LogAddException("Exception: " + x.Message,x);
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-            #region method AuthenticateReadResponseCompleted
-            
-            /// <summary>
-            /// Is called when IMAP server response reading has completed.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void AuthenticateReadResponseCompleted(ReadFinalResponseAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Continue authenticating.
-                    if (op.FinalResponse.IsContinue){
-                        // + base64Data, we need to decode it.
-                        byte[] serverResponse = Convert.FromBase64String(op.FinalResponse.ResponseText);
-                        
-                        byte[] clientResponse = m_pSASL.Continue(serverResponse);
-
-                        // We need just send SASL returned auth-response as base64.
-                        byte[] buffer = Encoding.UTF8.GetBytes(Convert.ToBase64String(clientResponse) + "\r\n");
-
-                        // Log
-                        m_pImapClient.LogAddWrite(buffer.Length,Convert.ToBase64String(clientResponse));
-
-                        // Start auth-data sending.
-                        m_pImapClient.TcpStream.BeginWrite(buffer,0,buffer.Length,this.AuthenticateCommandSendingCompleted,null);
-                    }
-                    // Authentication suceeded.
-                    else if(!op.FinalResponse.IsError){
-                        m_pImapClient.m_pAuthenticatedUser = new GenericIdentity(m_pSASL.UserName,m_pSASL.Name);
-
-                        SetState(AsyncOP_State.Completed);
-                    }
-                    // Authentication rejected.
                     else{
-                        m_pException = new IMAP_ClientException(op.FinalResponse);
-                        SetState(AsyncOP_State.Completed);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient?.LogAddException("Exception: " + x.Message,x);
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
+                        clientResponse = Convert.ToBase64String(saslResponse);
                     }
 
-                    return m_pException; 
+                    // We need just send SASL authentication returned auth-response as base64.
+                    await SendCommandLineAsync(clientResponse + "\r\n",false,cancellationToken);
+                    #if DEBUG
+                        LogAddWrite(clientResponse.Length,clientResponse);
+                    #else
+                        LogAddWrite(clientResponse.Length,"Client response sent.");
+                    #endif
+                }
+                else{
+                    throw new IMAP_ClientException(serverResponse);
                 }
             }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<AuthenticateAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<AuthenticateAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
         }
 
         #endregion
 
+
+        #region method Namespace
+
         /// <summary>
-        /// Starts sending AUTHENTICATE command to IMAP server.
+        /// Executes the IMAP <c>NAMESPACE</c> command synchronously and returns the
+        /// server‑provided namespace information, if available. This method blocks
+        /// until the command completes or the operation times out.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="AuthenticateAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not connected or connection is already authenticated.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        public bool AuthenticateAsync(AuthenticateAsyncOP op)
+        /// <returns>
+        /// An <see cref="IMAP_r_u_Namespace"/> object containing the personal,
+        /// other‑users, and shared namespace lists returned by the server, or
+        /// <c>null</c> if the server does not send an untagged <c>NAMESPACE</c>
+        /// response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="NamespaceAsync(CancellationToken)"/> and is provided for
+        /// convenience in environments where asynchronous execution is not
+        /// desirable. It uses the client's configured <see cref="Timeout"/> value
+        /// to cancel the underlying asynchronous operation.
+        /// </para>
+        /// <para>
+        /// The <c>NAMESPACE</c> command is defined in RFC 2342. Servers are not
+        /// required to support this command. If the server responds with a tagged
+        /// <c>OK</c> but does not send an untagged <c>NAMESPACE</c> response, this
+        /// method returns <c>null</c> to indicate that namespace information is
+        /// unavailable.
+        /// </para>
+        /// </remarks>
+        public IMAP_r_u_Namespace? Namespace()
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(this.IsAuthenticated){
-                throw new InvalidOperationException("Connection is already authenticated.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            return op.Start(this);
+            return NamespaceAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-
-        #region method GetNamespaces
+        #region method NamespaceAsync
 
         /// <summary>
-        /// Gets IMAP server namespaces.
+        /// Executes the IMAP <c>NAMESPACE</c> command and returns the server‑provided
+        /// namespace information, if available. The method returns an
+        /// <see cref="IMAP_r_u_Namespace"/> instance when the server sends an
+        /// untagged <c>NAMESPACE</c> response, or <c>null</c> if the server replies
+        /// with a tagged <c>OK</c> without providing namespace data.
         /// </summary>
-        /// <returns>Returns namespaces responses.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_Namespace[] GetNamespaces()
-        {   
+        /// <returns>
+        /// An <see cref="IMAP_r_u_Namespace"/> object containing the personal,
+        /// other‑users, and shared namespace lists returned by the server, or
+        /// <c>null</c> if the server does not supply a <c>NAMESPACE</c> response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>NAMESPACE</c> command is defined in RFC 2342. It allows a
+        /// client to discover the prefix and hierarchy delimiter used for mailbox
+        /// names in different namespace categories. A server may return up to
+        /// three namespace lists:
+        /// </para>
+        /// <list type="bullet">
+        /// <item><description>Personal namespaces</description></item>
+        /// <item><description>Other‑users namespaces</description></item>
+        /// <item><description>Shared namespaces</description></item>
+        /// </list>
+        /// <para>
+        /// Each list may contain zero or more namespace descriptors, or may be
+        /// <c>NIL</c> if the server provides no entries for that category.
+        /// </para>
+        /// <para>
+        /// Servers are not required to support the <c>NAMESPACE</c> command.
+        /// If the server responds with a tagged <c>OK</c> but does not send an
+        /// untagged <c>NAMESPACE</c> response, this method returns <c>null</c>
+        /// to indicate that namespace information is unavailable.
+        /// </para>
+        /// <para>
+        /// The namespace information is informational only and does not affect
+        /// IMAP session state. It is typically used to construct correct mailbox
+        /// paths for <c>LIST</c>, <c>SELECT</c>, <c>CREATE</c>, <c>RENAME</c>,
+        /// and other folder‑related operations.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_Namespace?> NamespaceAsync(CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -1594,151 +1123,176 @@ namespace LumiSoft.Net.IMAP.Client
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
 
-            List<IMAP_r_u_Namespace> retVal = new List<IMAP_r_u_Namespace>();
+            /* RFC 2342 – IMAP4 Namespace Extension
+               Command:     NAMESPACE
+               Responses:   untagged NAMESPACE response
+                            tagged OK / NO / BAD completion
 
+               The NAMESPACE command allows a client to discover the prefix and
+               hierarchy delimiter used for mailboxes in different namespace
+               categories. A server returns a single untagged NAMESPACE response
+               containing up to three namespace lists:
+
+                   1) Personal namespaces
+                   2) Other-users namespaces
+                   3) Shared namespaces
+
+               Each namespace list contains zero or more namespace descriptors.
+               A namespace descriptor has the form:
+
+                   ("prefix" "delimiter")
+
+               The prefix is a string prepended to mailbox names in that namespace.
+               The delimiter is the hierarchy separator used within that namespace.
+               If a namespace list is empty, the server returns NIL for that list.
+
+               Example:
+                   C: NAMESPACE
+                   S: * NAMESPACE (("" "/")) NIL (("Public Folders/" "/"))
+                   S: OK Completed
+
+               A server MAY return NIL for any or all namespace categories.
+               A server MAY also return no untagged NAMESPACE response at all,
+               replying only with a tagged OK. This indicates that the server does
+               not provide namespace information.
+
+               Clients MUST NOT assume that the NAMESPACE command is supported.
+               If the server returns OK without an untagged NAMESPACE response,
+               the client should treat the namespace information as unavailable.
+
+               The NAMESPACE response is informational and does not affect IMAP
+               session state. It is typically used to construct correct mailbox
+               paths for LIST, SELECT, CREATE, RENAME, and other folder operations.
+            */
+
+            IMAP_r_u_Namespace? retVal = null;
+            
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Namespace){
-                    retVal.Add((IMAP_r_u_Namespace)e.Value);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_Namespace ns){
+                    retVal = ns;
                 }
             };
 
-            using(GetNamespacesAsyncOP op = new GetNamespacesAsyncOP(callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetNamespacesAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetNamespacesAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " NAMESPACE\r\n",true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
-            return retVal.ToArray();
+            return retVal;
         }
 
         #endregion
 
-        #region method GetNamespacesAsync
-
-        #region class GetNamespacesAsyncOP
+        #region method Folders
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetNamespacesAsync"/> asynchronous operation.
+        /// Executes the IMAP <c>LIST</c> command synchronously and returns all
+        /// mailbox entries that match the specified reference name and pattern.
+        /// This method blocks until the command completes or the operation times out.
         /// </summary>
-        public class GetNamespacesAsyncOP : CmdAsyncOP<GetNamespacesAsyncOP>
-        {
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public GetNamespacesAsyncOP(EventHandler<EventArgs<IMAP_r_u>> callback) : base(callback)
-            {
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {   
-                /* RFC 2342 5. NAMESPACE Command.
-                    Arguments: none
-
-                    Response:  an untagged NAMESPACE response that contains the prefix
-                               and hierarchy delimiter to the server's Personal
-                               Namespace(s), Other Users' Namespace(s), and Shared
-                               Namespace(s) that the server wishes to expose. The
-                               response will contain a NIL for any namespace class
-                               that is not available. Namespace_Response_Extensions
-                               MAY be included in the response.
-                               Namespace_Response_Extensions which are not on the IETF
-                               standards track, MUST be prefixed with an "X-".
-
-                    Result:    OK - Command completed
-                               NO - Error: Can't complete command
-                               BAD - argument invalid
-                        
-                    Example:
-                        < A server that contains a Personal Namespace and a single Shared Namespace. >
-
-                        C: A001 NAMESPACE
-                        S: * NAMESPACE (("" "/")) NIL (("Public Folders/" "/"))
-                        S: A001 OK NAMESPACE command completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " NAMESPACE" + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes NAMESPACE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetNamespacesAsync(GetNamespacesAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method GetFolders
-
-        /// <summary>
-        /// Gets folders list.
-        /// </summary>
-        /// <param name="filter">Folders filter. If this value is null, all folders are returned.</param>
-        /// <returns>Returns folders list.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
+        /// <param name="referenceName">
+        /// The reference name used as the base for mailbox lookup. Typically an
+        /// empty string (<c>""</c>) to indicate the root of the hierarchy.
+        /// </param>
+        /// <param name="pattern">
+        /// The mailbox pattern to match. Common values include <c>"*"</c> for all
+        /// mailboxes or <c>"%"</c> for the current hierarchy level.
+        /// </param>
+        /// <returns>
+        /// An array of <see cref="IMAP_r_u_List"/> objects representing the
+        /// mailboxes returned by the server. If the server returns no untagged
+        /// <c>LIST</c> responses, an empty array is returned. This method never
+        /// returns <c>null</c>.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
         /// <remarks>
-        /// The character "*" is a wildcard, and matches zero or more
-        /// characters at this position.  The character "%" is similar to "*",
-        /// but it does not match a hierarchy delimiter.  If the "%" wildcard
-        /// is the last character of a mailbox name argument, matching levels
-        /// of hierarchy are also returned.
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="FoldersAsync(string,string,System.Threading.CancellationToken)"/>
+        /// and is provided for convenience in environments where asynchronous
+        /// execution is not desirable. It uses the client's configured
+        /// <see cref="Timeout"/> value to cancel the underlying asynchronous
+        /// operation.
+        /// </para>
+        /// <para>
+        /// The <c>LIST</c> command is defined in RFC 3501. It returns zero or
+        /// more untagged <c>LIST</c> responses, each describing a mailbox. The
+        /// mailbox name is always a string and MUST NOT be <c>NIL</c>. The hierarchy
+        /// delimiter MAY be <c>NIL</c>, indicating that the mailbox has no hierarchy.
+        /// </para>
         /// </remarks>
-        public IMAP_r_u_List[] GetFolders(string filter)
+        public IMAP_r_u_List[] Folders(string referenceName = "",string pattern = "*")
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return FoldersAsync(referenceName,pattern,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FoldersAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>LIST</c> command and returns all mailbox entries
+        /// that match the specified reference name and pattern. The method returns
+        /// zero or more <see cref="IMAP_r_u_List"/> objects corresponding to the
+        /// untagged <c>LIST</c> responses sent by the server.
+        /// </summary>
+        /// <param name="referenceName">
+        /// The reference name used as the base for mailbox lookup. Typically an
+        /// empty string (<c>""</c>) to indicate the root of the hierarchy.
+        /// </param>
+        /// <param name="pattern">
+        /// The mailbox pattern to match. Common values include <c>"*"</c> for all
+        /// mailboxes or <c>"%"</c> for the current hierarchy level.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// An array of <see cref="IMAP_r_u_List"/> objects representing the
+        /// mailboxes returned by the server. If the server returns no untagged
+        /// <c>LIST</c> responses, an empty array is returned. This method never
+        /// returns <c>null</c>.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>LIST</c> command is defined in RFC 3501. It returns zero or
+        /// more untagged <c>LIST</c> responses, each describing a mailbox. A
+        /// mailbox entry includes attribute flags, an optional hierarchy delimiter,
+        /// and a mailbox name. The mailbox name is always a string and MUST NOT be
+        /// <c>NIL</c>. The hierarchy delimiter MAY be <c>NIL</c>, indicating that
+        /// the mailbox has no hierarchy.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_List[]> FoldersAsync(string referenceName = "",string pattern = "*",CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -1748,34 +1302,87 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
+
+            /* RFC 3501 – IMAP4rev1
+               Command:     LIST
+               Responses:   zero or more untagged LIST responses
+                            tagged OK / NO / BAD completion
+
+               The LIST command returns mailbox names that match the specified
+               reference name and mailbox pattern. A server may return zero or more
+               untagged LIST responses. Each LIST response describes a single mailbox
+               and has the form:
+
+                   * LIST (<attributes>) "<delimiter>" "<name>"
+
+               The <attributes> list may include flags such as \Noselect, \Noinferiors,
+               \Marked, or \Unmarked. The <delimiter> is the hierarchy separator used
+               within that mailbox namespace. The <name> is the mailbox name.
+
+               IMPORTANT (RFC‑required):
+                   - The mailbox name MUST NOT be NIL.
+                     It is always a string, possibly the empty string ("").
+                   - The hierarchy delimiter MAY be NIL.
+                     NIL delimiter indicates that the mailbox has no hierarchy.
+
+               Examples:
+                   C: A0001 LIST "" "*"
+                   S: * LIST (\HasChildren) "/" "INBOX"
+                   S: * LIST (\Noselect) "/" "Archive"
+                   S: A0001 OK Completed
+
+                   C: A0002 LIST "" "INBOX"
+                   S: * LIST () NIL "INBOX"        ; NIL delimiter is allowed
+                   S: A0002 OK Completed
+
+               Empty result cases:
+                   1) The server may return no untagged LIST responses at all:
+                          C: A0003 LIST "" "NonExisting/*"
+                          S: A0003 OK Completed
+                      This indicates that the pattern matched no mailboxes.
+                      The client must treat this as an empty result set.
+
+                   2) The server may return a LIST response with an empty mailbox name:
+                          * LIST () "/" ""
+                      This is a valid mailbox name (empty string), not NIL.
+                      The client must treat this as a valid mailbox entry.
+
+               In both empty-result cases above, the LIST command succeeded and the
+               correct client behavior is to return an empty collection (zero mailboxes),
+               not null.
+
+               Error cases:
+                   If the server returns a tagged NO or BAD response, the LIST command
+                   has failed. A BAD response may indicate that the server does not
+                   support the LIST command or that the arguments were invalid. The
+                   client should throw an exception in these cases.
+
+               The LIST command is mandatory in IMAP4rev1. A successful LIST command
+               always ends with a tagged OK, regardless of whether any mailboxes were
+               returned. The absence of LIST responses does not indicate lack of
+               support; it simply means that the pattern matched zero mailboxes.
+            */
+            referenceName = IMAP_Utils.EncodeMailbox(referenceName,m_MailboxEncoding);
+            pattern       = IMAP_Utils.EncodeMailbox(pattern,m_MailboxEncoding);
 
             List<IMAP_r_u_List> retVal = new List<IMAP_r_u_List>();
-
+            
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_List){
-                    retVal.Add((IMAP_r_u_List)e.Value);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(e is IMAP_r_u_List item){
+                    retVal.Add(item);
                 }
             };
 
-            using(GetFoldersAsyncOP op = new GetFoldersAsyncOP(filter,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetFoldersAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetFoldersAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandLineAsync($"{(m_CommandIndex++).ToString("d5")} LIST {referenceName} {pattern}\r\n",true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
             return retVal.ToArray();
@@ -1783,239 +1390,126 @@ namespace LumiSoft.Net.IMAP.Client
 
         #endregion
 
-        #region method GetFoldersAsync
-
-        #region class GetFoldersAsyncOP
+        #region method FolderCreate
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetFoldersAsync"/> asynchronous operation.
+        /// Executes the IMAP <c>CREATE</c> command synchronously and creates a new
+        /// mailbox with the specified name. This method blocks until the command
+        /// completes or the operation times out.
         /// </summary>
-        public class GetFoldersAsyncOP : CmdAsyncOP<GetFoldersAsyncOP>
+        /// <param name="folder">
+        /// The name of the mailbox to create. The value must be a valid IMAP
+        /// mailbox name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response, indicating that the mailbox could not be created.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="FolderCreateAsync(string,System.Threading.CancellationToken)"/>.
+        /// It uses the client's configured <see cref="Timeout"/> value to cancel the
+        /// underlying asynchronous operation if it does not complete in time.
+        /// </para>
+        /// <para>
+        /// The IMAP <c>CREATE</c> command is defined in RFC 3501. It requests
+        /// the server to create a new mailbox. The mailbox name MUST be a valid
+        /// IMAP mailbox name and MUST NOT be <c>NIL</c>. The server returns a
+        /// tagged <c>OK</c> response on success, or a tagged <c>NO</c> or <c>BAD</c>
+        /// response if the mailbox cannot be created.
+        /// </para>
+        /// <para>
+        /// Common reasons for failure include: the mailbox already exists, the
+        /// mailbox name is invalid, creation under the specified parent is not
+        /// permitted, insufficient permissions, or server‑specific namespace
+        /// restrictions (such as prohibiting creation of subfolders under
+        /// <c>INBOX</c>).
+        /// </para>
+        /// </remarks>
+        public void FolderCreate(string folder)
         {
-            private string? m_Filter = null;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="filter">Folders filter. If this value is null, all folders are returned.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            /// <remarks>
-            /// The character "*" is a wildcard, and matches zero or more
-            /// characters at this position.  The character "%" is similar to "*",
-            /// but it does not match a hierarchy delimiter.  If the "%" wildcard
-            /// is the last character of a mailbox name argument, matching levels
-            /// of hierarchy are also returned.
-            /// </remarks>
-            public GetFoldersAsyncOP(string filter,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                m_Filter = filter;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {           
-                /* RFC 3501 6.3.8. LIST Command.
-                    Arguments:  reference name
-                                mailbox name with possible wildcards
-
-                    Responses:  untagged responses: LIST
-
-                    Result:     OK - list completed
-                                NO - list failure: can't list that reference or name
-                                BAD - command unknown or arguments invalid
-
-                    The LIST command returns a subset of names from the complete set
-                    of all names available to the client.  Zero or more untagged LIST
-                    replies are returned, containing the name attributes, hierarchy
-                    delimiter, and name; see the description of the LIST reply for
-                    more detail.
-
-                    An empty ("" string) reference name argument indicates that the
-                    mailbox name is interpreted as by SELECT.  The returned mailbox
-                    names MUST match the supplied mailbox name pattern.  A non-empty
-                    reference name argument is the name of a mailbox or a level of
-                    mailbox hierarchy, and indicates the context in which the mailbox
-                    name is interpreted.
-
-                    An empty ("" string) mailbox name argument is a special request to
-                    return the hierarchy delimiter and the root name of the name given
-                    in the reference.  The value returned as the root MAY be the empty
-                    string if the reference is non-rooted or is an empty string.  In
-                    all cases, a hierarchy delimiter (or NIL if there is no hierarchy)
-                    is returned.  This permits a client to get the hierarchy delimiter
-                    (or find out that the mailbox names are flat) even when no
-                    mailboxes by that name currently exist.
-
-                    The reference and mailbox name arguments are interpreted into a
-                    canonical form that represents an unambiguous left-to-right
-                    hierarchy.  The returned mailbox names will be in the interpreted
-                    form.
-
-                    Note: The interpretation of the reference argument is
-                    implementation-defined.  It depends upon whether the
-                    server implementation has a concept of the "current
-                    working directory" and leading "break out characters",
-                    which override the current working directory.
-
-                    For example, on a server which exports a UNIX or NT
-                    filesystem, the reference argument contains the current
-                    working directory, and the mailbox name argument would
-                    contain the name as interpreted in the current working
-                    directory.
-
-                    If a server implementation has no concept of break out
-                    characters, the canonical form is normally the reference
-                    name appended with the mailbox name.  Note that if the
-                    server implements the namespace convention (section
-                    5.1.2), "#" is a break out character and must be treated
-                    as such.
-
-                    If the reference argument is not a level of mailbox
-                    hierarchy (that is, it is a \NoInferiors name), and/or
-                    the reference argument does not end with the hierarchy
-                    delimiter, it is implementation-dependent how this is
-                    interpreted.  For example, a reference of "foo/bar" and
-                    mailbox name of "rag/baz" could be interpreted as
-                    "foo/bar/rag/baz", "foo/barrag/baz", or "foo/rag/baz".
-                    A client SHOULD NOT use such a reference argument except
-                    at the explicit request of the user.  A hierarchical
-                    browser MUST NOT make any assumptions about server
-                    interpretation of the reference unless the reference is
-                    a level of mailbox hierarchy AND ends with the hierarchy
-                    delimiter.
-
-                    Any part of the reference argument that is included in the
-                    interpreted form SHOULD prefix the interpreted form.  It SHOULD
-                    also be in the same form as the reference name argument.  This
-                    rule permits the client to determine if the returned mailbox name
-                    is in the context of the reference argument, or if something about
-                    the mailbox argument overrode the reference argument.  Without
-                    this rule, the client would have to have knowledge of the server's
-                    naming semantics including what characters are "breakouts" that
-                    override a naming context.  
-
-                        For example, here are some examples of how references
-                        and mailbox names might be interpreted on a UNIX-based
-                        server:
-
-                            Reference     Mailbox Name  Interpretation
-                            ------------  ------------  --------------
-                            ~smith/Mail/  foo.*         ~smith/Mail/foo.*
-                            archive/      %             archive/%
-                            #news.        comp.mail.*   #news.comp.mail.*
-                            ~smith/Mail/  /usr/doc/foo  /usr/doc/foo
-                            archive/      ~fred/Mail/*  ~fred/Mail/*
-
-                        The first three examples demonstrate interpretations in
-                        the context of the reference argument.  Note that
-                        "~smith/Mail" SHOULD NOT be transformed into something
-                        like "/u2/users/smith/Mail", or it would be impossible
-                        for the client to determine that the interpretation was
-                        in the context of the reference.
-
-                The character "*" is a wildcard, and matches zero or more
-                characters at this position.  The character "%" is similar to "*",
-                but it does not match a hierarchy delimiter.  If the "%" wildcard
-                is the last character of a mailbox name argument, matching levels
-                of hierarchy are also returned.  If these levels of hierarchy are
-                not also selectable mailboxes, they are returned with the
-                \Noselect mailbox name attribute (see the description of the LIST
-                response for more details).
-
-                The special name INBOX is included in the output from LIST, if
-                INBOX is supported by this server for this user and if the
-                uppercase string "INBOX" matches the interpreted reference and
-                mailbox name arguments with wildcards as described above.  The
-                criteria for omitting INBOX is whether SELECT INBOX will return
-                failure; it is not relevant whether the user's real INBOX resides
-                on this or some other server.
-
-                Example:    C: A101 LIST "" ""
-                            S: * LIST (\Noselect) "/" ""
-                            S: A101 OK LIST Completed
-                            C: A102 LIST #news.comp.mail.misc ""
-                            S: * LIST (\Noselect) "." #news.
-                            S: A102 OK LIST Completed
-                            C: A103 LIST /usr/staff/jones ""
-                            S: * LIST (\Noselect) "/" /
-                            S: A103 OK LIST Completed
-                            C: A202 LIST ~/Mail/ %
-                            S: * LIST (\Noselect) "/" ~/Mail/foo
-                            S: * LIST () "/" ~/Mail/meetings
-                            S: A202 OK LIST completed
-                */
-
-                if(m_Filter != null){
-                    byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " LIST \"\" " + IMAP_Utils.EncodeMailbox(m_Filter,imap.m_MailboxEncoding) + "\r\n");
-                    this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-                }
-                else{
-                    byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " LIST \"\" \"*\"\r\n");
-                    this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-                }
-            }
-
-            #endregion
+            FolderCreateAsync(folder,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method FolderCreateAsync
+
         /// <summary>
-        /// Executes LIST command.
+        /// Executes the IMAP <c>CREATE</c> command asynchronously and requests the
+        /// server to create a new mailbox with the specified name.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetFoldersAsync(GetFoldersAsyncOP op)
+        /// <param name="folder">
+        /// The name of the mailbox to create. The value must be a valid IMAP
+        /// mailbox name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous completion of the mailbox creation
+        /// request. The method does not return a value; it completes normally if
+        /// the server returns a tagged <c>OK</c> response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response, indicating that the mailbox could not be created.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The IMAP <c>CREATE</c> command is defined in RFC 3501. It requests
+        /// the server to create a new mailbox. The mailbox name MUST be a valid
+        /// IMAP mailbox name and MUST NOT be <c>NIL</c>. The server returns a
+        /// tagged <c>OK</c> response on success, or a tagged <c>NO</c> or <c>BAD</c>
+        /// response if the mailbox cannot be created.
+        /// </para>
+        /// <para>
+        /// Common reasons for failure include: the mailbox already exists, the
+        /// mailbox name is invalid, creation under the specified parent is not
+        /// permitted, insufficient permissions, or server‑specific namespace
+        /// restrictions (such as prohibiting creation of subfolders under
+        /// <c>INBOX</c>).
+        /// </para>
+        /// <para>
+        /// The <c>CREATE</c> command does not automatically select the new mailbox
+        /// and does not return any untagged responses. It only reports success or
+        /// failure through the final tagged response.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderCreateAsync(string folder,CancellationToken cancellationToken = default)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method CreateFolder
-
-        /// <summary>
-        /// Creates new folder.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void CreateFolder(string folder)
-        {            
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -2024,183 +1518,212 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
             if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            using(CreateFolderAsyncOP op = new CreateFolderAsyncOP(folder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<CreateFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.CreateFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method CreateFolderAsync
-
-        #region class CreateFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.CreateFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class CreateFolderAsyncOP : CmdAsyncOP<CreateFolderAsyncOP>
-        {
-            private string m_Folder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public CreateFolderAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {        
-                /* RFC 3501 6.3.3. CREATE Command.
-                    Arguments:  mailbox name
-
-                    Responses:  no specific responses for this command
-
-                    Result:     OK - create completed
-                                NO - create failure: can't create mailbox with that name
-                                BAD - command unknown or arguments invalid
-
-                    The CREATE command creates a mailbox with the given name.  An OK
-                    response is returned only if a new mailbox with that name has been
-                    created.  It is an error to attempt to create INBOX or a mailbox
-                    with a name that refers to an extant mailbox.  Any error in
-                    creation will return a tagged NO response.
-
-                    If the mailbox name is suffixed with the server's hierarchy
-                    separator character (as returned from the server by a LIST
-                    command), this is a declaration that the client intends to create
-                    mailbox names under this name in the hierarchy.  Server
-                    implementations that do not require this declaration MUST ignore
-                    the declaration.  In any case, the name created is without the
-                    trailing hierarchy delimiter.
-
-                    If the server's hierarchy separator character appears elsewhere in
-                    the name, the server SHOULD create any superior hierarchical names
-                    that are needed for the CREATE command to be successfully
-                    completed.  In other words, an attempt to create "foo/bar/zap" on
-                    a server in which "/" is the hierarchy separator character SHOULD
-                    create foo/ and foo/bar/ if they do not already exist.
-
-                    If a new mailbox is created with the same name as a mailbox which
-                    was deleted, its unique identifiers MUST be greater than any
-                    unique identifiers used in the previous incarnation of the mailbox
-                    UNLESS the new incarnation has a different unique identifier
-                    validity value.  See the description of the UID command for more
-                    detail.
-
-                    Example:    C: A003 CREATE owatagusiam/
-                                S: A003 OK CREATE completed
-                                C: A004 CREATE owatagusiam/blurdybloop
-                                S: A004 OK CREATE completed
-
-                        Note: The interpretation of this example depends on whether
-                        "/" was returned as the hierarchy separator from LIST.  If
-                        "/" is the hierarchy separator, a new level of hierarchy
-                        named "owatagusiam" with a member called "blurdybloop" is
-                        created.  Otherwise, two mailboxes at the same hierarchy
-                        level are created.
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " CREATE " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes CREATE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool CreateFolderAsync(CreateFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            /* RFC 3501 – IMAP4rev1
+               Command:     CREATE
+               Responses:   tagged OK / NO / BAD completion
+                            (no untagged responses are required)
+
+               The CREATE command requests the server to create a new mailbox with the
+               specified name. The mailbox name MUST be a valid IMAP mailbox name and
+               MUST NOT be NIL. The server creates the mailbox if possible and returns
+               a tagged OK response. If the mailbox cannot be created, the server
+               returns a tagged NO or BAD response.
+
+               Syntax:
+                   CREATE "<mailbox>"
+
+               The mailbox name is interpreted using the server's hierarchy delimiter.
+               If the name contains the hierarchy separator, intermediate levels may
+               or may not be created automatically depending on server implementation.
+               IMAP does not require servers to create intermediate directories.
+
+               Examples:
+                   C: A0001 CREATE "Archive/2024"
+                   S: A0001 OK Create completed
+
+                   C: A0002 CREATE "INBOX/Reports"
+                   S: A0002 NO Cannot create inside INBOX
+
+                   C: A0003 CREATE "Archive/2024"
+                   S: A0003 NO Mailbox already exists
+
+               Error cases:
+                   - NO: The server refuses to create the mailbox. Common reasons:
+                         * Mailbox already exists
+                         * Invalid mailbox name
+                         * Server does not allow creation under the specified parent
+                         * Permission denied
+                         * Intermediate hierarchy not allowed
+                   - BAD: The command is invalid or not supported.
+
+               Special notes:
+                   - CREATE does not automatically select the new mailbox.
+                   - CREATE does not return any untagged responses.
+                   - CREATE does not create messages; it only creates the mailbox.
+                   - Servers MAY restrict creation under certain namespaces (e.g., INBOX).
+                   - Servers MAY require the client to use LIST to discover valid
+                     hierarchy delimiters before issuing CREATE.
+
+               Client behavior:
+                   - On tagged OK: mailbox was successfully created.
+                   - On tagged NO/BAD: the client must throw an exception.
+                   - CREATE never returns NIL and never returns an empty result set.
+                     It always ends with a tagged OK/NO/BAD response.
+            */
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} CREATE {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method DeleteFolder
+        #region method FolderDelete
 
         /// <summary>
-        /// Deletes specified folder.
+        /// Executes the IMAP <c>DELETE</c> command synchronously and requests the
+        /// server to permanently remove the specified mailbox. This method blocks
+        /// until the command completes or the operation times out.
         /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void DeleteFolder(string folder)
-        {            
+        /// <param name="folder">
+        /// The name of the mailbox to delete. The value must be a valid IMAP
+        /// mailbox name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response, indicating that the mailbox could not be deleted.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="FolderDeleteAsync(string,System.Threading.CancellationToken)"/>.
+        /// It uses the client's configured <see cref="Timeout"/> value to cancel the
+        /// underlying asynchronous operation if it does not complete in time.
+        /// </para>
+        /// <para>
+        /// The IMAP <c>DELETE</c> command is defined in RFC 3501. It requests
+        /// the server to permanently remove the specified mailbox. The mailbox name
+        /// MUST be a valid IMAP mailbox name and MUST NOT be <c>NIL</c>. The server
+        /// returns a tagged <c>OK</c> response on success, or a tagged <c>NO</c> or
+        /// <c>BAD</c> response if the mailbox cannot be deleted.
+        /// </para>
+        /// <para>
+        /// Common reasons for failure include: the mailbox does not exist, the
+        /// mailbox is protected (such as <c>INBOX</c>), the user lacks sufficient
+        /// rights, or the server requires subordinate mailboxes to be removed
+        /// first. Servers MAY also impose namespace‑specific restrictions.
+        /// </para>
+        /// <para>
+        /// The <c>DELETE</c> command does not return untagged responses and does not
+        /// remove messages individually; it removes the mailbox itself. A client
+        /// MUST inspect the final tagged response to determine whether the mailbox
+        /// was successfully deleted.
+        /// </para>
+        /// </remarks>
+        public void FolderDelete(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderDeleteAsync(folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderDeleteAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>DELETE</c> command asynchronously and requests the
+        /// server to permanently remove the specified mailbox.
+        /// </summary>
+        /// <param name="folder">
+        /// The name of the mailbox to delete. The value must be a valid IMAP
+        /// mailbox name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous completion of the mailbox deletion
+        /// request. The method does not return a value; it completes normally if
+        /// the server returns a tagged <c>OK</c> response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response, indicating that the mailbox could not be deleted.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The IMAP <c>DELETE</c> command is defined in RFC 3501. It requests
+        /// the server to permanently remove the specified mailbox. The mailbox name
+        /// MUST be a valid IMAP mailbox name and MUST NOT be <c>NIL</c>. The server
+        /// returns a tagged <c>OK</c> response on success, or a tagged <c>NO</c> or
+        /// <c>BAD</c> response if the mailbox cannot be deleted.
+        /// </para>
+        /// <para>
+        /// Common reasons for failure include: the mailbox does not exist, the
+        /// mailbox is protected (such as <c>INBOX</c>), the user lacks sufficient
+        /// rights, or the server requires subordinate mailboxes to be removed
+        /// first. Servers MAY also impose namespace‑specific restrictions.
+        /// </para>
+        /// <para>
+        /// This method automatically encodes the mailbox name using the client's
+        /// configured mailbox encoding (IMAP modified UTF‑7 or UTF‑8), escapes any
+        /// required characters, and formats the mailbox name according to IMAP
+        /// quoted‑string rules before issuing the <c>DELETE</c> command.
+        /// </para>
+        /// <para>
+        /// The <c>DELETE</c> command does not return untagged responses and does not
+        /// remove messages individually; it removes the mailbox itself. A client
+        /// MUST inspect the final tagged response to determine whether the mailbox
+        /// was successfully deleted.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderDeleteAsync(string folder,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -2209,186 +1732,227 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
             if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            using(DeleteFolderAsyncOP op = new DeleteFolderAsyncOP(folder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<DeleteFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.DeleteFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method DeleteFolderAsync
-
-        #region class DeleteFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.DeleteFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class DeleteFolderAsyncOP : CmdAsyncOP<DeleteFolderAsyncOP>
-        {
-            private string m_Folder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public DeleteFolderAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.3.4. DELETE Command.
-                    Arguments:  mailbox name
-
-                    Responses:  no specific responses for this command
-
-                    Result:     OK - delete completed
-                                NO - delete failure: can't delete mailbox with that name
-                                BAD - command unknown or arguments invalid
-
-                    The DELETE command permanently removes the mailbox with the given
-                    name.  A tagged OK response is returned only if the mailbox has
-                    been deleted.  It is an error to attempt to delete INBOX or a
-                    mailbox name that does not exist.
-
-                    The DELETE command MUST NOT remove inferior hierarchical names.
-                    For example, if a mailbox "foo" has an inferior "foo.bar"
-                    (assuming "." is the hierarchy delimiter character), removing
-                    "foo" MUST NOT remove "foo.bar".  It is an error to attempt to
-                    delete a name that has inferior hierarchical names and also has
-                    the \Noselect mailbox name attribute (see the description of the
-                    LIST response for more details).
-
-                    It is permitted to delete a name that has inferior hierarchical
-                    names and does not have the \Noselect mailbox name attribute.  In
-                    this case, all messages in that mailbox are removed, and the name
-                    will acquire the \Noselect mailbox name attribute.
-
-                    The value of the highest-used unique identifier of the deleted
-                    mailbox MUST be preserved so that a new mailbox created with the
-                    same name will not reuse the identifiers of the former
-                    incarnation, UNLESS the new incarnation has a different unique
-                    identifier validity value.  See the description of the UID command
-                    for more detail.
-
-                    Examples:   C: A682 LIST "" *
-                                S: * LIST () "/" blurdybloop
-                                S: * LIST (\Noselect) "/" foo
-                                S: * LIST () "/" foo/bar
-                                S: A682 OK LIST completed
-                                C: A683 DELETE blurdybloop
-                                S: A683 OK DELETE completed
-                                C: A684 DELETE foo
-                                S: A684 NO Name "foo" has inferior hierarchical names
-                                C: A685 DELETE foo/bar
-                                S: A685 OK DELETE Completed
-                                C: A686 LIST "" *
-                                S: * LIST (\Noselect) "/" foo
-                                S: A686 OK LIST completed
-                                C: A687 DELETE foo
-                                S: A687 OK DELETE Completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " DELETE " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes DELETE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool DeleteFolderAsync(DeleteFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            /* RFC 3501 – IMAP4rev1
+               Command:     DELETE
+               Responses:   tagged OK / NO / BAD completion
+                            (no untagged responses are required)
+
+               The DELETE command permanently removes the specified mailbox. The mailbox
+               name MUST be a valid IMAP mailbox name and MUST NOT be NIL. If the mailbox
+               exists and the server permits deletion, a tagged OK response is returned.
+               If the mailbox cannot be deleted, the server returns a tagged NO or BAD
+               response.
+
+               Syntax:
+                   DELETE "<mailbox>"
+
+               A server MAY refuse to delete a mailbox for several reasons, including:
+                   - The mailbox does not exist.
+                   - The mailbox has the \Noselect attribute.
+                   - The mailbox is a special or protected mailbox (e.g., INBOX).
+                   - The user does not have sufficient rights to delete the mailbox.
+                   - The mailbox contains inferior hierarchical mailboxes that must be
+                     removed first (server-dependent behavior).
+
+               Examples:
+                   C: A0001 DELETE "Archive/2024"
+                   S: A0001 OK Delete completed
+
+                   C: A0002 DELETE "INBOX"
+                   S: A0002 NO Cannot delete INBOX
+
+                   C: A0003 DELETE "Archive/2024"
+                   S: A0003 NO Mailbox does not exist
+
+               Error cases:
+                   - NO: The server refuses to delete the mailbox. Common reasons:
+                         * Mailbox does not exist
+                         * Mailbox is protected (e.g., INBOX)
+                         * Insufficient permissions
+                         * Inferior mailboxes prevent deletion
+                   - BAD: The command is invalid or not supported.
+
+               Special notes:
+                   - DELETE does not remove messages individually; it removes the mailbox
+                     itself.
+                   - DELETE does not automatically remove subordinate mailboxes unless
+                     the server explicitly supports such behavior.
+                   - DELETE does not return any untagged responses.
+                   - Servers MAY restrict deletion of certain namespaces or special-use
+                     mailboxes.
+
+               Client behavior:
+                   - On tagged OK: mailbox was successfully deleted.
+                   - On tagged NO/BAD: the client must throw an exception.
+                   - DELETE never returns NIL and never returns an empty result set.
+                     It always ends with a tagged OK/NO/BAD response.
+            */
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} DELETE {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method RenameFolder
+        #region method FolderRename
 
         /// <summary>
-        /// Renames exisiting folder name.
+        /// Executes the IMAP <c>RENAME</c> command synchronously and requests the
+        /// server to change the name of an existing mailbox. This method blocks
+        /// until the command completes or the operation times out.
         /// </summary>
-        /// <param name="folder">Folder name with path to rename.</param>
-        /// <param name="newFolder">New folder name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>newFolder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void RenameFolder(string folder,string newFolder)
-        {            
+        /// <param name="folder">
+        /// The current name of the mailbox to rename. The value must be a valid
+        /// IMAP mailbox name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <param name="newFolder">
+        /// The new name for the mailbox. The value must be a valid IMAP mailbox
+        /// name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="newFolder"/>
+        /// is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="newFolder"/>
+        /// is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response, indicating that the mailbox could not be renamed.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="FolderRenameAsync(string,string,System.Threading.CancellationToken)"/>.
+        /// It uses the client's configured <see cref="Timeout"/> value to cancel the
+        /// underlying asynchronous operation if it does not complete in time.
+        /// </para>
+        /// <para>
+        /// The IMAP <c>RENAME</c> command is defined in RFC 3501. It requests
+        /// the server to change the name of an existing mailbox. The source mailbox
+        /// MUST exist, and the destination mailbox name MUST be a valid IMAP
+        /// mailbox name. The server returns a tagged <c>OK</c> response on success,
+        /// or a tagged <c>NO</c> or <c>BAD</c> response if the rename cannot be
+        /// performed.
+        /// </para>
+        /// <para>
+        /// Common reasons for failure include: the source mailbox does not exist,
+        /// the destination mailbox already exists, insufficient permissions,
+        /// renaming <c>INBOX</c>, or namespace restrictions. Servers MAY also apply
+        /// implementation‑specific rules to subordinate mailboxes.
+        /// </para>
+        /// <para>
+        /// The <c>RENAME</c> command does not return untagged responses and does not
+        /// automatically select the new mailbox. A client MUST inspect the final
+        /// tagged response to determine whether the rename was successful.
+        /// </para>
+        /// </remarks>
+        public void FolderRename(string folder,string newFolder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderRenameAsync(folder,newFolder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderRenameAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>RENAME</c> command asynchronously and requests the
+        /// server to change the name of an existing mailbox.
+        /// </summary>
+        /// <param name="folder">
+        /// The current name of the mailbox to rename. The value must be a valid
+        /// IMAP mailbox name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <param name="newFolder">
+        /// The new name for the mailbox. The value must be a valid IMAP mailbox
+        /// name and must not be <c>null</c> or an empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous completion of the mailbox rename
+        /// request. The method completes normally if the server returns a tagged
+        /// <c>OK</c> response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="newFolder"/>
+        /// is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="newFolder"/>
+        /// is an empty string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response, indicating that the mailbox could not be renamed.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The IMAP <c>RENAME</c> command is defined in RFC 3501. It requests
+        /// the server to change the name of an existing mailbox. The source mailbox
+        /// MUST exist, and the destination mailbox name MUST be a valid IMAP
+        /// mailbox name. The server returns a tagged <c>OK</c> response on success,
+        /// or a tagged <c>NO</c> or <c>BAD</c> response if the rename cannot be
+        /// performed.
+        /// </para>
+        /// <para>
+        /// Common reasons for failure include: the source mailbox does not exist,
+        /// the destination mailbox already exists, insufficient permissions,
+        /// renaming <c>INBOX</c>, or namespace restrictions. Servers MAY also apply
+        /// implementation‑specific rules to subordinate mailboxes.
+        /// </para>
+        /// <para>
+        /// This method automatically encodes both mailbox names using the client's
+        /// configured mailbox encoding (IMAP modified UTF‑7 or UTF‑8), escapes any
+        /// required characters, and formats the names according to IMAP
+        /// quoted‑string rules before issuing the <c>RENAME</c> command.
+        /// </para>
+        /// <para>
+        /// The <c>RENAME</c> command does not return untagged responses and does not
+        /// automatically select the new mailbox. A client MUST inspect the final
+        /// tagged response to determine whether the rename was successful.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderRenameAsync(string folder,string newFolder,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -2397,212 +1961,200 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
             if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' name must be specified.","folder");
-            }
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
+            }            
             if(newFolder == null){
-                throw new ArgumentNullException("newFolder");
+                throw new ArgumentNullException(nameof(newFolder));
             }
             if(newFolder == string.Empty){
-                throw new ArgumentException("Argument 'newFolder' name must be specified.","newFolder");
-            }
-
-            using(RenameFolderAsyncOP op = new RenameFolderAsyncOP(folder,newFolder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<RenameFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.RenameFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method RenameFolderAsync
-
-        #region class RenameFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.RenameFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class RenameFolderAsyncOP : CmdAsyncOP<RenameFolderAsyncOP>
-        {
-            private string m_Folder;
-            private string m_NewFolder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="newFolder">New folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>newFolder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public RenameFolderAsyncOP(string folder,string newFolder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-                if(newFolder == null){
-                    throw new ArgumentNullException("newFolder");
-                }
-                if(string.IsNullOrEmpty(newFolder)){
-                    throw new ArgumentException("Argument 'newFolder' value must be specified.","newFolder");
-                }                
-
-                m_Folder    = folder;
-                m_NewFolder = newFolder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.3.5. RENAME Command.
-                    Arguments:  existing mailbox name
-                                new mailbox name
-
-                    Responses:  no specific responses for this command
-
-                    Result:     OK - rename completed
-                                NO - rename failure: can't rename mailbox with that name,
-                                     can't rename to mailbox with that name
-                                BAD - command unknown or arguments invalid
-
-                    The RENAME command changes the name of a mailbox.  A tagged OK
-                    response is returned only if the mailbox has been renamed.  It is
-                    an error to attempt to rename from a mailbox name that does not
-                    exist or to a mailbox name that already exists.  Any error in
-                    renaming will return a tagged NO response.
-
-                    If the name has inferior hierarchical names, then the inferior
-                    hierarchical names MUST also be renamed.  For example, a rename of
-                    "foo" to "zap" will rename "foo/bar" (assuming "/" is the
-                    hierarchy delimiter character) to "zap/bar".
-
-                    If the server's hierarchy separator character appears in the name,
-                    the server SHOULD create any superior hierarchical names that are
-                    needed for the RENAME command to complete successfully.  In other
-                    words, an attempt to rename "foo/bar/zap" to baz/rag/zowie on a
-                    server in which "/" is the hierarchy separator character SHOULD
-                    create baz/ and baz/rag/ if they do not already exist.
-
-                    The value of the highest-used unique identifier of the old mailbox
-                    name MUST be preserved so that a new mailbox created with the same
-                    name will not reuse the identifiers of the former incarnation,
-                    UNLESS the new incarnation has a different unique identifier
-                    validity value.  See the description of the UID command for more
-                    detail.
-
-                    Renaming INBOX is permitted, and has special behavior.  It moves
-                    all messages in INBOX to a new mailbox with the given name,
-                    leaving INBOX empty.  If the server implementation supports
-                    inferior hierarchical names of INBOX, these are unaffected by a
-                    rename of INBOX.
-
-                    Examples:   C: A682 LIST "" *
-                                S: * LIST () "/" blurdybloop
-                                S: * LIST (\Noselect) "/" foo
-                                S: * LIST () "/" foo/bar
-                                S: A682 OK LIST completed
-                                C: A683 RENAME blurdybloop sarasoop
-                                S: A683 OK RENAME completed
-                                C: A684 RENAME foo zowie
-                                S: A684 OK RENAME Completed
-                                C: A685 LIST "" *
-                                S: * LIST () "/" sarasoop
-                                S: * LIST (\Noselect) "/" zowie
-                                S: * LIST () "/" zowie/bar
-                                S: A685 OK LIST completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " RENAME " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + " " + IMAP_Utils.EncodeMailbox(m_NewFolder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes RENAME command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool RenameFolderAsync(RenameFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+                throw new ArgumentException("New folder name must be specified.", nameof(newFolder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            /* RFC 3501 – IMAP4rev1
+               Command:     RENAME
+               Responses:   tagged OK / NO / BAD completion
+                            (no untagged responses are required)
+
+               The RENAME command changes the name of an existing mailbox. The source
+               mailbox name MUST refer to an existing mailbox, and the destination
+               mailbox name MUST be a valid IMAP mailbox name and MUST NOT be NIL.
+               If the server is able to perform the rename, it returns a tagged OK
+               response. If the rename cannot be performed, the server returns a
+               tagged NO or BAD response.
+
+               Syntax:
+                   RENAME "<old-mailbox>" "<new-mailbox>"
+
+               A server MAY refuse to rename a mailbox for several reasons, including:
+                   - The source mailbox does not exist.
+                   - The source mailbox has the \Noselect attribute.
+                   - The source mailbox is a special or protected mailbox (e.g., INBOX).
+                   - The user does not have sufficient rights to rename the mailbox.
+                   - The destination mailbox name is invalid or already exists.
+                   - The server does not permit renaming across certain namespaces.
+                   - The server requires subordinate mailboxes to be renamed or moved
+                     according to implementation-specific rules.
+
+               Examples:
+                   C: A0001 RENAME "Archive/2024" "Archive/2025"
+                   S: A0001 OK Rename completed
+
+                   C: A0002 RENAME "INBOX" "OldInbox"
+                   S: A0002 NO Cannot rename INBOX
+
+                   C: A0003 RENAME "Archive/2024" "Archive/2024"
+                   S: A0003 NO Destination mailbox already exists
+
+               Error cases:
+                   - NO: The server refuses to rename the mailbox. Common reasons:
+                         * Source mailbox does not exist
+                         * Destination mailbox already exists
+                         * Insufficient permissions
+                         * Renaming INBOX or other protected mailboxes
+                         * Namespace restrictions
+                   - BAD: The command is invalid or not supported.
+
+               Special notes:
+                   - RENAME does not automatically select the new mailbox.
+                   - RENAME does not return any untagged responses.
+                   - Servers MAY automatically rename subordinate mailboxes, but this
+                     behavior is implementation-specific and not required by the RFC.
+                   - RENAME never returns NIL and never returns an empty result set.
+                     It always ends with a tagged OK/NO/BAD response.
+
+               Client behavior:
+                   - On tagged OK: the mailbox was successfully renamed.
+                   - On tagged NO/BAD: the client must throw an exception.
+            */
+
+            folder    = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+            newFolder = IMAP_Utils.EncodeMailbox(newFolder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} RENAME {folder} {newFolder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method GetSubscribedFolders
+        #region method FoldersSubscribed
 
         /// <summary>
-        /// Get user subscribed folders list.
+        /// Executes the IMAP <c>LSUB</c> command and returns all subscribed mailbox
+        /// entries that match the specified reference name and pattern. This is the
+        /// synchronous wrapper for <see cref="FoldersSubscribedAsync"/>.
         /// </summary>
-        /// <param name="filter">Folders filter. If this value is null, all folders are returned.</param>
-        /// <returns>Returns subscribed folders list.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
+        /// <param name="referenceName">
+        /// The reference name used as the base for subscribed mailbox lookup.
+        /// Typically an empty string (<c>""</c>) to indicate the root of the
+        /// hierarchy.
+        /// </param>
+        /// <param name="pattern">
+        /// The mailbox pattern to match. Common values include <c>"*"</c> for all
+        /// subscribed mailboxes or <c>"%"</c> for the current hierarchy level.
+        /// </param>
+        /// <returns>
+        /// An array of <see cref="IMAP_r_u_LSub"/> objects representing the
+        /// subscribed mailboxes returned by the server. If the server returns no
+        /// untagged <c>LSUB</c> responses, an empty array is returned. This method
+        /// never returns <c>null</c>.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
         /// <remarks>
-        /// The character "*" is a wildcard, and matches zero or more
-        /// characters at this position.  The character "%" is similar to "*",
-        /// but it does not match a hierarchy delimiter.  If the "%" wildcard
-        /// is the last character of a mailbox name argument, matching levels
-        /// of hierarchy are also returned.
+        /// <para>
+        /// This method blocks until the asynchronous <c>LSUB</c> operation completes.
+        /// It uses the client's configured timeout to create a cancellation token
+        /// for the underlying asynchronous call.
+        /// </para>
         /// </remarks>
-        public IMAP_r_u_LSub[] GetSubscribedFolders(string filter)
-        {      
+        public IMAP_r_u_LSub[] FoldersSubscribed(string referenceName = "",string pattern = "*")
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return FoldersSubscribedAsync(referenceName,pattern,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FoldersSubscribedAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>LSUB</c> command and returns all subscribed mailbox
+        /// entries that match the specified reference name and pattern. The method
+        /// returns zero or more <see cref="IMAP_r_u_LSub"/> objects corresponding to
+        /// the untagged <c>LSUB</c> responses sent by the server.
+        /// </summary>
+        /// <param name="referenceName">
+        /// The reference name used as the base for mailbox lookup. Typically an
+        /// empty string (<c>""</c>) to indicate the root of the hierarchy.
+        /// </param>
+        /// <param name="pattern">
+        /// The mailbox pattern to match. Common values include <c>"*"</c> for all
+        /// subscribed mailboxes or <c>"%"</c> for the current hierarchy level.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// An array of <see cref="IMAP_r_u_LSub"/> objects representing the
+        /// subscribed mailboxes returned by the server. If the server returns no
+        /// untagged <c>LSUB</c> responses, an empty array is returned. This method
+        /// never returns <c>null</c>.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>LSUB</c> command is defined in RFC 3501. It returns zero or
+        /// more untagged <c>LSUB</c> responses, each describing a subscribed mailbox.
+        /// The response format is identical to <c>LIST</c>, consisting of attribute
+        /// flags, an optional hierarchy delimiter, and a mailbox name.
+        /// </para>
+        /// <para>
+        /// The mailbox name is always a string and MUST NOT be <c>NIL</c>. The
+        /// hierarchy delimiter MAY be <c>NIL</c>, indicating that the mailbox has
+        /// no hierarchy. Unlike <c>LIST</c>, the <c>LSUB</c> command reports only
+        /// mailboxes that the user is subscribed to, and does not guarantee that
+        /// the mailbox currently exists.
+        /// </para>
+        /// <para>
+        /// If the pattern matches no subscribed mailboxes, the server may return
+        /// no untagged <c>LSUB</c> responses. This is treated as a successful
+        /// command with an empty result set.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_LSub[]> FoldersSubscribedAsync(string referenceName = "",string pattern = "*",CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -2611,34 +2163,98 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            
-            List<IMAP_r_u_LSub> retVal = new List<IMAP_r_u_LSub>();
 
+            /* RFC 3501 – IMAP4rev1
+               Command:     LSUB
+               Responses:   zero or more untagged LSUB responses
+                            tagged OK / NO / BAD completion
+
+               The LSUB command returns the set of mailboxes that the user is
+               subscribed to. It does NOT list all mailboxes — only those that
+               have been previously subscribed via the SUBSCRIBE command.
+
+               The server may return zero or more untagged LSUB responses. Each
+               LSUB response describes a single subscribed mailbox and has the form:
+
+                   * LSUB (<attributes>) "<delimiter>" "<name>"
+
+               The <attributes> list may include flags such as:
+                   \Noselect     mailbox cannot be selected
+                   \Marked       mailbox has new messages
+                   \Unmarked     mailbox does not have new messages
+
+               The <delimiter> is the hierarchy separator used within that mailbox
+               namespace. The delimiter MAY be NIL, indicating that the mailbox has
+               no hierarchy.
+
+               IMPORTANT:
+                   - The mailbox name MUST NOT be NIL.
+                     It is always a string, possibly the empty string ("").
+                   - LSUB returns only subscribed mailboxes.
+                     It does not indicate whether the mailbox actually exists.
+                   - Servers MAY return \Noselect for mailboxes that no longer exist
+                     but remain in the subscription list.
+
+               Examples:
+                   C: A0001 LSUB "" "*"
+                   S: * LSUB (\HasChildren) "/" "INBOX"
+                   S: * LSUB (\Noselect) "/" "OldArchive"
+                   S: A0001 OK Completed
+
+                   C: A0002 LSUB "" "INBOX"
+                   S: * LSUB () NIL "INBOX"
+                   S: A0002 OK Completed
+
+               Empty result cases:
+                   1) The server may return no untagged LSUB responses at all:
+                          C: A0003 LSUB "" "NonExisting/*"
+                          S: A0003 OK Completed
+                      This indicates that the pattern matched no subscribed mailboxes.
+                      The client must treat this as an empty result set.
+
+                   2) The server may return an LSUB response with an empty mailbox name:
+                          * LSUB () "/" ""
+                      This is a valid mailbox name (empty string), not NIL.
+                      The client must treat this as a valid mailbox entry.
+
+               In both empty-result cases above, the LSUB command succeeded and the
+               correct client behavior is to return an empty collection (zero mailboxes),
+               not null.
+
+               Error cases:
+                   If the server returns a tagged NO or BAD response, the LSUB command
+                   has failed. A BAD response may indicate that the server does not
+                   support the LSUB command or that the arguments were invalid. The
+                   client should throw an exception in these cases.
+
+               Notes:
+                   - LSUB does not indicate subscription state changes; it only returns
+                     the current subscription list.
+                   - LSUB does not return message counts or mailbox status.
+                   - LSUB is optional in IMAP4rev1, but widely implemented.
+            */
+            
+            referenceName = IMAP_Utils.EncodeMailbox(referenceName,m_MailboxEncoding);
+            pattern       = IMAP_Utils.EncodeMailbox(pattern,m_MailboxEncoding);
+
+            List<IMAP_r_u_LSub> retVal = new List<IMAP_r_u_LSub>();
+            
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_LSub){
-                    retVal.Add((IMAP_r_u_LSub)e.Value);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(e is IMAP_r_u_LSub item){
+                    retVal.Add(item);
                 }
             };
 
-            using(GetSubscribedFoldersAsyncOP op = new GetSubscribedFoldersAsyncOP(filter,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetSubscribedFoldersAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetSubscribedFoldersAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandLineAsync($"{(m_CommandIndex++).ToString("d5")} LSUB {referenceName} {pattern}\r\n",true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
             return retVal.ToArray();
@@ -2646,145 +2262,107 @@ namespace LumiSoft.Net.IMAP.Client
 
         #endregion
 
-        #region method GetSubscribedFoldersAsync
-
-        #region class GetSubscribedFoldersAsyncOP
+        #region method FolderSubscribe
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetSubscribedFoldersAsync"/> asynchronous operation.
+        /// Executes the IMAP <c>SUBSCRIBE</c> command for the specified mailbox.
+        /// This is the synchronous wrapper for <see cref="FolderSubscribeAsync"/>.
         /// </summary>
-        public class GetSubscribedFoldersAsyncOP : CmdAsyncOP<GetSubscribedFoldersAsyncOP>
+        /// <param name="folder">
+        /// The mailbox name to subscribe. The value must be a non‑empty string.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method blocks until the asynchronous <c>SUBSCRIBE</c> operation
+        /// completes. It uses the client's configured timeout to create a
+        /// cancellation token for the underlying asynchronous call.
+        /// </para>
+        /// <para>
+        /// The <c>SUBSCRIBE</c> command adds the mailbox name to the user's
+        /// subscription list but does not create the mailbox. Servers may accept
+        /// subscriptions for nonexistent mailboxes or may reject them with a
+        /// <c>NO</c> response.
+        /// </para>
+        /// </remarks>
+        public void FolderSubscribe(string folder)
         {
-            private string? m_Filter = null;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="filter">Folders filter. If this value is null, all folders are returned.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            /// <remarks>
-            /// The character "*" is a wildcard, and matches zero or more
-            /// characters at this position.  The character "%" is similar to "*",
-            /// but it does not match a hierarchy delimiter.  If the "%" wildcard
-            /// is the last character of a mailbox name argument, matching levels
-            /// of hierarchy are also returned.
-            /// </remarks>
-            public GetSubscribedFoldersAsyncOP(string filter,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                m_Filter = filter;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.3.9. LSUB Command.
-                    Arguments:  reference name
-                                mailbox name with possible wildcards
-
-                    Responses:  untagged responses: LSUB
-
-                    Result:     OK - lsub completed
-                                NO - lsub failure: can't list that reference or name
-                                BAD - command unknown or arguments invalid
-
-                    The LSUB command returns a subset of names from the set of names
-                    that the user has declared as being "active" or "subscribed".
-                    Zero or more untagged LSUB replies are returned.  The arguments to
-                    LSUB are in the same form as those for LIST.
-
-                    The returned untagged LSUB response MAY contain different mailbox
-                    flags from a LIST untagged response.  If this should happen, the
-                    flags in the untagged LIST are considered more authoritative.
-
-                    A special situation occurs when using LSUB with the % wildcard.
-                    Consider what happens if "foo/bar" (with a hierarchy delimiter of
-                    "/") is subscribed but "foo" is not.  A "%" wildcard to LSUB must
-                    return foo, not foo/bar, in the LSUB response, and it MUST be
-                    flagged with the \Noselect attribute.
-
-                    The server MUST NOT unilaterally remove an existing mailbox name
-                    from the subscription list even if a mailbox by that name no
-                    longer exists.
-
-                    Example:    C: A002 LSUB "#news." "comp.mail.*"
-                                S: * LSUB () "." #news.comp.mail.mime
-                                S: * LSUB () "." #news.comp.mail.misc
-                                S: A002 OK LSUB completed
-                                C: A003 LSUB "#news." "comp.%"
-                                S: * LSUB (\NoSelect) "." #news.comp.mail
-                                S: A003 OK LSUB completed
-                */
-
-                if(m_Filter != null){
-                    byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " LSUB \"\" " + IMAP_Utils.EncodeMailbox(m_Filter,imap.m_MailboxEncoding) + "\r\n");
-                    this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-                }
-                else{
-                    byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " LSUB \"\" \"*\"\r\n");
-                    this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-                }
-            }
-
-            #endregion
+            FolderSubscribeAsync(folder,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method FolderSubscribeAsync
+
         /// <summary>
-        /// Executes LSUB command.
+        /// Executes the IMAP <c>SUBSCRIBE</c> command for the specified mailbox.
+        /// This adds the mailbox name to the user's subscription list so that it
+        /// appears in <c>LSUB</c> results.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetSubscribedFoldersAsync(GetSubscribedFoldersAsyncOP op)
+        /// <param name="folder">
+        /// The mailbox name to subscribe. The value must be a non‑empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation. If the server returns
+        /// a tagged <c>OK</c> response, the subscription succeeds. If the server
+        /// returns <c>NO</c> or <c>BAD</c>, an <see cref="IMAP_ClientException"/>
+        /// is thrown.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>SUBSCRIBE</c> command is defined in RFC 3501. It records
+        /// the subscription state for a mailbox but does not create the mailbox.
+        /// Servers may accept subscriptions for nonexistent mailboxes or may
+        /// reject them with a <c>NO</c> response.
+        /// </para>
+        /// <para>
+        /// The mailbox name is encoded using the client's current mailbox encoding
+        /// before being sent to the server. The command does not produce untagged
+        /// mailbox responses; only the final tagged completion response is returned.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderSubscribeAsync(string folder,CancellationToken cancellationToken = default)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method SubscribeFolder
-
-        /// <summary>
-        /// Subscribes specified folder.
-        /// </summary>
-        /// <param name="folder">Foler name with path.</param>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void SubscribeFolder(string folder)
-        {            
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -2793,163 +2371,182 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-                        
-            using(SubscribeFolderAsyncOP op = new SubscribeFolderAsyncOP(folder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<SubscribeFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.SubscribeFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method SubscribeFolderAsync
-
-        #region class SubscribeFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.SubscribeFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class SubscribeFolderAsyncOP : CmdAsyncOP<SubscribeFolderAsyncOP>
-        {
-            private string m_Folder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public SubscribeFolderAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.3.6. SUBSCRIBE Command.
-                    Arguments:  mailbox
-
-                    Responses:  no specific responses for this command
-
-                    Result:     OK - subscribe completed
-                                NO - subscribe failure: can't subscribe to that name
-                                BAD - command unknown or arguments invalid
-
-                    The SUBSCRIBE command adds the specified mailbox name to the
-                    server's set of "active" or "subscribed" mailboxes as returned by
-                    the LSUB command.  This command returns a tagged OK response only
-                    if the subscription is successful.
-
-                    A server MAY validate the mailbox argument to SUBSCRIBE to verify
-                    that it exists.  However, it MUST NOT unilaterally remove an
-                    existing mailbox name from the subscription list even if a mailbox
-                    by that name no longer exists.
-
-                        Note: This requirement is because a server site can
-                        choose to routinely remove a mailbox with a well-known
-                        name (e.g., "system-alerts") after its contents expire,
-                        with the intention of recreating it when new contents
-                        are appropriate.
-
-
-                    Example:    C: A002 SUBSCRIBE #news.comp.mail.mime
-                                S: A002 OK SUBSCRIBE completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " SUBSCRIBE " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes SUBSCRIBE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool SubscribeFolderAsync(SubscribeFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            /* RFC 3501 – IMAP4rev1
+               Command:     SUBSCRIBE
+               Responses:   tagged OK / NO / BAD completion
+                            (no untagged mailbox responses)
+
+               The SUBSCRIBE command adds the specified mailbox name to the user's
+               subscription list. Subscribed mailboxes are those returned by the
+               <LSUB> command. SUBSCRIBE does not create the mailbox; it only records
+               the subscription state.
+
+               Command syntax:
+                   tag SUBSCRIBE "<mailbox>"
+
+               The server does not return untagged mailbox data. A successful
+               SUBSCRIBE command ends with a tagged OK response. A tagged NO or BAD
+               indicates failure.
+
+               IMPORTANT:
+                   - The mailbox name MUST NOT be NIL.
+                     It is always a string, possibly the empty string ("").
+                   - SUBSCRIBE does NOT create the mailbox.
+                     If the mailbox does not exist, servers may still accept the
+                     subscription or may reject it with NO.
+                   - SUBSCRIBE only modifies the subscription list.
+                     It does not affect mailbox existence, flags, or message state.
+                   - Servers MAY allow subscriptions to nonexistent mailboxes.
+                     This is server‑dependent behavior.
+
+               Examples:
+                   C: A0001 SUBSCRIBE "INBOX"
+                   S: A0001 OK Subscribed
+
+                   C: A0002 SUBSCRIBE "Archive/2020"
+                   S: A0002 OK Completed
+
+                   C: A0003 SUBSCRIBE "NonExisting"
+                   S: A0003 NO Mailbox does not exist
+
+               Error cases:
+                   - A tagged NO response indicates that the server refused the
+                     subscription (e.g., nonexistent mailbox, permission denied).
+                   - A tagged BAD response indicates invalid arguments or that the
+                     server does not support SUBSCRIBE.
+                   - The client should throw an exception for NO or BAD responses.
+
+               Notes:
+                   - SUBSCRIBE is optional in IMAP4rev1 but widely implemented.
+                   - SUBSCRIBE does not return mailbox attributes or hierarchy
+                     information; use LIST or LSUB for that.
+                   - SUBSCRIBE does not affect the selected mailbox state.
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} SUBSCRIBE {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method UnsubscribeFolder
+        #region method FolderUnsubscribe
 
         /// <summary>
-        /// Unsubscribes specified folder.
+        /// Executes the IMAP <c>UNSUBSCRIBE</c> command for the specified mailbox.
+        /// This is the synchronous wrapper for <see cref="FolderUnsubscribeAsync"/>.
         /// </summary>
-        /// <param name="folder">Foler name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void UnsubscribeFolder(string folder)
-        {            
+        /// <param name="folder">
+        /// The mailbox name to unsubscribe. The value must be a non‑empty string.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method blocks until the asynchronous <c>UNSUBSCRIBE</c> operation
+        /// completes. It uses the client's configured timeout to create a
+        /// cancellation token for the underlying asynchronous call.
+        /// </para>
+        /// <para>
+        /// The <c>UNSUBSCRIBE</c> command removes the mailbox name from the user's
+        /// subscription list but does not delete the mailbox. Servers may accept
+        /// unsubscribe requests for nonexistent mailboxes or may reject them with
+        /// a <c>NO</c> response.
+        /// </para>
+        /// </remarks>
+        public void FolderUnsubscribe(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderUnsubscribeAsync(folder, cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderUnsubscribeAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>UNSUBSCRIBE</c> command for the specified mailbox.
+        /// This removes the mailbox name from the user's subscription list so that
+        /// it no longer appears in <c>LSUB</c> results.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name to unsubscribe. The value must be a non‑empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation. If the server returns
+        /// a tagged <c>OK</c> response, the unsubscribe succeeds. If the server
+        /// returns <c>NO</c> or <c>BAD</c>, an <see cref="IMAP_ClientException"/>
+        /// is thrown.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>UNSUBSCRIBE</c> command is defined in RFC 3501. It removes
+        /// the mailbox name from the user's subscription list but does not delete
+        /// the mailbox. Servers may accept unsubscribe requests for nonexistent
+        /// mailboxes or may reject them with a <c>NO</c> response.
+        /// </para>
+        /// <para>
+        /// The mailbox name is encoded using the client's current mailbox encoding
+        /// before being sent to the server. The command does not produce untagged
+        /// mailbox responses; only the final tagged completion response is returned.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderUnsubscribeAsync(string folder,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -2958,134 +2555,77 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            using(UnsubscribeFolderAsyncOP op = new UnsubscribeFolderAsyncOP(folder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<UnsubscribeFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.UnsubscribeFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method UnsubscribeFolderAsync
-
-        #region class UnsubscribeFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.UnsubscribeFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class UnsubscribeFolderAsyncOP : CmdAsyncOP<UnsubscribeFolderAsyncOP>
-        {
-            private string m_Folder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public UnsubscribeFolderAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.3.7. UNSUBSCRIBE Command.
-                    Arguments:  mailbox name
-
-                    Responses:  no specific responses for this command
-
-                    Result:     OK - unsubscribe completed
-                                NO - unsubscribe failure: can't unsubscribe that name
-                                BAD - command unknown or arguments invalid
-
-                    The UNSUBSCRIBE command removes the specified mailbox name from
-                    the server's set of "active" or "subscribed" mailboxes as returned
-                    by the LSUB command.  This command returns a tagged OK response
-                    only if the unsubscription is successful.
-
-                    Example:    C: A002 UNSUBSCRIBE #news.comp.mail.mime
-                                S: A002 OK UNSUBSCRIBE completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " UNSUBSCRIBE " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes UNSUBSCRIBE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool UnsubscribeFolderAsync(UnsubscribeFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            /* RFC 3501 – IMAP4rev1
+               Command:     UNSUBSCRIBE
+               Responses:   tagged OK / NO / BAD completion
+                            (no untagged mailbox responses)
+
+               The UNSUBSCRIBE command removes the specified mailbox name from the
+               user's subscription list. After successful completion, the mailbox
+               will no longer appear in <LSUB> results. UNSUBSCRIBE does not delete
+               the mailbox; it only modifies the subscription state.
+
+               Command syntax:
+                   tag UNSUBSCRIBE "<mailbox>"
+
+               The server does not return untagged mailbox data. A successful
+               UNSUBSCRIBE command ends with a tagged OK response. A tagged NO or BAD
+               indicates failure.
+
+               IMPORTANT:
+                   - The mailbox name MUST NOT be NIL.
+                     It is always a string, possibly the empty string ("").
+                   - UNSUBSCRIBE does NOT delete the mailbox.
+                     It only removes the subscription entry.
+                   - Servers MAY allow unsubscribing from nonexistent mailboxes.
+                     This is server‑dependent behavior.
+                   - If the mailbox is not currently subscribed, servers may still
+                     return OK or may return NO depending on implementation.
+
+               Examples:
+                   C: A0001 UNSUBSCRIBE "INBOX"
+                   S: A0001 OK Unsubscribed
+
+                   C: A0002 UNSUBSCRIBE "Archive/2020"
+                   S: A0002 OK Completed
+
+                   C: A0003 UNSUBSCRIBE "NonExisting"
+                   S: A0003 NO Mailbox not subscribed
+
+               Error cases:
+                   - A tagged NO response indicates that the server refused the
+                     unsubscribe request (e.g., mailbox not subscribed, permission denied).
+                   - A tagged BAD response indicates invalid arguments or that the
+                     server does not support UNSUBSCRIBE.
+                   - The client should throw an exception for NO or BAD responses.
+
+               Notes:
+                   - UNSUBSCRIBE is optional in IMAP4rev1 but widely implemented.
+                   - UNSUBSCRIBE does not return mailbox attributes or hierarchy
+                     information; use LIST or LSUB for that.
+                   - UNSUBSCRIBE does not affect the selected mailbox state.
+            */
+
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} UNSUBSCRIBE {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
@@ -3093,234 +2633,116 @@ namespace LumiSoft.Net.IMAP.Client
         #region method FolderStatus
 
         /// <summary>
-        /// Gets the specified folder status.
+        /// Executes the IMAP <c>STATUS</c> command for the specified mailbox.
+        /// This is the synchronous wrapper for <see cref="FolderStatusAsync"/>.
         /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <returns>Returns STATUS responses.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_Status[] FolderStatus(string folder)
-        {            
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(folder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
+        /// <param name="folder">
+        /// The mailbox name whose status information is requested. The value must
+        /// be a non‑empty string.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_Status"/> object containing the mailbox status
+        /// values returned by the server.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server violates the IMAP protocol by failing to return
+        /// the required untagged <c>STATUS</c> response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method blocks until the asynchronous <c>STATUS</c> operation
+        /// completes. It uses the client's configured timeout to create a
+        /// cancellation token for the underlying asynchronous call.
+        /// </para>
+        /// <para>
+        /// The <c>STATUS</c> command retrieves mailbox metadata such as message
+        /// counts and UID values without selecting the mailbox. The server MUST
+        /// return exactly one untagged <c>STATUS</c> response.
+        /// </para>
+        /// </remarks>
+        public IMAP_r_u_Status FolderStatus(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            List<IMAP_r_u_Status> retVal = new List<IMAP_r_u_Status>();
-
-            // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Status){
-                    retVal.Add((IMAP_r_u_Status)e.Value);
-                }
-            };
-
-            using(FolderStatusAsyncOP op = new FolderStatusAsyncOP(folder,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<FolderStatusAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.FolderStatusAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-
-            return retVal.ToArray();
+            return FolderStatusAsync(folder,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
-        
+
         #region method FolderStatusAsync
 
-        #region class FolderStatusAsyncOP
-
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.FolderStatusAsync"/> asynchronous operation.
+        /// Executes the IMAP <c>STATUS</c> command for the specified mailbox and
+        /// returns the server‑reported status information.
         /// </summary>
-        public class FolderStatusAsyncOP : CmdAsyncOP<FolderStatusAsyncOP>
+        /// <param name="folder">
+        /// The mailbox name whose status information is requested. The value must
+        /// be a non‑empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_Status"/> object containing the mailbox status
+        /// values returned by the server. The server MUST return exactly one
+        /// untagged <c>STATUS</c> response. If the server returns <c>NO</c> or
+        /// <c>BAD</c>, an <see cref="IMAP_ClientException"/> is thrown.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server violates the IMAP protocol by failing to return
+        /// the required untagged <c>STATUS</c> response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>STATUS</c> command is defined in RFC 3501. It retrieves
+        /// mailbox metadata such as message counts and UID values without
+        /// selecting the mailbox. The mailbox name is encoded using the client's
+        /// configured mailbox encoding before being sent to the server.
+        /// </para>
+        /// <para>
+        /// The server MUST return exactly one untagged <c>STATUS</c> response.
+        /// Multiple responses or the absence of a <c>STATUS</c> response indicate
+        /// a protocol violation and result in an <see cref="IMAP_ProtocolException"/>.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_Status> FolderStatusAsync(string folder,CancellationToken cancellationToken = default)
         {
-            private string m_Folder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public FolderStatusAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.3.10. STATUS Command.
-                    Arguments:  mailbox name
-                                status data item names
-
-                    Responses:  untagged responses: STATUS
-
-                    Result:     OK - status completed
-                                NO - status failure: no status for that name
-                                BAD - command unknown or arguments invalid
-
-                    The STATUS command requests the status of the indicated mailbox.
-                    It does not change the currently selected mailbox, nor does it
-                    affect the state of any messages in the queried mailbox (in
-                    particular, STATUS MUST NOT cause messages to lose the \Recent
-                    flag).
-
-                    The STATUS command provides an alternative to opening a second
-                    IMAP4rev1 connection and doing an EXAMINE command on a mailbox to
-                    query that mailbox's status without deselecting the current
-                    mailbox in the first IMAP4rev1 connection.
-
-                    Unlike the LIST command, the STATUS command is not guaranteed to
-                    be fast in its response.  Under certain circumstances, it can be
-                    quite slow.  In some implementations, the server is obliged to
-                    open the mailbox read-only internally to obtain certain status
-                    information.  Also unlike the LIST command, the STATUS command
-                    does not accept wildcards.
-
-                    Note: The STATUS command is intended to access the
-                    status of mailboxes other than the currently selected
-                    mailbox.  Because the STATUS command can cause the
-                    mailbox to be opened internally, and because this
-                    information is available by other means on the selected
-                    mailbox, the STATUS command SHOULD NOT be used on the
-                    currently selected mailbox.
-
-                    The STATUS command MUST NOT be used as a "check for new
-                    messages in the selected mailbox" operation (refer to
-                    sections 7, 7.3.1, and 7.3.2 for more information about
-                    the proper method for new message checking).
-
-                    Because the STATUS command is not guaranteed to be fast
-                    in its results, clients SHOULD NOT expect to be able to
-                    issue many consecutive STATUS commands and obtain
-                    reasonable performance.
-
-                    The currently defined status data items that can be requested are:
-
-                    MESSAGES
-                        The number of messages in the mailbox.
-
-                    RECENT
-                        The number of messages with the \Recent flag set.
-
-                    UIDNEXT
-                        The next unique identifier value of the mailbox.  Refer to
-                        section 2.3.1.1 for more information.
-
-                    UIDVALIDITY
-                        The unique identifier validity value of the mailbox.  Refer to
-                        section 2.3.1.1 for more information.
-
-                    UNSEEN
-                        The number of messages which do not have the \Seen flag set.
-
-
-                    Example:    C: A042 STATUS blurdybloop (UIDNEXT MESSAGES)
-                                S: * STATUS blurdybloop (MESSAGES 231 UIDNEXT 44292)
-                                S: A042 OK STATUS completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " STATUS " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + " (MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes STATUS command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool FolderStatusAsync(FolderStatusAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method SelectFolder
-
-        /// <summary>
-        /// Selects specified folder.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void SelectFolder(string folder)
-        {            
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -3329,1308 +2751,210 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            using(SelectFolderAsyncOP op = new SelectFolderAsyncOP(folder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<SelectFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.SelectFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method SelectFolderAsync
-
-        #region class SelectFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.SelectFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class SelectFolderAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private string                             m_Folder;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public SelectFolderAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder    = folder;
-                m_pCallback = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 3501 6.3.1.  SELECT Command.
-                        Arguments:  mailbox name
-
-                        Responses:  REQUIRED untagged responses: FLAGS, EXISTS, RECENT
-                                    REQUIRED OK untagged responses:  UNSEEN,  PERMANENTFLAGS,
-                                    UIDNEXT, UIDVALIDITY
-
-                        Result:     OK - select completed, now in selected state
-                                    NO - select failure, now in authenticated state: no
-                                         such mailbox, can't access mailbox
-                                    BAD - command unknown or arguments invalid
-
-                        The SELECT command selects a mailbox so that messages in the
-                        mailbox can be accessed.  Before returning an OK to the client,
-                        the server MUST send the following untagged data to the client.
-                        Note that earlier versions of this protocol only required the
-                        FLAGS, EXISTS, and RECENT untagged data; consequently, client
-                        implementations SHOULD implement default behavior for missing data
-                        as discussed with the individual item.
-
-                            FLAGS       Defined flags in the mailbox.  See the description
-                                        of the FLAGS response for more detail.
-
-                            <n> EXISTS  The number of messages in the mailbox.  See the
-                                        description of the EXISTS response for more detail.
-
-                            <n> RECENT  The number of messages with the \Recent flag set.
-                                        See the description of the RECENT response for more
-                                        detail.
-
-                            OK [UNSEEN <n>]
-                                        The message sequence number of the first unseen
-                                        message in the mailbox.  If this is missing, the
-                                        client can not make any assumptions about the first
-                                        unseen message in the mailbox, and needs to issue a
-                                        SEARCH command if it wants to find it.
-
-                            OK [PERMANENTFLAGS (<list of flags>)]
-                                        A list of message flags that the client can change
-                                        permanently.  If this is missing, the client should
-                                        assume that all flags can be changed permanently.
-
-                            OK [UIDNEXT <n>]
-                                        The next unique identifier value.  Refer to section
-                                        2.3.1.1 for more information.  If this is missing,
-                                        the client can not make any assumptions about the
-                                        next unique identifier value.
-
-                            OK [UIDVALIDITY <n>]
-                                    The unique identifier validity value.  Refer to
-                                    section 2.3.1.1 for more information.  If this is
-                                    missing, the server does not support unique
-                                    identifiers.
-
-                        Only one mailbox can be selected at a time in a connection;
-                        simultaneous access to multiple mailboxes requires multiple
-                        connections.  The SELECT command automatically deselects any
-                        currently selected mailbox before attempting the new selection.
-                        Consequently, if a mailbox is selected and a SELECT command that
-                        fails is attempted, no mailbox is selected.
-                     
-                        If the client is permitted to modify the mailbox, the server
-                        SHOULD prefix the text of the tagged OK response with the
-                        "[READ-WRITE]" response code.
-                    */
-
-                    // Set new folder as selected folder.
-                    m_pImapClient.m_pSelectedFolder = new IMAP_Client_SelectedFolder(m_Folder);
-                    
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " SELECT " + IMAP_Utils.EncodeMailbox(m_Folder,m_pImapClient.m_MailboxEncoding) + "\r\n");
-                    string cmdLineLog = Encoding.UTF8.GetString(cmdLine).TrimEnd();
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        ProecessCmdResult(e.Value);
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        ProecessCmdResult(args);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ProecessCmdResult
-
-            /// <summary>
-            /// Processes command result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProecessCmdResult(SendCmdAndReadRespAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Command send/receive failed.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                        m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    }
-                    // Command send/receive succeeded.
-                    else{
-                        m_pFinalResponse = op.FinalResponse;
-
-                        // IMAP server returned error response.
-                        if(op.FinalResponse.IsError){
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-                            
-                            // If a mailbox is selected and a SELECT command that fails is attempted, no mailbox is selected.
-                            m_pImapClient.m_pSelectedFolder = null;
-                        }
-                        // IMAP server returned success response.
-                        else{
-                            // Mark folder as read-only if optional response code "READ-ONLY" specified.
-                            if(m_pFinalResponse.OptionalResponse != null && m_pFinalResponse.OptionalResponse is IMAP_t_orc_ReadOnly){
-                               m_pImapClient.m_pSelectedFolder?.SetReadOnly(true);
-                            }
-                        }
-                    }
-
-                    SetState(AsyncOP_State.Completed);
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<SelectFolderAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<SelectFolderAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes SELECT command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="SelectFolderAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool SelectFolderAsync(SelectFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method ExamineFolder
-
-        /// <summary>
-        /// Selects folder as read-only, no changes to messages or flags not possible.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void ExamineFolder(string folder)
-        {            
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(folder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            using(ExamineFolderAsyncOP op = new ExamineFolderAsyncOP(folder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<ExamineFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.ExamineFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method ExamineFolderAsync
-
-        #region class ExamineFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.ExamineFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class ExamineFolderAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private string                             m_Folder;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public ExamineFolderAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder    = folder;
-                m_pCallback = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 3501 6.3.2.  EXAMINE Command.
-                        Arguments:  mailbox name
-
-                        Responses:  REQUIRED untagged responses: FLAGS, EXISTS, RECENT
-                                    REQUIRED OK untagged responses:  UNSEEN,  PERMANENTFLAGS,
-                                    UIDNEXT, UIDVALIDITY
-
-                        Result:     OK - examine completed, now in selected state
-                                    NO - examine failure, now in authenticated state: no
-                                         such mailbox, can't access mailbox
-                                    BAD - command unknown or arguments invalid
-
-                        The EXAMINE command is identical to SELECT and returns the same
-                        output; however, the selected mailbox is identified as read-only.
-                        No changes to the permanent state of the mailbox, including
-                        per-user state, are permitted; in particular, EXAMINE MUST NOT
-                        cause messages to lose the \Recent flag.
-
-                        The text of the tagged OK response to the EXAMINE command MUST
-                        begin with the "[READ-ONLY]" response code.
-                    */
-
-                    // Set new folder as selected folder.
-                    m_pImapClient.m_pSelectedFolder = new IMAP_Client_SelectedFolder(m_Folder);
-                    
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " EXAMINE " + IMAP_Utils.EncodeMailbox(m_Folder,m_pImapClient.m_MailboxEncoding) + "\r\n");
-                    string cmdLineLog = Encoding.UTF8.GetString(cmdLine).TrimEnd();
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        ProecessCmdResult(e.Value);
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        ProecessCmdResult(args);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ProecessCmdResult
-
-            /// <summary>
-            /// Processes command result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProecessCmdResult(SendCmdAndReadRespAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Command send/receive failed.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                        m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    }
-                    // Command send/receive succeeded.
-                    else{
-                        m_pFinalResponse = op.FinalResponse;
-
-                        // IMAP server returned error response.
-                        if(op.FinalResponse.IsError){
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-                            
-                            // If a mailbox is selected and a SELECT command that fails is attempted, no mailbox is selected.
-                            m_pImapClient.m_pSelectedFolder = null;
-                        }
-                        // IMAP server returned success response.
-                        else{
-                            // Mark folder as read-only if optional response code "READ-ONLY" specified.
-                            if(m_pFinalResponse.OptionalResponse != null && m_pFinalResponse.OptionalResponse is IMAP_t_orc_ReadOnly){
-                               m_pImapClient.m_pSelectedFolder?.SetReadOnly(true);
-                            }
-                        }
-                    }
-
-                    SetState(AsyncOP_State.Completed);
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<ExamineFolderAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<ExamineFolderAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes EXAMINE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="ExamineFolderAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool ExamineFolderAsync(ExamineFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method GetFolderQuotaRoots
-
-        /// <summary>
-        /// Gets specified folder quota roots and their quota resource usage.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <returns>Returns quota-roots and their resource limit entries.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r[] GetFolderQuotaRoots(string folder)
-        {            
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(folder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            List<IMAP_r> retVal = new List<IMAP_r>();
-
-            // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Quota){
-                    retVal.Add((IMAP_r_u_Quota)e.Value);
-                }
-                else if(e.Value is IMAP_r_u_QuotaRoot){
-                    retVal.Add((IMAP_r_u_QuotaRoot)e.Value);
-                }
-            };
-
-            using(GetFolderQuotaRootsAsyncOP op = new GetFolderQuotaRootsAsyncOP(folder,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetFolderQuotaRootsAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetFolderQuotaRootsAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-
-            return retVal.ToArray();
-        }
-
-        #endregion
-
-        #region method GetFolderQuotaRootsAsync
-
-        #region class GetFolderQuotaRootsAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetFolderQuotaRootsAsync"/> asynchronous operation.
-        /// </summary>
-        public class GetFolderQuotaRootsAsyncOP : CmdAsyncOP<GetFolderQuotaRootsAsyncOP>
-        {
-            private string m_Folder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public GetFolderQuotaRootsAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 2087 4.3. GETQUOTAROOT Command.
-                    Arguments:  mailbox name
-
-                    Data:       untagged responses: QUOTAROOT, QUOTA
-
-                    Result:     OK - getquota completed
-                                NO - getquota error: no such mailbox, permission denied
-                                BAD - command unknown or arguments invalid
-
-                    The GETQUOTAROOT command takes the name of a mailbox and returns the
-                    list of quota roots for the mailbox in an untagged QUOTAROOT
-                    response.  For each listed quota root, it also returns the quota
-                    root's resource usage and limits in an untagged QUOTA response.
-
-                    Example:    C: A003 GETQUOTAROOT INBOX
-                                S: * QUOTAROOT INBOX ""
-                                S: * QUOTA "" (STORAGE 10 512)
-                                S: A003 OK Getquota completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " GETQUOTAROOT " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes STATUS command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetFolderQuotaRootsAsync(GetFolderQuotaRootsAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method GetQuota
-
-        /// <summary>
-        /// Gets the specified folder quota-root resource limit entries.
-        /// </summary>
-        /// <param name="quotaRootName">Quota root name.</param>
-        /// <returns>Returns quota-root resource limit entries.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>quotaRootName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_Quota[] GetQuota(string quotaRootName)
-        {            
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(quotaRootName == null){
-                throw new ArgumentNullException("quotaRootName");
-            }            
-
-            List<IMAP_r_u_Quota> retVal = new List<IMAP_r_u_Quota>();
-
-            // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Quota){
-                    retVal.Add((IMAP_r_u_Quota)e.Value);
-                }
-            };
-
-            using(GetQuotaAsyncOP op = new GetQuotaAsyncOP(quotaRootName,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetQuotaAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetQuotaAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-
-            return retVal.ToArray();
-        }
-
-        #endregion
-
-        #region method GetQuotaAsync
-
-        #region class GetQuotaAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetQuotaAsync"/> asynchronous operation.
-        /// </summary>
-        public class GetQuotaAsyncOP : CmdAsyncOP<GetQuotaAsyncOP>
-        {
-            private string m_QuotaRootName;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="quotaRootName">Quota root name.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>quotaRootName</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public GetQuotaAsyncOP(string quotaRootName,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(quotaRootName == null){
-                    throw new ArgumentNullException("quotaRootName");
-                }
-
-                m_QuotaRootName = quotaRootName;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 2087 4.2. GETQUOTA Command.
-                    Arguments:  quota root
-
-                    Data:       untagged responses: QUOTA
-        
-                    Result:     OK - getquota completed
-                                NO - getquota  error:  no  such  quota  root,  permission denied
-                                BAD - command unknown or arguments invalid
-                    
-                    The GETQUOTA command takes the name of a quota root and returns the
-                    quota root's resource usage and limits in an untagged QUOTA response.
-
-                    Example:    C: A003 GETQUOTA ""
-                                S: * QUOTA "" (STORAGE 10 512)
-                                S: A003 OK Getquota completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " GETQUOTA " + IMAP_Utils.EncodeMailbox(m_QuotaRootName,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes GETQUOTA command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetQuotaAsync(GetQuotaAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method SetQuota
-
-        private void SetQuota()
-        {
-            /* RFC 2087 4.1. SETQUOTA Command.
-                Arguments:  quota root
-                            list of resource limits
-
-                Data:       untagged responses: QUOTA
-
-                Result:     OK - setquota completed
-                            NO - setquota error: can't set that data
-                            BAD - command unknown or arguments invalid
-
-                The SETQUOTA command takes the name of a mailbox quota root and a
-                list of resource limits. The resource limits for the named quota root
-                are changed to be the specified limits.  Any previous resource limits
-                for the named quota root are discarded.
-
-                If the named quota root did not previously exist, an implementation
-                may optionally create it and change the quota roots for any number of
-                existing mailboxes in an implementation-defined manner.
-
-                Example:    C: A001 SETQUOTA "" (STORAGE 512)
-                            S: * QUOTA "" (STORAGE 10 512)
-                            S: A001 OK Setquota completed
+            /* RFC 3501 – IMAP4rev1
+               Command:     STATUS
+               Responses:   one untagged STATUS response
+                            tagged OK / NO / BAD completion
+
+               The STATUS command requests the status of a single mailbox. The client
+               specifies a mailbox name and a list of status data items. The server
+               returns exactly one untagged STATUS response containing the requested
+               data items.
+
+               Command syntax:
+                   tag STATUS "<mailbox>" (status-att-list)
+
+               The server MUST return exactly one untagged STATUS response. Multiple
+               STATUS responses are not permitted. The STATUS response contains the
+               mailbox name and a parenthesized list of attribute/value pairs.
+
+               Common status data items:
+                   MESSAGES   – number of messages in the mailbox
+                   RECENT     – number of messages with the \Recent flag set
+                   UIDNEXT    – next unique identifier value
+                   UIDVALIDITY– unique identifier validity value
+                   UNSEEN     – number of messages without the \Seen flag set
+
+               Examples:
+                   C: A0001 STATUS "INBOX" (MESSAGES RECENT UIDNEXT)
+                   S: * STATUS "INBOX" (MESSAGES 17 RECENT 2 UIDNEXT 123)
+                   S: A0001 OK STATUS completed
+
+                   C: A0002 STATUS "Archive/2020" (UNSEEN)
+                   S: * STATUS "Archive/2020" (UNSEEN 5)
+                   S: A0002 OK Completed
+
+               IMPORTANT:
+                   - STATUS queries a mailbox without selecting it.
+                   - STATUS does not change the selected mailbox state.
+                   - STATUS does not return message data; only mailbox metadata.
+                   - The mailbox name MUST NOT be NIL.
+                   - Servers MUST NOT return more than one STATUS response.
+
+               Error cases:
+                   - A tagged NO response indicates that the server refused the
+                     request (e.g., nonexistent mailbox, permission denied).
+                   - A tagged BAD response indicates invalid arguments or unsupported
+                     status data items.
+                   - The client should throw an exception for NO or BAD responses.
+
+               Notes:
+                   - STATUS is often used by clients to update mailbox counts without
+                     selecting the mailbox.
+                   - STATUS does not return hierarchy information; use LIST for that.
+                   - STATUS does not return subscription state; use LSUB for that.
             */
-        }
 
-        #endregion
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
 
-        #region method GetFolderAcl
-
-        /// <summary>
-        /// Gets the specified folder ACL entries.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <returns>Returns folder ACL entries.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_Acl[] GetFolderAcl(string folder)
-        {            
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(folder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-
-            List<IMAP_r_u_Acl> retVal = new List<IMAP_r_u_Acl>();
-
+            IMAP_r_u_Status? retVal = null;
+            
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Acl){
-                    retVal.Add((IMAP_r_u_Acl)e.Value);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_Status v){
+                    retVal = v;
                 }
             };
 
-            using(GetFolderAclAsyncOP op = new GetFolderAclAsyncOP(folder,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetFolderAclAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetFolderAclAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} STATUS {folder} (MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)\r\n",true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
-            return retVal.ToArray();
+            if(retVal == null){
+                throw new IMAP_ProtocolException("Server did not return required untagged STATUS response.");
+            }
+
+            return retVal;
         }
 
         #endregion
 
-        #region method GetFolderAclAsync
-
-        #region class GetFolderAclAsyncOP
+        #region method FolderSelect
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetFolderAclAsync"/> asynchronous operation.
+        /// Synchronously executes the IMAP <c>SELECT</c> command and sets the specified
+        /// mailbox as the currently selected folder.
         /// </summary>
-        public class GetFolderAclAsyncOP : CmdAsyncOP<GetFolderAclAsyncOP>
+        /// <param name="folder">
+        /// The name of the mailbox to select. Must not be <c>null</c> or empty.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, or is currently
+        /// in the IDLE state. The <c>SELECT</c> command cannot be issued while IDLE
+        /// is active.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is empty or contains only whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// indicating that the mailbox could not be selected.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This is the synchronous wrapper for <see cref="FolderSelectAsync"/>.  
+        /// A cancellation token with the client's configured timeout is created
+        /// internally, and the asynchronous operation is executed synchronously
+        /// using <c>GetAwaiter().GetResult()</c>.
+        /// </para>
+        /// <para>
+        /// For detailed behavior, mailbox state handling, and RFC 3501 semantics,
+        /// see <see cref="FolderSelectAsync"/>.
+        /// </para>
+        /// </remarks>
+        public void FolderSelect(string folder)
         {
-            private string m_Folder;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public GetFolderAclAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 4314 3.3. GETACL Command.
-                    Arguments:  mailbox name
-
-                    Data:       untagged responses: ACL
-
-                    Result:     OK - getacl completed
-                                NO - getacl failure: can't get acl
-                                BAD - arguments invalid
-
-                    The GETACL command returns the access control list for mailbox in an
-                    untagged ACL response.
-
-                    Some implementations MAY permit multiple forms of an identifier to
-                    reference the same IMAP account.  Usually, such implementations will
-                    have a canonical form that is stored internally.  An ACL response
-                    caused by a GETACL command MAY include a canonicalized form of the
-                    identifier that might be different from the one used in the
-                    corresponding SETACL command.
-
-                    Example:    C: A002 GETACL INBOX
-                                S: * ACL INBOX Fred rwipsldexta
-                                S: A002 OK Getacl complete                
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " GETACL " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
+            FolderSelectAsync(folder,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method FolderSelectAsync
+
         /// <summary>
-        /// Executes GETACL command.
+        /// Executes the IMAP <c>SELECT</c> command and sets the specified mailbox
+        /// as the currently selected folder.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetFolderAclAsync(GetFolderAclAsyncOP op)
+        /// <param name="folder">
+        /// The name of the mailbox to select. Must not be <c>null</c> or empty.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, or is currently
+        /// in the IDLE state. The <c>SELECT</c> command cannot be issued while IDLE
+        /// is active.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is empty or contains only whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// indicating that the mailbox could not be selected.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>SELECT</c> command enters the IMAP "selected" state and makes the
+        /// specified mailbox the active folder for subsequent message‑level commands
+        /// such as <c>FETCH</c>, <c>STORE</c>, <c>SEARCH</c>, <c>COPY</c>, and others.
+        /// Only one mailbox may be selected at a time.
+        /// </para>
+        /// <para>
+        /// The server returns multiple untagged responses describing the mailbox
+        /// state (e.g. <c>FLAGS</c>, <c>EXISTS</c>, <c>RECENT</c>,
+        /// <c>UIDVALIDITY</c>, <c>UIDNEXT</c>, <c>PERMANENTFLAGS</c>,
+        /// <c>UNSEEN</c>, <c>HIGHESTMODSEQ</c>). These responses are processed by the
+        /// client's global untagged response handler, which updates the
+        /// <see cref="IMAP_Client_SelectedFolder"/> instance accordingly.
+        /// </para>
+        /// <para>
+        /// If the server indicates <c>[READ-ONLY]</c> in the tagged completion
+        /// response, the selected folder is marked as read‑only. Otherwise, the folder
+        /// is considered read‑write.
+        /// </para>
+        /// <para>
+        /// If the command fails, the selected folder is cleared and an
+        /// <see cref="IMAP_ClientException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// The mailbox name is encoded using the client's configured mailbox
+        /// encoding before being sent to the server.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderSelectAsync(string folder,CancellationToken cancellationToken = default)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method SetFolderAcl
-
-        /// <summary>
-        /// Sets the specified folder ACL.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <param name="user">User name.</param>
-        /// <param name="setType">Specifies how flags are set.</param>
-        /// <param name="permissions">ACL permissions.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>user</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void SetFolderAcl(string folder,string user,IMAP_Flags_SetType setType,IMAP_ACL_Flags permissions)
-        {            
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -4639,207 +2963,222 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-            if(user == null){
-                throw new ArgumentNullException("user");
-            }
-            if(user == string.Empty){
-                throw new ArgumentException("Argument 'user' value must be specified.","user");
-            }
-
-            using(SetFolderAclAsyncOP op = new SetFolderAclAsyncOP(folder,user,setType,permissions,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<SetFolderAclAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.SetFolderAclAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method SetFolderAclAsync
-
-        #region class SetFolderAclAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.SetFolderAclAsync"/> asynchronous operation.
-        /// </summary>
-        public class SetFolderAclAsyncOP : CmdAsyncOP<SetFolderAclAsyncOP>
-        {
-            private string             m_Folder;
-            private string             m_Identifier;
-            private IMAP_Flags_SetType m_FlagsSetType = IMAP_Flags_SetType.Replace;
-            private IMAP_ACL_Flags     m_Permissions  = IMAP_ACL_Flags.None;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="identifier">ACL entry identifier. Normally this is user or group name.</param>
-            /// <param name="setType">Specifies how flags are set.</param>
-            /// <param name="permissions">ACL permissions.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>folder</b> or <b>identifier</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public SetFolderAclAsyncOP(string folder,string identifier,IMAP_Flags_SetType setType,IMAP_ACL_Flags permissions,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-                if(identifier == null){
-                    throw new ArgumentNullException("identifier");
-                }
-                if(string.IsNullOrEmpty(identifier)){
-                    throw new ArgumentException("Argument 'identifier' value must be specified.","identifier");
-                }
-
-                m_Folder       = folder;
-                m_Identifier   = identifier;
-                m_FlagsSetType = setType;
-                m_Permissions  = permissions;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 4314 3.1. SETACL Command.
-                    Arguments:  mailbox name
-                                identifier
-                                access right modification
-
-                    Data:       no specific data for this command
-
-                    Result:     OK - setacl completed
-                                NO - setacl failure: can't set acl
-                                BAD - arguments invalid
-
-                    The SETACL command changes the access control list on the specified
-                    mailbox so that the specified identifier is granted permissions as
-                    specified in the third argument.
-
-                    The third argument is a string containing an optional plus ("+") or
-                    minus ("-") prefix, followed by zero or more rights characters.  If
-                    the string starts with a plus, the following rights are added to any
-                    existing rights for the identifier.  If the string starts with a
-                    minus, the following rights are removed from any existing rights for
-                    the identifier.  If the string does not start with a plus or minus,
-                    the rights replace any existing rights for the identifier.
-
-                    Note that an unrecognized right MUST cause the command to return the
-                    BAD response.  In particular, the server MUST NOT silently ignore
-                    unrecognized rights.
-
-                    Example:    C: A035 SETACL INBOX/Drafts John lrQswicda
-                                S: A035 BAD Uppercase rights are not allowed
-                
-                                C: A036 SETACL INBOX/Drafts John lrqswicda
-                                S: A036 BAD The q right is not supported
-                */
-
-                StringBuilder command = new StringBuilder();
-                command.Append((imap.m_CommandIndex++).ToString("d5"));            
-                command.Append(" SETACL");
-                command.Append(" " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding));
-                command.Append(" " + TextUtils.QuoteString(m_Identifier));
-                if(m_FlagsSetType == IMAP_Flags_SetType.Add){
-                    command.Append(" +" + IMAP_Utils.ACL_to_String(m_Permissions));
-                }
-                else if(m_FlagsSetType == IMAP_Flags_SetType.Remove){
-                    command.Append(" -" + IMAP_Utils.ACL_to_String(m_Permissions));
-                }
-                else if(m_FlagsSetType == IMAP_Flags_SetType.Replace){
-                    command.Append(" " + IMAP_Utils.ACL_to_String(m_Permissions));
-                }
-                else{
-                    throw new NotSupportedException("Not supported argument 'setType' value '" + m_FlagsSetType.ToString() + "'.");
-                }
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes(command.ToString());
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes SETACL command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool SetFolderAclAsync(SetFolderAclAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+
+            /* RFC 3501 – IMAP4rev1
+               Command:     SELECT
+               Responses:   multiple untagged mailbox state responses
+                            tagged OK / NO / BAD completion
+
+               The SELECT command selects a mailbox and enters the selected state.
+               Once a mailbox is selected, the client may issue commands that operate
+               on messages (FETCH, STORE, SEARCH, COPY, etc.). Only one mailbox may
+               be selected at a time.
+
+               Command syntax:
+                   tag SELECT "<mailbox>"
+
+               The server MUST return a series of untagged responses describing the
+               mailbox state. These typically include:
+                   FLAGS         – list of defined flags
+                   OK [PERMANENTFLAGS] – flags the client may change permanently
+                   OK [UIDVALIDITY]    – unique identifier validity value
+                   OK [UIDNEXT]        – next unique identifier value
+                   EXISTS        – number of messages in the mailbox
+                   RECENT        – number of messages with the \Recent flag set
+                   OK [UNSEEN]   – first unseen message (optional)
+                   OK [HIGHESTMODSEQ] – highest modification sequence (if CONDSTORE)
+
+               After all untagged responses, the server sends a tagged OK, NO, or BAD
+               completion response.
+
+               Examples:
+                   C: A0001 SELECT "INBOX"
+                   S: * 172 EXISTS
+                   S: * 1 RECENT
+                   S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+                   S: * OK [PERMANENTFLAGS (\Deleted \Seen)] Limited
+                   S: * OK [UIDVALIDITY 3857529045] UIDs valid
+                   S: * OK [UIDNEXT 4392] Predicted next UID
+                   S: A0001 OK [READ-WRITE] SELECT completed
+
+                   C: A0002 SELECT "Archive/2020"
+                   S: * 42 EXISTS
+                   S: * 0 RECENT
+                   S: * FLAGS (\Seen \Deleted)
+                   S: * OK [UIDVALIDITY 123456] UIDs valid
+                   S: * OK [UIDNEXT 987] Predicted next UID
+                   S: A0002 OK [READ-ONLY] Completed
+
+               IMPORTANT:
+                   - SELECT changes the connection state to "selected".
+                   - Only one mailbox may be selected at a time.
+                   - SELECT may return READ-WRITE or READ-ONLY depending on server
+                     permissions.
+                   - The mailbox name MUST NOT be NIL.
+                   - SELECT does not return subscription state; use LSUB for that.
+                   - SELECT does not return hierarchy information; use LIST for that.
+
+               Error cases:
+                   - A tagged NO response indicates that the mailbox cannot be selected
+                     (e.g., nonexistent mailbox, permission denied).
+                   - A tagged BAD response indicates invalid arguments or unsupported
+                     options.
+                   - The client should throw an exception for NO or BAD responses.
+
+               Notes:
+                   - SELECT is one of the most complex IMAP commands due to the number
+                     of required untagged responses.
+                   - The client MUST process all untagged responses before the final
+                     tagged completion.
+                   - EXAMINE behaves like SELECT but always returns READ-ONLY.
+            */
+
+            // Release old selected folder.
+            if(m_pSelectedFolder != null){
+                m_pSelectedFolder.Dispose();
             }
 
-            return op.Start(this);
+            // Set new folder as selected folder, untagged responses fill all server resturend info.
+            m_pSelectedFolder = new IMAP_Client_SelectedFolder(this,folder);
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} SELECT {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsSuccess){
+                if(response.OptionalResponse is IMAP_t_orc_ReadOnly){
+                    m_pSelectedFolder.SetReadOnly(true);
+                }
+            }
+            else{
+                m_pSelectedFolder = null;
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method DeleteFolderAcl
+        #region method FolderExamine
 
         /// <summary>
-        /// Deletes the specified folder user ACL entry.
+        /// Executes the IMAP <c>EXAMINE</c> command and opens the specified mailbox
+        /// in read-only mode.
         /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <param name="user">User name.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>user</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void DeleteFolderAcl(string folder,string user)
-        {            
+        /// <param name="folder">
+        /// The name of the mailbox to examine. Must not be <c>null</c> or empty.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, or is currently
+        /// in the IDLE state. The <c>EXAMINE</c> command cannot be issued while IDLE
+        /// is active.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is empty or contains only whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// indicating that the mailbox could not be examined.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is the synchronous wrapper for
+        /// <see cref="FolderExamineAsync(string, CancellationToken)"/>. A cancellation
+        /// token with the client’s configured timeout is created internally, and the
+        /// asynchronous operation is executed synchronously using
+        /// <c>GetAwaiter().GetResult()</c>.
+        /// </para>
+        /// <para>
+        /// The <c>EXAMINE</c> command selects a mailbox in read-only mode. The server
+        /// MUST NOT permit any permanent state changes while the mailbox is examined.
+        /// This includes flag updates, message deletions, keyword changes, and any
+        /// operation that would alter the mailbox’s persistent state.
+        /// </para>
+        /// </remarks>
+        public void FolderExamine(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderExamineAsync(folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderExamineAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>EXAMINE</c> command and opens the specified mailbox
+        /// in read-only mode.
+        /// </summary>
+        /// <param name="folder">
+        /// The name of the mailbox to examine. Must not be <c>null</c> or empty.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Optional cancellation token used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, or is currently
+        /// in the IDLE state. The <c>EXAMINE</c> command cannot be issued while IDLE
+        /// is active.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is empty or contains only whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// indicating that the mailbox could not be examined.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>EXAMINE</c> command selects a mailbox in read-only mode. The server
+        /// MUST NOT permit any permanent state changes while the mailbox is examined.
+        /// This includes flag updates, message deletions, keyword changes, and any
+        /// operation that would alter the mailbox’s persistent state.
+        /// </para>
+        /// <para>
+        /// The server returns the same untagged responses as <c>SELECT</c>, including:
+        /// <c>FLAGS</c>, <c>PERMANENTFLAGS</c>, <c>EXISTS</c>, <c>RECENT</c>,
+        /// <c>UIDVALIDITY</c>, <c>UIDNEXT</c>, and optionally <c>UNSEEN</c> and
+        /// <c>HIGHESTMODSEQ</c>. The tagged completion response MUST include
+        /// <c>[READ-ONLY]</c> to indicate that the mailbox cannot be modified.
+        /// </para>
+        /// <para>
+        /// Because the mailbox is opened read-only, the server may suppress certain
+        /// <c>\Recent</c> adjustments that would normally occur when a mailbox is
+        /// opened read-write. Clients should not rely on <c>\Recent</c> semantics for
+        /// synchronization when using <c>EXAMINE</c>.
+        /// </para>
+        /// <para>
+        /// This method is the asynchronous implementation of the EXAMINE command.
+        /// Untagged responses received during execution populate the
+        /// <see cref="IMAP_Client_SelectedFolder"/> instance associated with the
+        /// selected mailbox.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderExamineAsync(string folder,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -4848,168 +3187,204 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-            if(user == null){
-                throw new ArgumentNullException("user");
-            }
-            if(user == string.Empty){
-                throw new ArgumentException("Argument 'user' value must be specified.","user");
-            }
-
-            using(DeleteFolderAclAsyncOP op = new DeleteFolderAclAsyncOP(folder,user,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<DeleteFolderAclAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.DeleteFolderAclAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        #endregion
-
-        #region method DeleteFolderAclAsync
-
-        #region class DeleteFolderAclAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.DeleteFolderAclAsync"/> asynchronous operation.
-        /// </summary>
-        public class DeleteFolderAclAsyncOP : CmdAsyncOP<DeleteFolderAclAsyncOP>
-        {
-            private string m_Folder;
-            private string m_Identifier;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="identifier">ACL entry identifier. Normally this is user or group name.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>folder</b> or <b>identifier</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public DeleteFolderAclAsyncOP(string folder,string identifier,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-                if(identifier == null){
-                    throw new ArgumentNullException("identifier");
-                }
-
-                m_Folder     = folder;
-                m_Identifier = identifier;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 4314 3.2. DELETEACL Command.
-                    Arguments:  mailbox name
-                                identifier
-
-                    Data:       no specific data for this command
-
-                    Result:     OK - deleteacl completed
-                                NO - deleteacl failure: can't delete acl
-                                BAD - arguments invalid
-
-                    The DELETEACL command removes any <identifier,rights> pair for the
-                    specified identifier from the access control list for the specified
-                    mailbox.
-
-                    Example:    C: B001 getacl INBOX
-                                S: * ACL INBOX Fred rwipslxetad -Fred wetd $team w
-                                S: B001 OK Getacl complete
-                                C: B002 DeleteAcl INBOX Fred
-                                S: B002 OK Deleteacl complete
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " DELETEACL " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + " " + TextUtils.QuoteString(m_Identifier) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes DELETEACL command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool DeleteFolderAclAsync(DeleteFolderAclAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+
+            /*
+                EXAMINE Command (RFC 3501 §6.3.2)
+
+                Arguments:
+                    mailbox name
+
+                Purpose:
+                    Selects a mailbox in read-only mode. The server MUST NOT permit
+                    any permanent state changes while the mailbox is examined.
+
+                Server Requirements:
+                    - MUST return the same untagged responses as SELECT:
+                        * FLAGS
+                        * PERMANENTFLAGS
+                        * EXISTS
+                        * RECENT
+                        * UIDVALIDITY
+                        * UIDNEXT
+                        * (optional) UNSEEN
+                        * (optional) HIGHESTMODSEQ (CONDSTORE/QRESYNC)
+                    - Tagged completion response MUST include [READ-ONLY].
+
+                Effects:
+                    - Mailbox is selected but cannot be modified.
+                    - STORE operations that would change flags MUST fail.
+                    - EXPUNGE MUST NOT be permitted.
+                    - Server MAY suppress \Recent adjustments normally done on SELECT.
+
+                Failure Conditions:
+                    - NO: mailbox cannot be examined (e.g., permission denied).
+                    - BAD: command syntax error or invalid arguments.
+
+                Notes:
+                    - EXAMINE is identical to SELECT except for access mode.
+                    - Clients MUST NOT assume \Recent semantics are reliable in EXAMINE.
+                    - No permanent state changes are allowed in this mode.
+            */
+
+            // Release old selected folder.
+            if(m_pSelectedFolder != null){
+                m_pSelectedFolder.Dispose();
             }
 
-            return op.Start(this);
+            // Set new folder as selected folder, untagged responses fill all server resturend info.
+            m_pSelectedFolder = new IMAP_Client_SelectedFolder(this,folder);
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} EXAMINE {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsSuccess){
+                if(response.OptionalResponse is IMAP_t_orc_ReadOnly){
+                    m_pSelectedFolder.SetReadOnly(true);
+                }
+            }
+            else{
+                m_pSelectedFolder = null;
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method GetFolderRights
+        #region method FolderQuotaRoots
 
         /// <summary>
-        /// Gets rights which can be set for the specified identifier.
+        /// Executes the IMAP <c>GETQUOTAROOT</c> command for the specified mailbox.
+        /// This is the synchronous wrapper for <see cref="FolderQuotaRootsAsync"/>.
         /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <param name="identifier">ACL entry identifier. Normally this is user or group name.</param>
-        /// <returns>Returns LISTRIGHTS responses.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when<b>folder</b> or <b>identifier</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_ListRights[] GetFolderRights(string folder,string identifier)
-        {            
+        /// <param name="folder">
+        /// The mailbox name whose quota‑root information is requested. The value
+        /// must be a non‑empty string.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_QuotaRoot"/> object containing the quota roots
+        /// associated with the mailbox. The server MUST return exactly one
+        /// untagged <c>QUOTAROOT</c> response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server violates the IMAP protocol by failing to return
+        /// the required untagged <c>QUOTAROOT</c> response, or by returning more
+        /// than one such response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method blocks until the asynchronous <c>GETQUOTAROOT</c> operation
+        /// completes. It uses the client's configured timeout to create a
+        /// cancellation token for the underlying asynchronous call.
+        /// </para>
+        /// <para>
+        /// The <c>GETQUOTAROOT</c> command is defined in RFC 2087. It retrieves
+        /// the quota roots associated with a mailbox. A mailbox may have zero, one,
+        /// or multiple quota roots. The server MUST return exactly one
+        /// <c>QUOTAROOT</c> response, and that response may list zero or more quota
+        /// root identifiers.
+        /// </para>
+        /// </remarks>
+        public IMAP_r_u_QuotaRoot FolderQuotaRoots(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return FolderQuotaRootsAsync(folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderQuotaRootsAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>GETQUOTAROOT</c> command for the specified mailbox
+        /// and returns the quota‑root information reported by the server.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose quota‑root information is requested. The value
+        /// must be a non‑empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_QuotaRoot"/> object containing the quota roots
+        /// associated with the mailbox. The server MUST return exactly one
+        /// untagged <c>QUOTAROOT</c> response. If the server returns <c>NO</c> or
+        /// <c>BAD</c>, an <see cref="IMAP_ClientException"/> is thrown.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the <c>IDLE</c> state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is an empty or whitespace‑only
+        /// string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// completion response.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server violates the IMAP protocol by failing to return
+        /// the required untagged <c>QUOTAROOT</c> response, or by returning more
+        /// than one such response.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>GETQUOTAROOT</c> command is defined in RFC 2087. It retrieves
+        /// the quota roots associated with a mailbox. A mailbox may have zero, one,
+        /// or multiple quota roots. The server MUST return exactly one
+        /// <c>QUOTAROOT</c> response, and that response may list zero or more quota
+        /// root identifiers.
+        /// </para>
+        /// <para>
+        /// For each quota root listed, the server MAY return one or more untagged
+        /// <c>QUOTA</c> responses describing usage and limits for that root. These
+        /// responses are processed separately by the client.
+        /// </para>
+        /// <para>
+        /// The mailbox name is encoded using the client's configured mailbox
+        /// encoding before being sent to the server.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_QuotaRoot> FolderQuotaRootsAsync(string folder,CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -5018,188 +3393,206 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
+            }
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
+            }
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(folder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
-            if(identifier == null){
-                throw new ArgumentNullException("identifier");
-            }
-            if(identifier == string.Empty){
-                throw new ArgumentException("Argument 'identifier' value must be specified.","identifier");
-            }
 
-            List<IMAP_r_u_ListRights> retVal = new List<IMAP_r_u_ListRights>();
+            /* RFC 2087 – IMAP QUOTA Extension
+               Command:     GETQUOTAROOT
+               Responses:   one untagged QUOTAROOT response
+                            zero or more untagged QUOTA responses
+                            tagged OK / NO / BAD completion
 
+               The GETQUOTAROOT command retrieves the quota roots associated with a
+               mailbox. A mailbox may have zero or more quota roots. The server always
+               returns exactly one QUOTAROOT response for the command; that response
+               contains the mailbox name followed by zero or more quota root
+               identifiers.
+
+               Command syntax:
+                   tag GETQUOTAROOT "<mailbox>"
+
+               QUOTAROOT response:
+                   * QUOTAROOT "<mailbox>" [<root1> <root2> ...]
+
+               If the mailbox has no quota roots, the QUOTAROOT response contains only
+               the mailbox name and no root identifiers.
+
+               For each quota root listed, the server MAY return a corresponding
+               QUOTA response:
+                   * QUOTA "<root>" (resource usage limit)
+
+               Examples:
+                   C: A0001 GETQUOTAROOT INBOX
+                   S: * QUOTAROOT INBOX user
+                   S: * QUOTA user (STORAGE 512 1024)
+                   S: A0001 OK Completed
+
+                   C: A0002 GETQUOTAROOT "Archive/2020"
+                   S: * QUOTAROOT "Archive/2020" user root2
+                   S: * QUOTA user (STORAGE 900 2000)
+                   S: * QUOTA root2 (MESSAGE 120 500)
+                   S: A0002 OK Completed
+
+                   C: A0003 GETQUOTAROOT "NoQuotaMailbox"
+                   S: * QUOTAROOT "NoQuotaMailbox"
+                   S: A0003 OK Completed
+
+               IMPORTANT:
+                   - A mailbox may have zero, one, or multiple quota roots.
+                   - The server MUST return exactly one QUOTAROOT response per
+                     GETQUOTAROOT command.
+                   - The QUOTAROOT response may list zero or more quota roots.
+                   - The server MAY return multiple QUOTA responses (one per root).
+            */
+
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            IMAP_r_u_QuotaRoot? retVal = null;
+            
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_ListRights){
-                    retVal.Add((IMAP_r_u_ListRights)e.Value);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_QuotaRoot item){
+                    retVal = item;
                 }
             };
 
-            using(GetFolderRightsAsyncOP op = new GetFolderRightsAsyncOP(folder,identifier,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetFolderRightsAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetFolderRightsAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandLineAsync($"{(m_CommandIndex++).ToString("d5")} GETQUOTAROOT {folder}\r\n",true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
-            return retVal.ToArray();
+            if(retVal == null){
+                throw new IMAP_ProtocolException("Server did not return required untagged QUOTAROOT response.");
+            }
+
+            return retVal;
         }
 
         #endregion
 
-        #region method GetFolderRightsAsync
-
-        #region class GetFolderRightsAsyncOP
+        #region method Quota
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetFolderRightsAsync"/> asynchronous operation.
+        /// Executes the IMAP GETQUOTA command for the specified quota root.
+        /// This is the synchronous wrapper for <see cref="QuotaAsync"/>.
         /// </summary>
-        public class GetFolderRightsAsyncOP : CmdAsyncOP<GetFolderRightsAsyncOP>
+        /// <param name="quotaRoot">
+        /// The quota root whose resource usage and limits are requested. The value
+        /// must be a non‑empty string.
+        /// </param>
+        /// <returns>
+        /// An IMAP_r_u_Quota object containing the resource usage and limits
+        /// associated with the quota root. The server MUST return exactly one
+        /// untagged QUOTA response.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when quotaRoot is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when quotaRoot is an empty or whitespace‑only string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD completion response.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged QUOTA
+        /// response.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the asynchronous GETQUOTA operation completes
+        /// and uses the client's configured timeout to create a cancellation token.
+        ///
+        /// GETQUOTA is defined in RFC 2087. It retrieves the resource usage and
+        /// limits associated with a quota root. A quota root defines a set of
+        /// mailboxes whose combined resource usage is tracked together.
+        ///
+        /// Only the first QUOTA response is used. Additional untagged responses
+        /// sent by some servers are ignored.
+        /// </remarks>
+        public IMAP_r_u_Quota Quota(string quotaRoot)
         {
-            private string m_Folder;
-            private string m_Identifier;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="identifier">ACL entry identifier. Normally this is user or group name.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>folder</b> or <b>identifier</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public GetFolderRightsAsyncOP(string folder,string identifier,EventHandler<EventArgs<IMAP_r_u>> callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-                if(identifier == null){
-                    throw new ArgumentNullException("identifier");
-                }
-
-                m_Folder     = folder;
-                m_Identifier = identifier;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 4314 3.4. LISTRIGHTS Command.
-                    Arguments:  mailbox name
-                                identifier
-
-                    Data:       untagged responses: LISTRIGHTS
-
-                    Result:     OK - listrights completed
-                                NO - listrights failure: can't get rights list
-                                BAD - arguments invalid
-
-                    The LISTRIGHTS command takes a mailbox name and an identifier and
-                    returns information about what rights can be granted to the
-                    identifier in the ACL for the mailbox.
-
-                    Some implementations MAY permit multiple forms of an identifier to
-                    reference the same IMAP account.  Usually, such implementations will
-                    have a canonical form that is stored internally.  A LISTRIGHTS
-                    response caused by a LISTRIGHTS command MUST always return the same
-                    form of an identifier as specified by the client.  This is to allow
-                    the client to correlate the response with the command.
-
-                    Example:    C: a001 LISTRIGHTS ~/Mail/saved smith
-                                S: * LISTRIGHTS ~/Mail/saved smith la r swicdkxte
-                                S: a001 OK Listrights completed
-
-                    Example:    C: a005 listrights archive/imap anyone
-                                S: * LISTRIGHTS archive.imap anyone ""
-                                   l r s w i p k x t e c d a 0 1 2 3 4 5 6 7 8 9
-                                S: a005 Listrights successful
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " LISTRIGHTS " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + " " + TextUtils.QuoteString(m_Identifier) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
+            return QuotaAsync(quotaRoot,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method QuotaAsync
+
         /// <summary>
-        /// Executes LISTRIGHTS command.
+        /// Executes the IMAP GETQUOTA command for the specified quota root and
+        /// returns the resource‑usage information reported by the server.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetFolderRightsAsync(GetFolderRightsAsyncOP op)
+        /// <param name="quotaRoot">
+        /// The quota root whose resource usage and limits are requested. The value
+        /// must be a non‑empty string.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// An IMAP_r_u_Quota object containing the resource usage and limits
+        /// associated with the quota root. The server MUST return exactly one
+        /// untagged QUOTA response. If the server returns NO or BAD, an
+        /// IMAP_ClientException is thrown.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when quotaRoot is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when quotaRoot is an empty or whitespace‑only string.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD completion response.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged QUOTA
+        /// response.
+        /// </exception>
+        /// <remarks>
+        /// GETQUOTA is defined in RFC 2087. It retrieves the resource usage and
+        /// limits associated with a quota root. A quota root defines a set of
+        /// mailboxes whose combined resource usage is tracked together.
+        ///
+        /// The server MUST return exactly one QUOTA response. Some servers may send
+        /// additional untagged responses; these are ignored. Only the first QUOTA
+        /// response is used.
+        ///
+        /// Resource names are case‑insensitive atoms. Common resource types include
+        /// STORAGE (kilobytes used and allowed) and MESSAGE (messages used and
+        /// allowed).
+        ///
+        /// The quota root name is encoded using the client's configured mailbox
+        /// encoding before being sent to the server.
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_Quota> QuotaAsync(string quotaRoot,CancellationToken cancellationToken = default)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method GetFolderMyRights
-
-        /// <summary>
-        /// Gets myrights to the specified folder.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <returns>Returns MYRIGHTS responses.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_MyRights[] GetFolderMyRights(string folder)
-        {            
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -5208,179 +3601,208 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
+            }
+            if(quotaRoot == null){
+                throw new ArgumentNullException(nameof(quotaRoot));
+            }
+            if(string.IsNullOrWhiteSpace(quotaRoot)){
+                throw new ArgumentException("Quota root must be specified.", nameof(quotaRoot));
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(folder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-            }
 
-            List<IMAP_r_u_MyRights> retVal = new List<IMAP_r_u_MyRights>();
+            /* RFC 2087 – IMAP QUOTA Extension
+               Command:     GETQUOTA
+               Responses:   one untagged QUOTA response
+                            tagged OK / NO / BAD completion
 
+               The GETQUOTA command retrieves the resource usage and limits associated
+               with a specific quota root. A quota root defines a set of mailboxes
+               whose combined resource usage is tracked together. The server MUST
+               return exactly one QUOTA response for the command.
+
+               Command syntax:
+                   tag GETQUOTA "<root>"
+
+               QUOTA response:
+                   * QUOTA "<root>" (resource usage limit)
+
+               Each resource is represented as a name/value pair:
+                   <resource> <usage> <limit>
+
+               Common resource types:
+                   STORAGE   – number of kilobytes used and allowed
+                   MESSAGE   – number of messages used and allowed
+
+               Examples:
+                   C: A0001 GETQUOTA user
+                   S: * QUOTA user (STORAGE 512 1024)
+                   S: A0001 OK Completed
+
+                   C: A0002 GETQUOTA root2
+                   S: * QUOTA root2 (MESSAGE 120 500 STORAGE 2048 4096)
+                   S: A0002 OK Completed
+
+               IMPORTANT:
+                   - The server MUST return exactly one QUOTA response per GETQUOTA
+                     command.
+                   - A quota root may contain multiple resource types.
+                   - GETQUOTA does not modify quota usage or limits.
+                   - GETQUOTA does not return quota roots for a mailbox; use
+                     GETQUOTAROOT for that.
+
+               Error cases:
+                   - A tagged NO response indicates that the quota root does not exist
+                     or the client lacks permission to query it.
+                   - A tagged BAD response indicates invalid arguments or unsupported
+                     quota extensions.
+                   - The client should throw an exception for NO or BAD responses.
+
+               Notes:
+                   - QUOTA is part of the IMAP QUOTA extension and requires the server
+                     to advertise "QUOTA" in CAPABILITY.
+                   - Resource names are case-insensitive atoms.
+                   - The client MUST process the untagged QUOTA response before the
+                     final tagged completion.
+            */
+
+            quotaRoot = IMAP_Utils.EncodeMailbox(quotaRoot,m_MailboxEncoding);
+
+            IMAP_r_u_Quota? retVal = null;
+            
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_MyRights){
-                    retVal.Add((IMAP_r_u_MyRights)e.Value);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_Quota v){
+                    retVal = v;
                 }
             };
 
-            using(GetFolderMyRightsAsyncOP op = new GetFolderMyRightsAsyncOP(folder,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<GetFolderMyRightsAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.GetFolderMyRightsAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} GETQUOTA {quotaRoot}\r\n",true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
-            return retVal.ToArray();
+            if(retVal == null){
+                throw new IMAP_ProtocolException("Server did not return required untagged QUOTA response.");
+            }
+
+            return retVal;
         }
 
         #endregion
 
-        #region method GetFolderMyRightsAsync
-
-        #region class GetFolderMyRightsAsyncOP
+        #region method QuotaSet
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.GetFolderMyRightsAsyncOP"/> asynchronous operation.
+        /// Executes the IMAP SETQUOTA command for the specified quota root.
+        /// This is the synchronous wrapper for <see cref="QuotaSetAsync"/>.
         /// </summary>
-        public class GetFolderMyRightsAsyncOP : CmdAsyncOP<GetFolderMyRightsAsyncOP>
+        /// <param name="quotaRoot">
+        /// The quota root whose resource limits are to be modified. The value must
+        /// be a non‑empty string.
+        /// </param>
+        /// <param name="limits">
+        /// The quota‑limit definitions to apply to the quota root. Each entry
+        /// specifies a resource name and its new maximum allowed value.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when quotaRoot is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when quotaRoot is an empty or whitespace‑only string, or when
+        /// limits is null or contains no entries.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD completion response.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the asynchronous SETQUOTA operation completes
+        /// and uses the client's configured timeout to create a cancellation token.
+        ///
+        /// SETQUOTA is defined in RFC 2087. It modifies the resource limits
+        /// associated with a quota root. Only a tagged completion response (OK,
+        /// NO, or BAD) is returned. Limits for unspecified resources remain
+        /// unchanged.
+        /// </remarks>
+        public void QuotaSet(string quotaRoot,Dictionary<string,long> limits)
         {
-            private string m_Folder;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>folder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public GetFolderMyRightsAsyncOP(string folder,EventHandler<EventArgs<IMAP_r_u>> callback) : base(callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-
-                m_Folder = folder;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 4314 3.5. MYRIGHTS Command.
-                    Arguments:  mailbox name
-
-                    Data:       untagged responses: MYRIGHTS
-
-                    Result:     OK - myrights completed
-                                NO - myrights failure: can't get rights
-                                BAD - arguments invalid
-
-                    The MYRIGHTS command returns the set of rights that the user has to
-                    mailbox in an untagged MYRIGHTS reply.
-
-                    Example:    C: A003 MYRIGHTS INBOX
-                                S: * MYRIGHTS INBOX rwiptsldaex
-                                S: A003 OK Myrights complete
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " MYRIGHTS " + IMAP_Utils.EncodeMailbox(m_Folder,imap.m_MailboxEncoding) + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
+            QuotaSetAsync(quotaRoot,limits,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        /// <summary>
-        /// Executes MYRIGHTS command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool GetFolderMyRightsAsync(GetFolderMyRightsAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method StoreMessage
-                
-        /// <summary>
-        /// Stores specified message to the specified folder.
-        /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <param name="flags">Message flags. Value null means no flags. For example: new string[]{"\Seen","\Answered"}.</param>
-        /// <param name="internalDate">Message internal data. DateTime.MinValue means server will allocate it.</param>
-        /// <param name="message">Message stream.</param>
-        /// <param name="count">Number of bytes send from <b>message</b> stream.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception> 
-        public void StoreMessage(string folder,string[] flags,DateTime internalDate,Stream message,int count)
-        {
-            StoreMessage(folder,flags != null ? new IMAP_t_MsgFlags(flags) : new IMAP_t_MsgFlags(new string[0]),internalDate,message,count);
-        }
+        #region method QuotaSetAsync
 
         /// <summary>
-        /// Stores specified message to the specified folder.
+        /// Executes the IMAP SETQUOTA command for the specified quota root and
+        /// updates the resource‑limit values maintained by the server.
         /// </summary>
-        /// <param name="folder">Folder name with path.</param>
-        /// <param name="flags">Message flags.</param>
-        /// <param name="internalDate">Message internal data. DateTime.MinValue means server will allocate it.</param>
-        /// <param name="message">Message stream.</param>
-        /// <param name="count">Number of bytes send from <b>message</b> stream.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b>,<b>flags</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void StoreMessage(string folder,IMAP_t_MsgFlags flags,DateTime internalDate,Stream message,int count)
+        /// <param name="quotaRoot">
+        /// The quota root whose resource limits are to be modified. The value must
+        /// be a non‑empty string.
+        /// </param>
+        /// <param name="limits">
+        /// The quota‑limit definitions to apply to the quota root. Each entry
+        /// specifies a resource name and its new maximum allowed value. Existing
+        /// limits for the specified resources are replaced.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation. If the server returns
+        /// NO or BAD, an IMAP_ClientException is thrown.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when quotaRoot is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when quotaRoot is an empty or whitespace‑only string, or when
+        /// limits is null or contains no entries.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD completion response.
+        /// </exception>
+        /// <remarks>
+        /// SETQUOTA is defined in RFC 2087. It modifies the resource limits
+        /// associated with a quota root. A quota root defines a set of mailboxes
+        /// whose combined resource usage is tracked together.
+        ///
+        /// The command syntax is:
+        ///     SETQUOTA "root" (resource limit ...)
+        ///
+        /// Each resource/limit pair consists of a case‑insensitive resource name
+        /// such as STORAGE or MESSAGE, followed by a numeric limit value. Servers
+        /// may define additional resource types, including ANNOTATION-STORAGE,
+        /// MAILBOXES, or vendor‑specific X‑CUSTOM‑name entries.
+        ///
+        /// SETQUOTA does not return a QUOTA response. Only a tagged completion
+        /// response (OK, NO, or BAD) is returned. Limits for unspecified resources
+        /// remain unchanged.
+        ///
+        /// The quota root name is encoded using the client's configured mailbox
+        /// encoding before being sent to the server.
+        /// </remarks>
+        public async ValueTask QuotaSetAsync(string quotaRoot,Dictionary<string,long> limits,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -5390,580 +3812,1273 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
+            }
+            if(quotaRoot == null){
+                throw new ArgumentNullException(nameof(quotaRoot));
+            }
+            if(string.IsNullOrWhiteSpace(quotaRoot)){
+                throw new ArgumentException("Quota root must be specified.", nameof(quotaRoot));
+            }
+            if(limits == null || limits.Count == 0){
+                throw new ArgumentException("Quota limits can't be null or empty.", nameof(limits));
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
+
+            /* RFC 2087 – IMAP QUOTA Extension
+               Command:     SETQUOTA
+               Responses:   tagged OK / NO / BAD completion
+                            (no untagged QUOTA response is returned)
+
+               The SETQUOTA command modifies the resource limits associated with a
+               specific quota root. A quota root defines a set of mailboxes whose
+               combined resource usage is tracked together. The server replaces the
+               limits for the specified resources with the values provided.
+
+               Command syntax:
+                   tag SETQUOTA "<root>" (resource limit ...)
+
+               Each resource/limit pair consists of:
+                   <resource> <limit>
+
+               Resource names are case‑insensitive atoms. Common resource types:
+                   STORAGE   – maximum kilobytes allowed
+                   MESSAGE   – maximum number of messages allowed
+
+               Servers may define additional resource types. Examples include:
+                   ANNOTATION-STORAGE
+                   MAILBOXES
+                   X-CUSTOM-<name>
+
+               Examples:
+                   C: A0003 SETQUOTA user (STORAGE 2048)
+                   S: A0003 OK Completed
+
+                   C: A0004 SETQUOTA root2 (MESSAGE 50000 STORAGE 102400)
+                   S: A0004 OK Completed
+
+               IMPORTANT:
+                   - SETQUOTA does not return a QUOTA response.
+                   - Only a tagged OK / NO / BAD completion response is returned.
+                   - Limits for unspecified resources remain unchanged.
+                   - Servers may reject unsupported resource names with a NO response.
+
+               Error cases:
+                   - A tagged NO response indicates that the quota root does not exist,
+                     the client lacks permission, or the resource type is unsupported.
+                   - A tagged BAD response indicates invalid arguments or unsupported
+                     quota extensions.
+
+               Notes:
+                   - SETQUOTA is part of the IMAP QUOTA extension and requires the
+                     server to advertise "QUOTA" in CAPABILITY.
+                   - Resource names must be valid IMAP atoms.
+                   - The client MUST send the quota root using the correct mailbox
+                     encoding.
+            */
+
+            quotaRoot = IMAP_Utils.EncodeMailbox(quotaRoot,m_MailboxEncoding);
+
+            List<string> limitList = new List<string>();
+            foreach(var item in limits){
+                limitList.Add($"{item.Key} {item.Value}");
+            }
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} SETQUOTA {quotaRoot} ({string.Join(' ',limitList)})\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+        }
+
+        #endregion
+
+        #region method FolderAcl
+
+        /// <summary>
+        /// Retrieves the Access Control List (ACL) for the specified IMAP mailbox.
+        /// This is the synchronous wrapper for <see cref="FolderAclAsync"/>.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose ACL entries will be requested.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_Acl"/> instance containing the ACL entries returned by the server.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the GETACL command.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged ACL response.
+        /// </exception>
+        /// <remarks>
+        /// This method executes GETACL synchronously by invoking <see cref="FolderAclAsync"/>
+        /// and blocking until the operation completes or the timeout expires.
+        /// </remarks>
+        public IMAP_r_u_Acl FolderAcl(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return FolderAclAsync(folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region methood FolderAclAsync
+
+        /// <summary>
+        /// Retrieves the Access Control List (ACL) for the specified IMAP mailbox.
+        /// Implements the IMAP GETACL command as defined in RFC 4314.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose ACL entries will be requested. The value must be a valid
+        /// IMAP mailbox identifier and will be encoded using the active mailbox encoding.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_Acl"/> instance containing the ACL entries returned by the server.
+        /// Each ACL entry maps a user identifier to a rights string.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when the <paramref name="folder"/> parameter is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when the <paramref name="folder"/> parameter is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the GETACL command.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged ACL response.
+        /// </exception>
+        /// <remarks>
+        /// The GETACL command returns exactly one untagged ACL response containing zero or more
+        /// identifier-rights pairs. The method registers a callback to capture this untagged response
+        /// and validates that it is received before returning.
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_Acl> FolderAclAsync(string folder,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
-            if(folder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder must be specified.",nameof(folder));
             }
-            if(flags == null){
-                throw new ArgumentNullException("flags");
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
+
+                        /*
+             IMAP GETACL Command
+             RFC 4314 – Access Control List (ACL) Extension
+
+             Syntax:
+                 GETACL <mailbox>
+
+             Purpose:
+                 Returns the Access Control List for the specified mailbox.
+                 Each ACL entry maps a user identifier to a rights string.
+
+             Semantics:
+                 The server responds with one ACL data item containing:
+                     ACL <mailbox> <identifier> <rights> [<identifier> <rights> ...]
+                 Rights strings consist of permission letters. Rights are cumulative.
+
+             Typical Response:
+                 C: A003 GETACL INBOX
+                 S: * ACL INBOX user1 lrswipkxte otheruser lr
+                 S: A003 OK GETACL completed
+
+             Rights Letters (RFC 4314):
+                 l  lookup (mailbox visible)
+                 r  read messages
+                 s  keep seen/unseen state
+                 w  write flags
+                 i  insert messages
+                 p  post (send mail to mailbox)
+                 k  create sub-mailboxes
+                 x  delete mailbox
+                 t  delete messages
+                 e  perform administrative actions (server-defined)
+
+             Error Conditions:
+                 NO   mailbox exists but user lacks permission to view ACL
+                 BAD  invalid syntax or unsupported command
+
+             Client Usage:
+                 Used by administrative tools to inspect mailbox permissions.
+                 Rarely used by normal mail clients.
+                 Often paired with SETACL and DELETEACL.
+
+             Implementation Notes:
+                 Server must verify that the authenticated user has rights to read ACL.
+                 Returned ACL entries must reflect current state atomically.
+                 Rights strings should be returned in canonical order (server-defined).
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            IMAP_r_u_Acl? retVal = null;
+            
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_Acl v){
+                    retVal = v;
+                }
+            };
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} GETACL {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+
+            if(retVal == null){
+                throw new IMAP_ProtocolException("Server did not return required untagged ACL response.");
+            }
+
+            return retVal;
+        }
+
+        #endregion
+
+        #region method FolderAclSet
+
+        /// <summary>
+        /// Synchronously sends an IMAP <c>SETACL</c> command to modify the access
+        /// control rights for the specified mailbox and authentication identifier,
+        /// as defined in RFC 4314 (IMAP Access Control List Extension).
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox whose ACL entry should be modified. The mailbox name is
+        /// encoded according to the client's current mailbox encoding
+        /// (Modified UTF-7 or UTF-8 when <c>UTF8=ACCEPT</c> is enabled).
+        /// </param>
+        /// <param name="identifier">
+        /// The authentication identifier (user or group) whose rights are being
+        /// modified. Identifiers are case-sensitive IMAP atoms or quoted strings.
+        /// </param>
+        /// <param name="rights">
+        /// The rights string to apply. This argument controls how the ACL entry is
+        /// modified:
+        /// <list type="bullet">
+        /// <item><description>
+        /// <c>"lrwst"</c> — replaces the entire rights set.
+        /// </description></item>
+        /// <item><description>
+        /// <c>"+d"</c> — adds the listed rights to the identifier.
+        /// </description></item>
+        /// <item><description>
+        /// <c>"-w"</c> — removes the listed rights from the identifier.
+        /// </description></item>
+        /// <item><description>
+        /// <c>""</c> (empty string) — removes all rights; this is transmitted as
+        /// <c>""</c> in the IMAP command.
+        /// </description></item>
+        /// </list>
+        /// Rights are case-sensitive and must be sent exactly as intended.
+        /// </param>
+        /// <returns>
+        /// A task representing the synchronous operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/>, <paramref name="identifier"/>,
+        /// or <paramref name="rights"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="identifier"/>
+        /// is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response
+        /// to the <c>SETACL</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="FolderAclSetAsync(string,string,string,CancellationToken)"/>.
+        /// It uses the client's configured timeout and blocks until the ACL update
+        /// completes.
+        /// </para>
+        /// <para>
+        /// The rights string is passed directly to the asynchronous implementation,
+        /// which handles quoting of empty rights (<c>""</c>) and mailbox encoding.
+        /// </para>
+        /// </remarks>
+        public void FolderAclSet(string folder,string identifier,string rights)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderAclSetAsync(folder,identifier,rights,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderAclSetAsync
+
+        /// <summary>
+        /// Sends an IMAP <c>SETACL</c> command to modify the access control rights
+        /// for the specified mailbox and authentication identifier, as defined in
+        /// RFC 4314 (IMAP Access Control List Extension).
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox whose ACL entry should be modified. The mailbox name is
+        /// encoded according to the client's current mailbox encoding
+        /// (Modified UTF-7 or UTF-8 when <c>UTF8=ACCEPT</c> is enabled).
+        /// </param>
+        /// <param name="identifier">
+        /// The authentication identifier (user or group) whose rights are being
+        /// modified. Identifiers are case-sensitive IMAP atoms or quoted strings.
+        /// </param>
+        /// <param name="rights">
+        /// The rights string to apply. This argument controls how the ACL entry is
+        /// modified:
+        /// <list type="bullet">
+        /// <item><description>
+        /// <c>"lrwst"</c> — replaces the entire rights set.
+        /// </description></item>
+        /// <item><description>
+        /// <c>"+d"</c> — adds the listed rights to the identifier.
+        /// </description></item>
+        /// <item><description>
+        /// <c>"-w"</c> — removes the listed rights from the identifier.
+        /// </description></item>
+        /// <item><description>
+        /// <c>""</c> (empty string) — removes all rights; this is transmitted as
+        /// <c>""</c> in the IMAP command.
+        /// </description></item>
+        /// </list>
+        /// Rights are case-sensitive and must be sent exactly as intended.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous
+        /// operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/>, <paramref name="identifier"/>,
+        /// or <paramref name="rights"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="identifier"/>
+        /// is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response
+        /// to the <c>SETACL</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>SETACL</c> command updates the access rights for a mailbox. When
+        /// the rights string begins with <c>'+'</c> or <c>'-'</c>, the server
+        /// modifies the existing rights incrementally. When the rights string does
+        /// not begin with a prefix, the server replaces the entire rights set.
+        /// </para>
+        /// <para>
+        /// An empty rights string (<c>""</c>) removes all rights for the identifier.
+        /// This method automatically quotes the empty rights string when sending
+        /// the IMAP command.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderAclSetAsync(string folder,string identifier,string rights,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
+            }
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder must be specified.",nameof(folder));
+            }            
+            if(string.IsNullOrWhiteSpace(identifier)){
+                throw new ArgumentException("Identifier must be specified.",nameof(identifier));
+            } 
+            if(rights == null){
+                throw new ArgumentNullException(nameof(rights));
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+
+            /*
+                IMAP SETACL Command
+                RFC 4314 – IMAP Access Control List (ACL) Extension
+
+                Syntax:
+                    SETACL <mailbox> <identifier> <rights>
+                    SETACL <mailbox> <identifier> +<rights>   ; add rights
+                    SETACL <mailbox> <identifier> -<rights>   ; remove rights
+
+                Purpose:
+                    Modifies the access control rights for a specific authentication
+                    identifier (user or group) on the given mailbox. Rights determine
+                    what operations the identifier may perform.
+
+                Rights:
+                    Rights are case-sensitive IMAP ACL tokens. Common rights include:
+                        l   – lookup (mailbox is visible to LIST/LSUB)
+                        r   – read messages
+                        s   – keep seen/unseen state
+                        w   – write flags other than \Seen and \Deleted
+                        i   – insert (APPEND) messages
+                        p   – post (send mail to mailbox's submission address)
+                        c   – create sub-mailboxes
+                        d   – delete messages
+                        t   – delete mailbox
+                    Servers may define additional rights.
+
+                Rights Modification:
+                    The <rights> argument may be:
+                        "<rights>"     – replace rights entirely
+                        "+<rights>"    – add the listed rights to the identifier
+                        "-<rights>"    – remove the listed rights from the identifier
+
+                    Examples:
+                        SETACL INBOX ivar lrwst        ; replace rights with lrwst
+                        SETACL INBOX ivar +d           ; add delete-right
+                        SETACL INBOX ivar -w           ; remove write-right
+
+                Typical Response:
+                    C: A003 SETACL INBOX ivar lrwst
+                    S: A003 OK SETACL completed
+
+                Semantics:
+                    - Rights are case-sensitive.
+                    - When rights are given without "+" or "-", the server replaces the
+                      entire rights set for the identifier.
+                    - When "+" or "-" is used, the server modifies the existing rights
+                      incrementally.
+                    - An empty rights string ("") removes all rights for the identifier.
+
+                Error Conditions:
+                    NO   – server refuses the ACL change (e.g., insufficient rights)
+                    BAD  – invalid syntax or unsupported command
+
+                Client Usage:
+                    Used to grant or revoke permissions for users on shared mailboxes.
+                    Clients typically follow SETACL with GETACL or MYRIGHTS to verify
+                    the resulting ACL state.
+
+                Implementation Notes:
+                    - Mailbox names must be encoded according to the current mailbox
+                      encoding (Modified UTF-7 or UTF-8 if UTF8=ACCEPT is enabled).
+                    - Identifiers are case-sensitive and must be transmitted as IMAP
+                      atoms or quoted strings depending on server requirements.
+                    - Rights modifiers ("+<rights>" / "-<rights>") must be sent exactly
+                      as intended; the server does not interpret symbolic expressions.
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+            if(rights == string.Empty){
+                rights = "\"\"";
+            }
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} SETACL {folder} {identifier} {rights}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+        }
+
+        #endregion
+
+        #region method FolderAclDelete
+
+        /// <summary>
+        /// Removes the Access Control List (ACL) entry for the specified user identifier
+        /// from the given IMAP mailbox. This is the synchronous wrapper for
+        /// <see cref="FolderAclDeleteAsync"/>.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose ACL entry will be removed.
+        /// </param>
+        /// <param name="identifier">
+        /// The user identifier whose rights should be deleted from the mailbox.
+        /// </param>
+        /// <returns>
+        /// Nothing. The method completes when the DELETEACL command finishes.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="identifier"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the DELETEACL command.
+        /// </exception>
+        /// <remarks>
+        /// This method executes DELETEACL synchronously by invoking
+        /// <see cref="FolderAclDeleteAsync"/> and blocking until the operation completes
+        /// or the timeout expires.
+        /// </remarks>
+        public void FolderAclDelete(string folder,string identifier)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderAclDeleteAsync(folder,identifier,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderAclDeleteAsync
+
+        /// <summary>
+        /// Removes the Access Control List (ACL) entry for the specified user identifier
+        /// from the given IMAP mailbox. Implements the IMAP DELETEACL command as defined
+        /// in RFC 4314.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose ACL entry will be removed. The value must be a valid
+        /// IMAP mailbox identifier and will be encoded using the active mailbox encoding.
+        /// </param>
+        /// <param name="identifier">
+        /// The user identifier whose rights should be deleted from the mailbox.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous DELETEACL operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="identifier"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the DELETEACL command.
+        /// </exception>
+        /// <remarks>
+        /// The DELETEACL command removes all rights associated with the specified identifier.
+        /// Servers typically return a single tagged OK response and no untagged ACL data.
+        /// </remarks>
+        public async ValueTask FolderAclDeleteAsync(string folder,string identifier,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
+            }
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder must be specified.",nameof(folder));
+            }            
+            if(string.IsNullOrWhiteSpace(identifier)){
+                throw new ArgumentException("Identifier must be specified.",nameof(identifier));
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+
+            /*
+             IMAP DELETEACL Command
+             RFC 4314 – Access Control List (ACL) Extension
+
+             Syntax:
+                 DELETEACL <mailbox> <identifier>
+
+             Purpose:
+                 Removes the ACL entry for the specified user identifier from the mailbox.
+                 After deletion, the user loses all rights previously granted on that mailbox.
+
+             Semantics:
+                 The server deletes the rights associated with the given identifier.
+                 If the identifier does not exist, the server may return OK or NO depending
+                 on implementation, but no rights remain for that identifier after completion.
+
+             Typical Response:
+                 C: A004 DELETEACL INBOX otheruser
+                 S: A004 OK DELETEACL completed
+
+             Error Conditions:
+                 NO   mailbox exists but the authenticated user lacks permission to modify ACLs
+                 BAD  invalid syntax or unsupported command
+
+             Client Usage:
+                 Used by administrative tools to remove user-specific rights from a mailbox.
+                 Often paired with GETACL and SETACL for full ACL management.
+
+             Implementation Notes:
+                 Server must verify that the authenticated user has rights to modify ACLs.
+                 Deletion must be atomic and reflect immediately in subsequent GETACL results.
+                 If the identifier is not present, server behavior may vary but must remain
+                 consistent with its ACL model.
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} DELETEACL {folder} {identifier}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+        }
+
+        #endregion
+
+        #region method FolderAclRights
+
+        /// <summary>
+        /// Retrieves the rights that may be granted to the specified user identifier
+        /// for the given IMAP mailbox. This is the synchronous wrapper for
+        /// <see cref="FolderAclRightsAsync"/>.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose assignable rights will be queried.
+        /// </param>
+        /// <param name="identifier">
+        /// The user identifier for whom the assignable rights are requested.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_ListRights"/> instance containing the required and
+        /// optional rights returned by the server.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="identifier"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the LISTRIGHTS command.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged LISTRIGHTS response.
+        /// </exception>
+        /// <remarks>
+        /// This method executes LISTRIGHTS synchronously by invoking
+        /// <see cref="FolderAclRightsAsync"/> and blocking until the operation completes
+        /// or the timeout expires.
+        /// </remarks>
+        public IMAP_r_u_ListRights FolderAclRights(string folder,string identifier)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return FolderAclRightsAsync(folder,identifier,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderAclRightsAsync
+
+        /// <summary>
+        /// Retrieves the rights that may be granted to the specified user identifier
+        /// for the given IMAP mailbox. Implements the IMAP LISTRIGHTS command as
+        /// defined in RFC 4314.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose assignable rights will be queried. The value will be
+        /// encoded using the active mailbox encoding.
+        /// </param>
+        /// <param name="identifier">
+        /// The user identifier for whom the assignable rights are requested.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_ListRights"/> instance containing the required and
+        /// optional rights returned by the server.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> or <paramref name="identifier"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the LISTRIGHTS command.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged LISTRIGHTS response.
+        /// </exception>
+        /// <remarks>
+        /// LISTRIGHTS returns exactly one untagged LISTRIGHTS response containing the
+        /// rights that must always be granted and the rights that may optionally be
+        /// granted to the specified identifier.
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_ListRights> FolderAclRightsAsync(string folder,string identifier,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
+            }
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder must be specified.",nameof(folder));
+            }           
+            if(string.IsNullOrWhiteSpace(identifier)){
+                throw new ArgumentException("Identifier must be specified.",nameof(identifier));
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+
+            /*
+             IMAP LISTRIGHTS Command
+             RFC 4314 – Access Control List (ACL) Extension
+
+             Syntax:
+                 LISTRIGHTS <mailbox> <identifier>
+
+             Purpose:
+                 Returns the set of rights that may be granted to the specified user
+                 identifier for the given mailbox, along with the rights that are
+                 always granted and those that are optional.
+
+             Semantics:
+                 The server responds with one LISTRIGHTS data item containing:
+                     LISTRIGHTS <mailbox> <identifier> <required-rights> <optional-rights...>
+                 Required rights are those that must always be granted if any rights
+                 are granted at all. Optional rights are those that may be granted
+                 or withheld.
+
+             Typical Response:
+                 C: A005 LISTRIGHTS INBOX otheruser
+                 S: * LISTRIGHTS INBOX otheruser lr swipkxte
+                 S: A005 OK LISTRIGHTS completed
+
+             Interpretation:
+                 In the example above:
+                     lr          = rights that must always be granted
+                     swipkxte    = rights that may optionally be granted
+
+             Error Conditions:
+                 NO   mailbox exists but the authenticated user lacks permission to view rights
+                 BAD  invalid syntax or unsupported command
+
+             Client Usage:
+                 Used by administrative tools to determine which rights can be assigned
+                 to a user before issuing SETACL. Helps prevent invalid or unsupported
+                 rights assignments.
+
+             Implementation Notes:
+                 Server must verify that the authenticated user has rights to inspect
+                 ACL capabilities for the mailbox. Returned rights must reflect the
+                 server’s ACL model and be consistent with subsequent SETACL operations.
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            IMAP_r_u_ListRights? retVal = null;
+            
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_ListRights v){
+                    retVal = v;
+                }
+            };
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} LISTRIGHTS {folder} {identifier}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+
+            if(retVal == null){
+                throw new IMAP_ProtocolException("Server did not return required untagged LISTRIGHTS response.");
+            }
+
+            return retVal;
+        }
+
+        #endregion
+
+        #region method FolderAclMyRights
+
+        /// <summary>
+        /// Retrieves the effective rights that the authenticated user currently has
+        /// on the specified IMAP mailbox. This is the synchronous wrapper for
+        /// <see cref="FolderAclMyRightsAsync"/>.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose effective rights will be queried.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_MyRights"/> instance containing the rights returned
+        /// by the server.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the MYRIGHTS command.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged MYRIGHTS response.
+        /// </exception>
+        /// <remarks>
+        /// This method executes MYRIGHTS synchronously by invoking
+        /// <see cref="FolderAclMyRightsAsync"/> and blocking until the operation
+        /// completes or the timeout expires.
+        /// </remarks>
+        public IMAP_r_u_MyRights FolderAclMyRights(string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return FolderAclMyRightsAsync(folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderAclMyRightsAsync
+
+        /// <summary>
+        /// Retrieves the effective rights that the authenticated user currently has
+        /// on the specified IMAP mailbox. Implements the IMAP MYRIGHTS command as
+        /// defined in RFC 4314.
+        /// </summary>
+        /// <param name="folder">
+        /// The mailbox name whose effective rights will be queried. The value will be
+        /// encoded using the active mailbox encoding.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IMAP_r_u_MyRights"/> instance containing the rights returned
+        /// by the server.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="folder"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="folder"/> is empty or whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged NO or BAD response to the MYRIGHTS command.
+        /// </exception>
+        /// <exception cref="IMAP_ProtocolException">
+        /// Thrown when the server does not return the required untagged MYRIGHTS response.
+        /// </exception>
+        /// <remarks>
+        /// MYRIGHTS returns exactly one untagged MYRIGHTS response containing the
+        /// effective rights available to the authenticated user.
+        /// </remarks>
+        public async ValueTask<IMAP_r_u_MyRights> FolderAclMyRightsAsync(string folder,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
+            }
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder must be specified.",nameof(folder));
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+
+            /*
+             IMAP MYRIGHTS Command
+             RFC 4314 – Access Control List (ACL) Extension
+
+             Syntax:
+                 MYRIGHTS <mailbox>
+
+             Purpose:
+                 Returns the set of rights that the authenticated user currently has
+                 on the specified mailbox. This reflects the effective rights after
+                 all ACL entries, inherited rights, and server-defined rules have
+                 been applied.
+
+             Semantics:
+                 The server responds with one MYRIGHTS data item containing:
+                     MYRIGHTS <mailbox> <rights>
+                 The rights string represents the permissions available to the
+                 authenticated user for the mailbox.
+
+             Typical Response:
+                 C: A006 MYRIGHTS INBOX
+                 S: * MYRIGHTS INBOX lrswipkxte
+                 S: A006 OK MYRIGHTS completed
+
+             Interpretation:
+                 The returned rights indicate what the authenticated user is allowed
+                 to do on the mailbox, including reading, writing, inserting, deleting,
+                 creating sub-mailboxes, and administrative actions depending on the
+                 server’s ACL model.
+
+             Error Conditions:
+                 NO   mailbox exists but the authenticated user lacks permission to view rights
+                 BAD  invalid syntax or unsupported command
+
+             Client Usage:
+                 Used by clients to determine what operations the authenticated user
+                 may perform on a mailbox. Helps avoid issuing commands that would
+                 fail due to insufficient rights.
+
+             Implementation Notes:
+                 Server must compute effective rights based on ACL entries, inherited
+                 rights, and any server-specific rules. Returned rights must match
+                 the server’s enforcement of permissions for subsequent commands.
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            IMAP_r_u_MyRights? retVal = null;
+            
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(retVal == null && e is IMAP_r_u_MyRights v){
+                    retVal = v;
+                }
+            };
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} MYRIGHTS {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+
+            if(retVal == null){
+                throw new IMAP_ProtocolException("Server did not return required untagged MYRIGHTS response.");
+            }
+
+            return retVal;
+        }
+
+        #endregion
+
+        #region method MessageAppend
+
+        /// <summary>
+        /// Synchronously executes the IMAP <c>APPEND</c> command to add a new message
+        /// to the specified mailbox. This is a blocking wrapper around
+        /// <see cref="MessageAppendAsync(string,string[],DateTime,Stream,long,CancellationToken)"/>.
+        /// </summary>
+        /// <param name="folder">
+        /// The target mailbox to which the message will be appended.
+        /// </param>
+        /// <param name="flags">
+        /// Optional message flags to associate with the newly appended message.
+        /// </param>
+        /// <param name="date">
+        /// Optional internal date for the message. If not <see cref="DateTime.MinValue"/>,
+        /// the value is sent as a quoted IMAP date-time string.
+        /// </param>
+        /// <param name="message">
+        /// The message content stream. The method sends exactly <paramref name="count"/>
+        /// bytes from this stream as the literal body of the APPEND command.
+        /// </param>
+        /// <param name="count">
+        /// The number of bytes to read from <paramref name="message"/> and send as the
+        /// literal. Must be greater than zero.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <remarks>
+        /// <para>
+        /// This method creates a cancellation token using the client’s configured
+        /// timeout and then invokes the asynchronous <c>APPEND</c> operation
+        /// synchronously using <c>GetAwaiter().GetResult()</c>.
+        /// </para>
+        /// <para>
+        /// Any errors returned by the server during the APPEND operation are surfaced
+        /// through <see cref="IMAP_ClientException"/>.
+        /// </para>
+        /// </remarks>
+        public void MessageAppend(string folder,string[] flags,DateTime date,Stream message,long count,CancellationToken cancellationToken = default)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessageAppendAsync(folder,flags,date,message,count,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessageAppendAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>APPEND</c> command to add a new message to the
+        /// specified mailbox.
+        /// </summary>
+        /// <param name="folder">
+        /// The target mailbox to which the message will be appended. The mailbox
+        /// name is encoded according to the client’s configured mailbox encoding.
+        /// </param>
+        /// <param name="flags">
+        /// Optional message flags to associate with the newly appended message.
+        /// If provided, they are sent as a parenthesized list (e.g., <c>(\Seen \Flagged)</c>).
+        /// </param>
+        /// <param name="date">
+        /// Optional internal date for the message. If not <see cref="DateTime.MinValue"/>,
+        /// the value is sent as a quoted IMAP date-time string. If omitted, the server
+        /// assigns the current time.
+        /// </param>
+        /// <param name="message">
+        /// The message content stream. The method sends exactly <paramref name="count"/>
+        /// bytes from this stream as the literal body of the APPEND command.
+        /// </param>
+        /// <param name="count">
+        /// The number of bytes to read from <paramref name="message"/> and send as the
+        /// literal. Must be greater than zero.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, the folder name
+        /// is invalid, or the client is currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="folder"/> or <paramref name="message"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is empty or whitespace, or if
+        /// <paramref name="count"/> is less than 1.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// or fails to send the required continuation request for the literal.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method implements the IMAP <c>APPEND</c> command as defined in
+        /// RFC 3501 §6.3.11. The command creates a new message in the target
+        /// mailbox. If flags or an internal date are supplied, they are stored with
+        /// the message; otherwise, the server assigns defaults.
+        /// </para>
+        /// <para>
+        /// The <c>APPEND</c> command does not modify any existing messages and does
+        /// not generate untagged <c>EXPUNGE</c> or <c>FETCH</c> responses. If the
+        /// server supports UIDPLUS, the final tagged <c>OK</c> response may include
+        /// an <c>APPENDUID</c> response code containing the UID assigned to the new
+        /// message.
+        /// </para>
+        /// </remarks>
+        public async ValueTask MessageAppendAsync(string folder,string[] flags,DateTime date,Stream message,long count,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
+            }
+            if(string.IsNullOrWhiteSpace(folder)){
+                throw new ArgumentException("Folder must be specified.",nameof(folder));
+            }            
             if(message == null){
-                throw new ArgumentNullException("message");
+                throw new ArgumentNullException(nameof(message));
             }
             if(count < 1){
-                throw new ArgumentException("Argument 'count' value must be >= 1.","count");
-            }
-
-            using(StoreMessageAsyncOP op = new StoreMessageAsyncOP(folder,flags,internalDate,message,count,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<StoreMessageAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.StoreMessageAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Stores specified message to the specified folder.
-        /// </summary>
-        /// <param name="op">Store message operation.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        public void StoreMessage(StoreMessageAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-
-            using(ManualResetEvent wait = new ManualResetEvent(false)){
-                op.CompletedAsync += delegate(object? s1,EventArgs<StoreMessageAsyncOP> e1){
-                    wait.Set();
-                };
-                if(!this.StoreMessageAsync(op)){
-                    wait.Set();
-                }
-                wait.WaitOne();
-
-                if(op.Error != null){
-                    throw op.Error;
-                }
-            }
-        }
-
-        #endregion
-
-        #region method StoreMessageAsync
-
-        #region class StoreMessageAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.StoreMessageAsync"/> asynchronous operation.
-        /// </summary>
-        public class StoreMessageAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private string                             m_Folder;
-            private IMAP_t_MsgFlags?                   m_pFlags         = null;
-            private DateTime                           m_InternalDate;
-            private Stream                             m_pStream;
-            private long                               m_Count          = 0;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="folder">Folder name with path.</param>
-            /// <param name="flags">Message flags. Value null means no flags.</param>
-            /// <param name="internalDate">Message internal data. DateTime.MinValue means server will allocate it.</param>
-            /// <param name="message">Message stream.</param>
-            /// <param name="count">Number of bytes send from <b>message</b> stream.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is riased when <b>folder</b> or <b>message</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public StoreMessageAsyncOP(string folder,IMAP_t_MsgFlags? flags,DateTime internalDate,Stream message,long count,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                if(folder == null){
-                    throw new ArgumentNullException("folder");
-                }
-                if(string.IsNullOrEmpty(folder)){
-                    throw new ArgumentException("Argument 'folder' value must be specified.","folder");
-                }
-                if(message == null){
-                    throw new ArgumentNullException("message");
-                }
-                if(count < 1){
-                    throw new ArgumentException("Argument 'count' value must be >= 1.","count");
-                }
-
-                m_Folder       = folder;
-                m_pFlags       = flags;
-                m_InternalDate = internalDate;
-                m_pStream      = message;
-                m_Count        = count;
-                m_pCallback    = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 3501 6.3.11. APPEND Command.
-                        Arguments:  mailbox name
-                                    OPTIONAL flag parenthesized list
-                                    OPTIONAL date/time string
-                                    message literal
-
-                        Responses:  no specific responses for this command
-
-                        Result:     OK - append completed
-                                    NO - append error: can't append to that mailbox, error
-                                         in flags or date/time or message text
-                                    BAD - command unknown or arguments invalid
-
-                        The APPEND command appends the literal argument as a new message
-                        to the end of the specified destination mailbox.  This argument
-                        SHOULD be in the format of an [RFC-2822] message.  8-bit
-                        characters are permitted in the message.  A server implementation
-                        that is unable to preserve 8-bit data properly MUST be able to
-                        reversibly convert 8-bit APPEND data to 7-bit using a [MIME-IMB]
-                        content transfer encoding.
-
-                        Note: There MAY be exceptions, e.g., draft messages, in
-                        which required [RFC-2822] header lines are omitted in
-                        the message literal argument to APPEND.  The full
-                        implications of doing so MUST be understood and
-                        carefully weighed.
-
-                        If a flag parenthesized list is specified, the flags SHOULD be set
-                        in the resulting message; otherwise, the flag list of the
-                        resulting message is set to empty by default.  In either case, the
-                        Recent flag is also set.
-
-                        If a date-time is specified, the internal date SHOULD be set in
-                        the resulting message; otherwise, the internal date of the
-                        resulting message is set to the current date and time by default.
-
-                        If the append is unsuccessful for any reason, the mailbox MUST be
-                        restored to its state before the APPEND attempt; no partial
-                        appending is permitted.
-
-                        If the destination mailbox does not exist, a server MUST return an
-                        error, and MUST NOT automatically create the mailbox.  Unless it
-                        is certain that the destination mailbox can not be created, the
-                        server MUST send the response code "[TRYCREATE]" as the prefix of
-                        the text of the tagged NO response.  This gives a hint to the
-                        client that it can attempt a CREATE command and retry the APPEND
-                        if the CREATE is successful.
-
-                        If the mailbox is currently selected, the normal new message
-                        actions SHOULD occur.  Specifically, the server SHOULD notify the
-                        client immediately via an untagged EXISTS response.  If the server
-                        does not do so, the client MAY issue a NOOP command (or failing
-                        that, a CHECK command) after one or more APPEND commands.
-
-                        Example:    C: A003 APPEND saved-messages (\Seen) {310}
-                                    S: + Ready for literal data
-                                    C: Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)
-                                    C: From: Fred Foobar <foobar@Blurdybloop.COM>
-                                    C: Subject: afternoon meeting
-                                    C: To: mooch@owatagu.siam.edu
-                                    C: Message-Id: <B27397-0100000@Blurdybloop.COM>
-                                    C: MIME-Version: 1.0
-                                    C: Content-Type: TEXT/PLAIN; CHARSET=US-ASCII
-                                    C:
-                                    C: Hello Joe, do you think we can meet at 3:30 tomorrow?
-                                    C:
-                                    S: A003 OK APPEND completed
-
-                        Note: The APPEND command is not used for message delivery,
-                        because it does not provide a mechanism to transfer [SMTP]
-                        envelope information.
-                    */
-
-                    StringBuilder command = new StringBuilder();
-                    command.Append((m_pImapClient.m_CommandIndex++).ToString("d5"));            
-                    command.Append(" APPEND");
-                    command.Append(" " + IMAP_Utils.EncodeMailbox(m_Folder,m_pImapClient.m_MailboxEncoding));
-                    if(m_pFlags != null){
-                        command.Append(" (");
-                        string[] flags = m_pFlags.ToArray();
-                        for(int i=0;i<flags.Length;i++){
-                            if(i > 0){
-                                command.Append(" ");
-                            }
-                            command.Append(flags[i]);
-                        }                
-                        command.Append(")");
-                    }
-                    if(m_InternalDate != DateTime.MinValue){
-                        command.Append(" " + TextUtils.QuoteString(IMAP_Utils.DateTimeToString(m_InternalDate)));
-                    }
-                    command.Append(" {" + m_Count + "}\r\n");
-
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes(command.ToString());
-                    string cmdLineLog = Encoding.UTF8.GetString(cmdLine).TrimEnd();
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        ProcessCmdSendingResult(args);
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        ProcessCmdSendingResult(args);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ProcessCmdSendingResult
-
-            /// <summary>
-            /// Processes intial command line sending result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProcessCmdSendingResult(SendCmdAndReadRespAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Command send/receive failed.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                    }
-                    // Command send/receive succeeded.
-                    else{ 
-                        // IMAP server returned continue response.
-                        if(op.FinalResponse.IsContinue){
-                            // Send message literal.
-                            SmartStream.WriteStreamAsyncOP writeOP = new SmartStream.WriteStreamAsyncOP(m_pStream,m_Count);
-                            writeOP.CompletedAsync += delegate(object? sender,EventArgs<SmartStream.WriteStreamAsyncOP> e){
-                                ProcessMsgSendingResult(writeOP);
-                            };
-                            // Operation completed synchronously.
-                            if(!m_pImapClient.TcpStream.WriteStreamAsync(writeOP)){
-                                ProcessMsgSendingResult(writeOP);
-                            }
-                        }
-                        // IMAP server returned error response.
-                        else{
-                            m_pFinalResponse = op.FinalResponse;
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient?.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-            #region method ProcessMsgSendingResult
-
-            /// <summary>
-            /// Processes message literal sending result.
-            /// </summary>
-            /// <param name="writeOP">Asynchronous operation.</param>
-            private void ProcessMsgSendingResult(SmartStream.WriteStreamAsyncOP writeOP)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-
-                    // Message literal sending failed.
-                    if (writeOP.Error != null){
-                        m_pException = writeOP.Error;
-                        m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                        SetState(AsyncOP_State.Completed);
-                    }
-                    // Message literal sending succeeded.
-                    else{
-                        // Log
-                        m_pImapClient.LogAddWrite(m_Count,"Wrote " + m_Count + " bytes.");
-
-                        // Send remaining command line(which is CRLF) and read response.
-                        SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(new byte[]{(int)'\r',(int)'\n'},"",m_pCallback);
-                        args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                            if(args.Error != null){
-                                m_pException = args.Error;
-                            }
-                            else{                              
-                                if(args.FinalResponse!= null && args.FinalResponse.IsError){
-                                    m_pException = new IMAP_ClientException(args.FinalResponse);
-                                }
-                                m_pFinalResponse = args.FinalResponse;
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        };
-                        // Operation completed synchronously.
-                        if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                            if(args.Error != null){
-                                m_pException = args.Error;
-                            }
-                            else{
-                                if(args.FinalResponse!= null && args.FinalResponse.IsError){
-                                    m_pException = new IMAP_ClientException(args.FinalResponse);
-                                }
-                                m_pFinalResponse = args.FinalResponse;
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient?.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-                finally{
-                    writeOP.Dispose();
-                }
-            }
-
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            /// <summary>
-            /// Gets <b>APPENDUID</b> optional response. Returns null if IMAP server doesn't support <b>UIDPLUS</b> extention.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_t_orc_AppendUid? AppendUid
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    if(m_pFinalResponse != null && m_pFinalResponse.OptionalResponse != null && m_pFinalResponse.OptionalResponse is IMAP_t_orc_AppendUid){
-                        return ((IMAP_t_orc_AppendUid)m_pFinalResponse.OptionalResponse);
-                    }
-                    else{
-                        return null;
-                    }
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<StoreMessageAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<StoreMessageAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes APPEND command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="StoreMessageAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool StoreMessageAsync(StoreMessageAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+                throw new ArgumentException("Count must be > 0.",nameof(count));
             }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
+
+            /*
+                APPEND Command (RFC 3501 §6.3.11)
+
+                Arguments:
+                    mailbox name
+                    optional flag parenthesized list
+                    optional date-time string (MUST be a quoted string)
+                    message literal
+
+                Purpose:
+                    Adds a new message to the specified mailbox. The server stores the
+                    message with the provided flags and internal date if supplied; otherwise
+                    it assigns default flags and the current time.
+
+                Server Requirements:
+                    - For a synchronizing literal (“{size}”), the server MUST send a
+                      continuation request (“+”) before the client sends the literal data.
+                    - For a non-synchronizing literal (“{size+}”), the client sends the
+                      literal immediately and the server MUST NOT send a continuation.
+                    - MUST append the message to the mailbox as a new message.
+                    - MUST assign a unique UID to the new message.
+                      (If the server supports UIDPLUS, the tagged OK response may include
+                       an APPENDUID response code containing the assigned UID.)
+                    - MUST store the message with the supplied flags and internal date, if
+                      provided.
+                    - MUST return a tagged OK response on success.
+                    - MUST NOT modify any existing messages in the mailbox.
+
+                Effects:
+                    - A new message is created in the target mailbox.
+                    - The message’s flags and internal date are set according to the
+                      arguments or server defaults.
+                    - No untagged EXPUNGE or FETCH responses are generated by APPEND.
+
+                Failure Conditions:
+                    - NO: mailbox cannot accept the message (e.g., quota exceeded,
+                      permission denied, invalid flags).
+                    - BAD: command syntax error or invalid arguments.
+                    - BYTES: server rejects the literal size (e.g., too large).
+
+                Notes:
+                    - APPEND does not operate on existing messages; it only creates a new
+                      message.
+                    - The date-time argument MUST be enclosed in double quotes, e.g.:
+                          "20-Feb-2020 10:30:00 +0200"
+                    - APPEND is atomic: either the entire message is stored or none of it.
+
+                Example (synchronizing literal):
+                    A003 APPEND INBOX (\Seen) "20-Feb-2020 10:30:00 +0200" {57}
+                    + Ready for literal data
+                    <57 bytes of message>
+                    A003 OK APPEND completed
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            StringBuilder cmd = new StringBuilder();
+            cmd.Append($"{m_CommandIndex++:d5} APPEND {folder}");
+            if(flags != null && flags.Length > 0){
+                cmd.Append(" (" + string.Join(' ',flags) + ")");
             }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+            if(date != DateTime.MinValue){
+                cmd.Append(" \"" + IMAP_Utils.DateTimeToString(date) + "\"");
+            }
+            cmd.Append(" {" + count + "}\r\n");
+
+            await SendCommandLineAsync(cmd.ToString(),true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(!response.IsContinue){
+                throw new IMAP_ClientException(response);
             }
 
-            return op.Start(this);
+            await this.TcpStream.WriteStreamAsync(message,count,int.MaxValue,cancellationToken);
+            LogAddWrite(count,$"<literal of {count} bytes>");
+            await SendCommandLineAsync("\r\n",true,cancellationToken);
+
+            response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
@@ -5971,220 +5086,425 @@ namespace LumiSoft.Net.IMAP.Client
         #region method Enable
 
         /// <summary>
-        /// Enables the specified IMAP capabilities in server.
+        /// Synchronously sends the IMAP <c>ENABLE</c> command to request activation
+        /// of a single optional server capability for the current connection.
+        /// This method blocks until the operation completes and returns whether
+        /// the server actually enabled the requested capability.
         /// </summary>
-        /// <param name="capabilities">IMAP capabilities.</param>
-        /// <returns>Returns enabled capabilities info.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>capabilities</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public IMAP_r_u_Enable[] Enable(string[] capabilities)
+        /// <param name="capability">
+        /// The capability name to enable. Only one capability is sent per command
+        /// to ensure deterministic server behavior.
+        /// </param>
+        /// <returns>
+        /// <c>true</c> if and only if the server returned an untagged
+        /// <c>ENABLED</c> response containing the requested capability;
+        /// otherwise <c>false</c>. A tagged <c>OK</c> response alone does not
+        /// indicate that the capability was enabled.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="capability"/> is empty or consists only
+        /// of whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// response to the <c>ENABLE</c> command.
+        /// </exception>
+        /// <remarks>
+        /// This method is a synchronous wrapper around <see cref="EnableAsync"/>.
+        /// It uses the client's configured timeout and blocks the calling thread
+        /// until the ENABLE command completes.
+        /// </remarks>
+        public bool Enable(string capability)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(this.SelectedFolder != null){
-                throw new InvalidOperationException("The 'ENABLE' command MUST only be used in the authenticated state.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(capabilities == null){
-                throw new ArgumentNullException("capabilities");
-            }
-            if(capabilities.Length < 1){
-                throw new ArgumentException("Argument 'capabilities' must contain at least 1 value.","capabilities");
-            }
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            List<IMAP_r_u_Enable> retVal = new List<IMAP_r_u_Enable>();
-
-            // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Enable){
-                    retVal.Add((IMAP_r_u_Enable)e.Value);
-                }
-            };
-
-            using(EnableAsyncOP op = new EnableAsyncOP(capabilities,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<EnableAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.EnableAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-
-            return retVal.ToArray();
+            return EnableAsync(capability,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
         #region method EnableAsync
 
-        #region class EnableAsyncOP
-
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.EnableAsync"/> asynchronous operation.
+        /// Sends the IMAP <c>ENABLE</c> command to request activation of a single
+        /// optional server capability for the current connection, as defined in
+        /// RFC 5161.
         /// </summary>
-        public class EnableAsyncOP : CmdAsyncOP<EnableAsyncOP>
-        {
-            private string[] m_pCapabilities;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="capabilities">Folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>capabilities</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public EnableAsyncOP(string[] capabilities,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(capabilities == null){
-                    throw new ArgumentNullException("capabilities");
-                }
-                if(capabilities.Length < 1){
-                    throw new ArgumentException("Argument 'capabilities' must contain at least 1 value.","capabilities");
-                }
-
-                m_pCapabilities = capabilities;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* 3.1.  The ENABLE Command
-                    Arguments: capability names
-
-                    Result:    OK: Relevant capabilities enabled
-                               BAD: No arguments, or syntax error in an argument
-
-                    The ENABLE command takes a list of capability names, and requests the
-                    server to enable the named extensions.  Once enabled using ENABLE,
-                    each extension remains active until the IMAP connection is closed.
-                */
-
-                StringBuilder cmd = new StringBuilder();
-                cmd.Append((imap.m_CommandIndex++).ToString("d5") + " ENABLE");
-                foreach(string capability in m_pCapabilities){
-                    cmd.Append(" " + capability);
-                }
-                cmd.Append("\r\n");
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes(cmd.ToString());
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes ENABLE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool EnableAsync(EnableAsyncOP op)
+        /// <param name="capability">
+        /// The capability name to enable. Only one capability is sent per command
+        /// to ensure deterministic server behavior and accurate interpretation of
+        /// server responses.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous
+        /// operation.
+        /// </param>
+        /// <returns>
+        /// <c>true</c> if and only if the server returned an untagged
+        /// <c>ENABLED</c> response containing the requested capability;
+        /// otherwise <c>false</c>. A tagged <c>OK</c> response alone does not
+        /// indicate success.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="capability"/> is empty or consists only
+        /// of whitespace.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// response to the <c>ENABLE</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The server may return one or more untagged <c>ENABLED</c> responses
+        /// indicating which capabilities were successfully enabled. Only the
+        /// capabilities listed in these responses should be considered active.
+        /// </para>
+        /// <para>
+        /// If the server returns <c>OK</c> without any <c>ENABLED</c> response,
+        /// the requested capability was not enabled, even though the command
+        /// completed successfully.
+        /// </para>
+        /// <para>
+        /// Clients should send only one capability per <c>ENABLE</c> command.
+        /// Sending multiple capabilities at once makes it impossible to determine
+        /// which individual capabilities were accepted.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<bool> EnableAsync(string capability,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(this.SelectedFolder != null){
-                throw new InvalidOperationException("The 'ENABLE' command MUST only be used in the authenticated state.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region mehod EnableUtf8
-
-        /// <summary>
-        /// Enables UTF-8 support in IMAP server.
-        /// </summary>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state(not-connected,not-authenticated or selected state).</exception>
-        /// <remarks>Before calling this method, you need to check IMAP capability list to see if server supports "UTF8=ACCEPT" or "UTF8=ALL" capability.
-        /// For more info see <see href="http://tools.ietf.org/html/rfc5738">rfc5738</see>.</remarks>
-        public void EnableUtf8()
-        {
             if(!this.IsConnected){
                 throw new InvalidOperationException("Not connected, you need to connect first.");
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
             }
-            if(this.SelectedFolder != null){
-                throw new InvalidOperationException("The 'ENABLE UTF8=ACCEPT' command MUST only be used in the authenticated state.");
-            }            
+            if(string.IsNullOrWhiteSpace(capability)){
+                throw new ArgumentException("Capability must be specified.",nameof(capability));
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
 
-            /* RFC 5161 and RFC 5738 3.
-                The "ENABLE UTF8=ACCEPT" command MUST only be used in the authenticated state.
+            /*
+             IMAP ENABLE Command
+             RFC 5161 – IMAP ENABLE Extension
+
+             Syntax:
+                 ENABLE <capability> [<capability> ...]
+
+             Purpose:
+                 Requests the server to enable one or more optional IMAP capabilities
+                 for the current connection. Capabilities enabled via this command
+                 may alter server behavior, allow new commands, or activate enhanced
+                 features.
+
+             Semantics:
+                 The server responds with one or more ENABLED data items indicating
+                 which capabilities have been successfully enabled:
+                     ENABLED <capability> [<capability> ...]
+                 Capabilities not listed in the ENABLED response were not enabled,
+                 either because the server does not support them or because they
+                 cannot be enabled dynamically.
+
+             Typical Response:
+                 C: A102 ENABLE UTF8=ACCEPT CONDSTORE
+                 S: * ENABLED UTF8=ACCEPT
+                 S: A102 OK ENABLE completed
+
+             Interpretation:
+                 In the example above:
+                     UTF8=ACCEPT   was successfully enabled
+                     CONDSTORE     was not enabled (server did not include it)
+
+             Error Conditions:
+                 NO   server refuses to enable the requested capabilities
+                 BAD  invalid syntax or unsupported command
+
+             Client Usage:
+                 Used by clients to activate optional server features such as UTF‑8
+                 support, conditional store, or other extensions that improve
+                 performance or functionality.
+
+             Implementation Notes:
+                 Servers must list only the capabilities that were successfully
+                 enabled. Clients should not assume that all requested capabilities
+                 were accepted. ENABLED responses may appear as untagged data.
             */
 
-            IMAP_r_u_Enable[] response = Enable(new string[]{"UTF8=ACCEPT"});
+            bool retVal = false;
 
-            // Per specification we may send "utf8-quoted" string when server reports "UTF8=ACCEPT" or "UTF8=ALL" without
-            // sending "ENABLE UTF8=ACCEPT" command. We just enable sending or receiving utf-8 once this command is called.
-            m_MailboxEncoding = IMAP_Mailbox_Encoding.ImapUtf8;
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(e is IMAP_r_u_Enabled v){
+                    if(v.Capabilities.Contains(capability,StringComparer.OrdinalIgnoreCase)){
+                        retVal = true;
+                    }
+                }
+            };
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} ENABLE {capability}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+
+            return retVal;
+        }
+
+        #endregion
+
+        #region method EnableUtf8IfSupported
+
+        /// <summary>
+        /// Synchronously attempts to enable UTF‑8 related IMAP capabilities on the
+        /// current connection using the IMAP <c>ENABLE</c> command (RFC 5161).
+        /// 
+        /// This method blocks until the operation completes and applies the same
+        /// UTF‑8 activation logic as <see cref="EnableUtf8IfSupportedAsync(CancellationToken)"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The method uses the client's configured timeout and executes the
+        /// asynchronous UTF‑8 enabling sequence in a blocking manner. It enables
+        /// UTF‑8 features in the recommended RFC‑defined order and updates internal
+        /// state based on which capabilities the server actually activates.
+        /// </para>
+        /// 
+        /// <para>
+        /// Only capabilities explicitly listed in the server's untagged
+        /// <c>ENABLED</c> responses are considered active. A tagged <c>OK</c>
+        /// response alone does not indicate that a capability was successfully
+        /// enabled.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c>
+        /// response to any <c>ENABLE</c> command.
+        /// </exception>
+        public async ValueTask EnableUtf8IfSupported()
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            EnableUtf8IfSupportedAsync(cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method EnableUtf8IfSupportedAsync
+
+        /// <summary>
+        /// Attempts to enable UTF‑8 related IMAP capabilities on the current
+        /// connection using the IMAP <c>ENABLE</c> command (RFC 5161).
+        /// 
+        /// The method enables UTF‑8 features in a safe, RFC‑defined order and
+        /// updates internal client state based on which capabilities the server
+        /// actually activates.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous
+        /// operation.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, or is
+        /// currently in the IDLE state.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The method checks the server's advertised capabilities and attempts to
+        /// enable the following UTF‑8 related extensions in the recommended order:
+        /// <c>UTF8=ACCEPT</c>, <c>UTF8=RESP-CODES</c>, <c>UTF8=SEARCH</c>,
+        /// and <c>UTF8=USER</c>. Each capability is enabled using a separate
+        /// <c>ENABLE</c> command to ensure deterministic behavior.
+        /// </para>
+        /// 
+        /// <para>
+        /// Only capabilities explicitly listed in the server's untagged
+        /// <c>ENABLED</c> responses are considered active. A tagged <c>OK</c>
+        /// response alone does not indicate that a capability was successfully
+        /// enabled.
+        /// </para>
+        /// 
+        /// <para>
+        /// When <c>UTF8=ACCEPT</c> is enabled, the client switches mailbox name
+        /// encoding to UTF‑8. When <c>UTF8=SEARCH</c> is enabled, the client
+        /// allows UTF‑8 search keys. When <c>UTF8=USER</c> is enabled, the client
+        /// permits UTF‑8 usernames and passwords for authentication.
+        /// </para>
+        /// 
+        /// <para>
+        /// The capabilities <c>UTF8=ONLY</c> and <c>UTF8=ALL</c> are intentionally
+        /// not enabled automatically because they alter mailbox name semantics or
+        /// are obsolete.
+        /// </para>
+        /// </remarks>
+        public async ValueTask EnableUtf8IfSupportedAsync(CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+
+            // Enable in RFC-defined safe order
+            string[] order =
+            {
+                "UTF8=ACCEPT",
+                "UTF8=RESP-CODES",
+                "UTF8=SEARCH",
+                "UTF8=USER",
+                // UTF8=ONLY
+                //"UTF8=ONLY",
+                //"UTF8=ALL"
+            };
+
+            foreach(string cap in order){
+                if(this.Capabilities.Contains(cap,StringComparer.OrdinalIgnoreCase)){
+                    var enabled = await EnableAsync(cap,cancellationToken);
+
+                    if(enabled){
+                        if(cap.Equals("UTF8=ACCEPT", StringComparison.OrdinalIgnoreCase)){
+                            m_MailboxEncoding = IMAP_Mailbox_Encoding.ImapUtf8;
+                        }
+                        else if (cap.Equals("UTF8=SEARCH", StringComparison.OrdinalIgnoreCase)){
+                            m_Utf8Search = true;
+                        }                        
+                        else if (cap.Equals("UTF8=USER", StringComparison.OrdinalIgnoreCase)){
+                            m_Utf8User = true;
+                        }
+                    }
+                }
+            }
         }
 
         #endregion
 
 
-        #region method CloseFolder
+        #region method FolderClose
 
         /// <summary>
-        /// Closes selected folder, all messages marked as Deleted will be expunged.
+        /// Executes the IMAP <c>CLOSE</c> command on the currently selected mailbox.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void CloseFolder()
-        {       
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no mailbox is
+        /// currently selected, or the client is in the IDLE state. The <c>CLOSE</c>
+        /// command cannot be issued while IDLE is active.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// indicating that the mailbox could not be closed.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is the synchronous wrapper for
+        /// <see cref="FolderCloseAsync(CancellationToken)"/>. A cancellation token
+        /// with the client’s configured timeout is created internally, and the
+        /// asynchronous operation is executed synchronously using
+        /// <c>GetAwaiter().GetResult()</c>.
+        /// </para>
+        /// <para>
+        /// The <c>CLOSE</c> command permanently removes all messages in the selected
+        /// mailbox that have the <c>\Deleted</c> flag set. The expunge is performed
+        /// silently: the server MUST NOT send untagged <c>EXPUNGE</c> responses for
+        /// the removed messages.
+        /// </para>
+        /// <para>
+        /// After expunging deleted messages, the server deselects the mailbox and
+        /// returns to the authenticated (non-selected) state. No further commands
+        /// may operate on the mailbox until a new <c>SELECT</c> or <c>EXAMINE</c>
+        /// command is issued.
+        /// </para>
+        /// </remarks>
+        public void FolderClose()
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            FolderCloseAsync(cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method FolderCloseAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>CLOSE</c> command on the currently selected mailbox.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// Optional cancellation token used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no mailbox is
+        /// currently selected, or the client is in the IDLE state. The <c>CLOSE</c>
+        /// command cannot be issued while IDLE is active.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a tagged <c>NO</c> or <c>BAD</c> response,
+        /// indicating that the mailbox could not be closed.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// The <c>CLOSE</c> command permanently removes all messages in the selected
+        /// mailbox that have the <c>\Deleted</c> flag set. The expunge is performed
+        /// silently: the server MUST NOT send untagged <c>EXPUNGE</c> responses for
+        /// the removed messages.
+        /// </para>
+        /// <para>
+        /// After expunging deleted messages, the server deselects the mailbox and
+        /// returns to the authenticated (non-selected) state. No further commands
+        /// may operate on the mailbox until a new <c>SELECT</c> or <c>EXAMINE</c>
+        /// command is issued.
+        /// </para>
+        /// <para>
+        /// This method sends the <c>CLOSE</c> command asynchronously and processes
+        /// the server’s tagged response. On success, the client clears its selected
+        /// mailbox state to reflect the transition back to authenticated mode.
+        /// </para>
+        /// </remarks>
+        public async ValueTask FolderCloseAsync(CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -6201,350 +5521,202 @@ namespace LumiSoft.Net.IMAP.Client
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
 
-            using(CloseFolderAsyncOP op = new CloseFolderAsyncOP(null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<CloseFolderAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.CloseFolderAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            /*
+                CLOSE Command (RFC 3501 §6.4.3)
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+                Arguments:
+                    none
+
+                Purpose:
+                    Permanently removes all messages in the selected mailbox that have the
+                    \Deleted flag set, then deselects the mailbox.
+
+                Server Requirements:
+                    - MUST expunge all messages marked \Deleted.
+                    - MUST return no untagged EXPUNGE responses for the expunged messages.
+                      (The expunge is implicit and silent.)
+                    - MUST return a tagged OK response when the mailbox is successfully closed.
+                    - MUST deselect the mailbox; no further commands may operate on it
+                      until a new SELECT or EXAMINE is issued.
+
+                Effects:
+                    - All messages flagged \Deleted are permanently removed.
+                    - No EXPUNGE responses are sent; clients cannot track which messages
+                      were removed.
+                    - The mailbox becomes unselected; server state returns to authenticated
+                      (non-selected) mode.
+
+                Failure Conditions:
+                    - NO: mailbox cannot be closed (e.g., server internal error).
+                    - BAD: command syntax error or invalid state (e.g., no mailbox selected).
+
+                Notes:
+                    - CLOSE is equivalent to issuing EXPUNGE followed by UNSELECT,
+                      except EXPUNGE is silent.
+                    - Clients that need to know which messages were expunged must use
+                      EXPUNGE instead of CLOSE.
+                    - CLOSE does not affect messages without the \Deleted flag.
+            */
+
+            await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " CLOSE\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsSuccess){
+                m_pSelectedFolder.Dispose();
+                m_pSelectedFolder = null;
             }
-        }
-
-        #endregion
-
-        #region method CloseFolderAsync
-
-        #region class CloseFolderAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.CloseFolderAsync"/> asynchronous operation.
-        /// </summary>
-        public class CloseFolderAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public CloseFolderAsyncOP(EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                m_pCallback = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 3501 6.4.2. CLOSE Command.
-                        Arguments:  none
-
-                        Responses:  no specific responses for this command
-
-                        Result:     OK - close completed, now in authenticated state
-                                    BAD - command unknown or arguments invalid
-
-                        The CLOSE command permanently removes all messages that have the
-                        \Deleted flag set from the currently selected mailbox, and returns
-                        to the authenticated state from the selected state.  No untagged
-                        EXPUNGE responses are sent.
-
-                        No messages are removed, and no error is given, if the mailbox is
-                        selected by an EXAMINE command or is otherwise selected read-only.
-
-                        Even if a mailbox is selected, a SELECT, EXAMINE, or LOGOUT
-                        command MAY be issued without previously issuing a CLOSE command.
-                        The SELECT, EXAMINE, and LOGOUT commands implicitly close the
-                        currently selected mailbox without doing an expunge.  However,
-                        when many messages are deleted, a CLOSE-LOGOUT or CLOSE-SELECT
-                        sequence is considerably faster than an EXPUNGE-LOGOUT or
-                        EXPUNGE-SELECT because no untagged EXPUNGE responses (which the
-                        client would probably ignore) are sent.
-
-                        Example:    C: A341 CLOSE
-                                    S: A341 OK CLOSE completed
-
-                    */
-                    
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " CLOSE\r\n");
-                    string cmdLineLog = Encoding.UTF8.GetString(cmdLine).TrimEnd();
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        ProecessCmdResult(e.Value);
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        ProecessCmdResult(args);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ProecessCmdResult
-
-            /// <summary>
-            /// Processes command result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProecessCmdResult(SendCmdAndReadRespAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Command send/receive failed.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                        m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    }
-                    // Command send/receive succeeded.
-                    else{
-                        m_pFinalResponse = op.FinalResponse;
-
-                        // IMAP server returned error response.
-                        if(op.FinalResponse.IsError){
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-                        }
-                        // IMAP server returned success response.
-                        else{
-                            m_pImapClient.m_pSelectedFolder = null;
-                        }
-                    }
-
-                    SetState(AsyncOP_State.Completed);
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<CloseFolderAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<CloseFolderAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes CLOSE command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CloseFolderAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool CloseFolderAsync(CloseFolderAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pSelectedFolder == null){
-                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method Fetch
+            else{
                 
+                throw new IMAP_ClientException(response);
+            }            
+        }
+
+        #endregion
+
+        #region method MessagesFetch
+
         /// <summary>
-        /// Fetches specified message items.
+        /// Sends a <c>FETCH</c> command for the specified message sequence set
+        /// and data-items, delivering each returned <c>FETCH</c> result through
+        /// the provided callback. This method executes synchronously.
         /// </summary>
-        /// <param name="uid">Specifies if argument <b>seqSet</b> contains messages UID or sequence numbers.</param>
-        /// <param name="seqSet">Sequence set of messages to fetch.</param>
-        /// <param name="items">Fetch items to fetch.</param>
-        /// <param name="callback">Optional callback to be called for each server returned untagged response.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> or <b>items</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        /// <remarks>Fetch raises <see cref="UntaggedResponse"/> for ecach fetched message.</remarks>
-        public void Fetch(bool uid,IMAP_t_SeqSet seqSet,IMAP_t_Fetch_i[] items,EventHandler<EventArgs<IMAP_r_u>> callback)
-        {   
+        /// <remarks>
+        /// <para>
+        /// The method creates a cancellation token with the client's configured
+        /// timeout and invokes <see cref="MessagesFetchAsync"/> to perform the
+        /// actual command execution. Each untagged <c>FETCH</c> result received
+        /// during the operation is delivered through the
+        /// <paramref name="responseCallback"/> delegate.
+        /// </para>
+        /// <para>
+        /// If any data-item includes literal content, a custom storage stream may
+        /// be supplied through the optional
+        /// <paramref name="getStoreStreamCallback"/> event. When provided, the
+        /// callback is invoked before the literal content is stored.
+        /// </para>
+        /// <para>
+        /// Any error reported by the final command completion response results in
+        /// an <see cref="IMAP_ClientException"/> being thrown.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The message sequence set identifying which messages the <c>FETCH</c>
+        /// command applies to.
+        /// </param>
+        /// <param name="items">
+        /// The collection of data-item descriptors specifying which information
+        /// is requested for each message.
+        /// </param>
+        /// <param name="responseCallback">
+        /// Callback invoked for each <c>FETCH</c> result returned during command
+        /// execution.
+        /// </param>
+        /// <param name="getStoreStreamCallback">
+        /// Optional callback allowing assignment of a custom storage stream for
+        /// data-items that contain literal content.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="items"/> is
+        /// <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="items"/> contains no elements.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public void MessagesFetch(
+            IMAP_t_SeqSet seqSet,
+            IMAP_t_Fetch_i[] items,
+            EventHandler<IMAP_r_u_Fetch> responseCallback,
+            EventHandler<IMAP_e_Fetch_GetStoreStream>? getStoreStreamCallback)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesFetchAsync(seqSet,items,responseCallback,getStoreStreamCallback,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesFetchAsync
+
+        /// <summary>
+        /// Sends a <c>FETCH</c> command for the specified message sequence set
+        /// and data-items, delivering each returned <c>FETCH</c> result through
+        /// the provided callback.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The method constructs and transmits a <c>FETCH</c> command using the
+        /// supplied sequence set and data-item descriptors. For each untagged
+        /// <c>FETCH</c> response received during command execution, the
+        /// <paramref name="responseCallback"/> is invoked with an
+        /// <see cref="IMAP_r_u_Fetch"/> instance containing the message sequence
+        /// number and associated data-items.
+        /// </para>
+        /// <para>
+        /// When a data-item includes literal content, a custom storage stream may
+        /// be supplied through the optional
+        /// <paramref name="getStoreStreamCallback"/> event. If provided, the
+        /// callback is invoked before the literal content is stored, allowing the
+        /// caller to assign a preferred stream.
+        /// </para>
+        /// <para>
+        /// After all untagged responses have been delivered, the method waits for
+        /// the final command completion response. If the final response indicates
+        /// an error, an <see cref="IMAP_ClientException"/> is thrown.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The message sequence set identifying which messages the <c>FETCH</c>
+        /// command applies to.
+        /// </param>
+        /// <param name="items">
+        /// The collection of data-item descriptors specifying which information
+        /// is requested for each message.
+        /// </param>
+        /// <param name="responseCallback">
+        /// Callback invoked for each <c>FETCH</c> result returned during command
+        /// execution.
+        /// </param>
+        /// <param name="getStoreStreamCallback">
+        /// Optional callback allowing assignment of a custom storage stream for
+        /// data-items that contain literal content.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="items"/> is
+        /// <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="items"/> contains no elements.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public async ValueTask MessagesFetchAsync(
+            IMAP_t_SeqSet seqSet,
+            IMAP_t_Fetch_i[] items,
+            EventHandler<IMAP_r_u_Fetch> responseCallback,
+            EventHandler<IMAP_e_Fetch_GetStoreStream>? getStoreStreamCallback,
+            CancellationToken cancellationToken = default)
+        {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -6556,7 +5728,7 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(m_pSelectedFolder == null){
                 throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }            
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
@@ -6569,175 +5741,182 @@ namespace LumiSoft.Net.IMAP.Client
             if(items.Length < 1){
                 throw new ArgumentException("Argument 'items' must conatain at least 1 value.","items");
             }
-                        
-            using(FetchAsyncOP op = new FetchAsyncOP(uid,seqSet,items,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<FetchAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.FetchAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
 
-                    if(op.Error != null){
-                        throw op.Error;
+            
+            StringBuilder command = new StringBuilder();
+            command.Append((m_CommandIndex++).ToString("d5"));
+            command.Append(" FETCH " + seqSet.ToString() + " (");
+            for(int i=0;i<items.Length;i++){
+                if(i > 0){
+                    command.Append(" ");
+                }
+                command.Append(items[i].ToString());
+            }
+            command.Append(")\r\n");
+
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(e is IMAP_r_u_Fetch v){
+                    if(responseCallback != null){
+                        responseCallback(this,v);
                     }
                 }
+            };
+
+            await SendCommandLineAsync(command.ToString(),true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,getStoreStreamCallback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
         }
 
         #endregion
 
-        #region method FetchAsync
-
-        #region class FetchAsyncOP
+        #region method MessagesFetchUid
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.FetchAsync"/> asynchronous operation.
+        /// Sends a UID‑based <c>FETCH</c> command for the specified message
+        /// sequence set and data-items, delivering each returned <c>FETCH</c>
+        /// result through the provided callback. This method executes
+        /// synchronously.
         /// </summary>
-        public class FetchAsyncOP : CmdAsyncOP<FetchAsyncOP>
+        /// <remarks>
+        /// <para>
+        /// The method creates a cancellation token using the client's configured
+        /// timeout and invokes <see cref="MessagesFetchUidAsync"/> to perform the
+        /// actual command execution. Each untagged <c>FETCH</c> result received
+        /// during the operation is delivered through the
+        /// <paramref name="responseCallback"/> delegate.
+        /// </para>
+        /// <para>
+        /// If any data-item includes literal content, a custom storage stream may
+        /// be supplied through the optional
+        /// <paramref name="getStoreStreamCallback"/> event. When provided, the
+        /// callback is invoked before the literal content is stored.
+        /// </para>
+        /// <para>
+        /// Any error reported by the final command completion response results in
+        /// an <see cref="IMAP_ClientException"/> being thrown.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The UID sequence set identifying which messages the <c>FETCH UID</c>
+        /// command applies to.
+        /// </param>
+        /// <param name="items">
+        /// The collection of data-item descriptors specifying which information
+        /// is requested for each message.
+        /// </param>
+        /// <param name="responseCallback">
+        /// Callback invoked for each <c>FETCH</c> result returned during command
+        /// execution.
+        /// </param>
+        /// <param name="getStoreStreamCallback">
+        /// Optional callback allowing assignment of a custom storage stream for
+        /// data-items that contain literal content.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="items"/> is
+        /// <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="items"/> contains no elements.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public void MessagesFetchUid(
+            IMAP_t_SeqSet seqSet,
+            IMAP_t_Fetch_i[] items,
+            EventHandler<IMAP_r_u_Fetch> responseCallback,
+            EventHandler<IMAP_e_Fetch_GetStoreStream>? getStoreStreamCallback)
         {
-            private bool             m_Uid        = false;
-            private IMAP_t_SeqSet    m_pSeqSet;
-            private IMAP_t_Fetch_i[] m_pDataItems;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="uid">Specifies if argument <b>seqSet</b> contains messages UID or sequence numbers.</param>
-            /// <param name="seqSet">Sequence set of messages to fetch.</param>
-            /// <param name="items">Fetch items to fetch.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> or <b>items</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public FetchAsyncOP(bool uid,IMAP_t_SeqSet seqSet,IMAP_t_Fetch_i[] items,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(seqSet == null){
-                    throw new ArgumentNullException("seqSet");
-                }
-                if(items == null){
-                    throw new ArgumentNullException("items");
-                }                
-                if(items.Length < 1){
-                    throw new ArgumentException("Argument 'items' must conatain at least 1 value.","items");
-                }
-
-                m_Uid        = uid;
-                m_pSeqSet    = seqSet;
-                m_pDataItems = items;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.4.5. FETCH Command.
-                    Arguments:  sequence set
-                                message data item names or macro
-
-                    Responses:  untagged responses: FETCH
-
-                    Result:     OK - fetch completed
-                                NO - fetch error: can't fetch that data
-                                BAD - command unknown or arguments invalid
-
-                    The FETCH command retrieves data associated with a message in the
-                    mailbox.  The data items to be fetched can be either a single atom
-                    or a parenthesized list.
-
-                    Most data items, identified in the formal syntax under the
-                    msg-att-static rule, are static and MUST NOT change for any
-                    particular message.  Other data items, identified in the formal
-                    syntax under the msg-att-dynamic rule, MAY change, either as a
-                    result of a STORE command or due to external events.
-
-                        For example, if a client receives an ENVELOPE for a
-                        message when it already knows the envelope, it can
-                        safely ignore the newly transmitted envelope.
-                */
-
-                StringBuilder command = new StringBuilder();
-                command.Append((imap.m_CommandIndex++).ToString("d5"));
-                if(m_Uid){
-                    command.Append(" UID");
-                }
-                command.Append(" FETCH " + m_pSeqSet.ToString() + " (");
-                for(int i=0;i<m_pDataItems.Length;i++){
-                    if(i > 0){
-                        command.Append(" ");
-                    }
-                    command.Append(m_pDataItems[i].ToString());
-                }
-                command.Append(")\r\n");
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes(command.ToString());
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
+            MessagesFetchUidAsync(seqSet,items,responseCallback,getStoreStreamCallback,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        /// <summary>
-        /// Starts executing FETCH command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool FetchAsync(FetchAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pSelectedFolder == null){
-                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-                        
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method Search
+        #region method MessagesFetchUidAsync
 
         /// <summary>
-        /// Searches message what matches specified search criteria.
+        /// Sends a UID‑based <c>FETCH</c> command for the specified message
+        /// sequence set and data-items, delivering each returned <c>FETCH</c>
+        /// result through the provided callback.
         /// </summary>
-        /// <param name="uid">If true then UID SERACH, otherwise normal SEARCH.</param>
-        /// <param name="charset">Charset used in search criteria. Value null means ASCII. The UTF-8 is reccomended value non ASCII searches.</param>
-        /// <param name="criteria">Search criteria.</param>
-        /// <returns>Returns search expression matehced messages sequence-numbers or UIDs(This depends on argument <b>uid</b> value).</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is rised when <b>criteria</b> is null reference.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public int[] Search(bool uid,Encoding charset,IMAP_Search_Key criteria)
+        /// <remarks>
+        /// <para>
+        /// The method constructs and transmits a <c>FETCH UID</c> command using
+        /// the supplied sequence set and data-item descriptors. For each untagged
+        /// <c>FETCH</c> response received during command execution, the
+        /// <paramref name="responseCallback"/> is invoked with an
+        /// <see cref="IMAP_r_u_Fetch"/> instance containing the message UID and
+        /// associated data-items.
+        /// </para>
+        /// <para>
+        /// When a data-item includes literal content, a custom storage stream may
+        /// be supplied through the optional
+        /// <paramref name="getStoreStreamCallback"/> event. When provided, the
+        /// callback is invoked before the literal content is stored, allowing the
+        /// caller to assign a preferred stream.
+        /// </para>
+        /// <para>
+        /// After all untagged responses have been delivered, the method waits for
+        /// the final command completion response. If the final response indicates
+        /// an error, an <see cref="IMAP_ClientException"/> is thrown.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The UID sequence set identifying which messages the <c>FETCH UID</c>
+        /// command applies to.
+        /// </param>
+        /// <param name="items">
+        /// The collection of data-item descriptors specifying which information
+        /// is requested for each message.
+        /// </param>
+        /// <param name="responseCallback">
+        /// Callback invoked for each <c>FETCH</c> result returned during command
+        /// execution.
+        /// </param>
+        /// <param name="getStoreStreamCallback">
+        /// Optional callback allowing assignment of a custom storage stream for
+        /// data-items that contain literal content.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="items"/> is
+        /// <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="items"/> contains no elements.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public async ValueTask MessagesFetchUidAsync(
+            IMAP_t_SeqSet seqSet,
+            IMAP_t_Fetch_i[] items,
+            EventHandler<IMAP_r_u_Fetch> responseCallback,
+            EventHandler<IMAP_e_Fetch_GetStoreStream>? getStoreStreamCallback,
+            CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -6750,242 +5929,371 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(m_pSelectedFolder == null){
                 throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }            
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+            if(seqSet == null){
+                throw new ArgumentNullException("seqSet");
+            }
+            if(items == null){
+                throw new ArgumentNullException("items");
+            }
+            if(items.Length < 1){
+                throw new ArgumentException("Argument 'items' must conatain at least 1 value.","items");
+            }
+
+            
+            StringBuilder command = new StringBuilder();
+            command.Append((m_CommandIndex++).ToString("d5"));
+            command.Append(" UID FETCH " + seqSet.ToString() + " (");
+            for(int i=0;i<items.Length;i++){
+                if(i > 0){
+                    command.Append(" ");
+                }
+                command.Append(items[i].ToString());
+            }
+            command.Append(")\r\n");
+
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(e is IMAP_r_u_Fetch v){
+                    if(responseCallback != null){
+                        responseCallback(this,v);
+                    }
+                }
+            };
+
+            await SendCommandLineAsync(command.ToString(),true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,getStoreStreamCallback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+        }
+
+        #endregion
+
+        #region method MessagesSearch
+
+        /// <summary>
+        /// Executes an IMAP <c>SEARCH</c> command synchronously using the specified
+        /// search criteria and returns the matching message numbers (or UIDs when
+        /// performing a UID SEARCH).
+        /// </summary>
+        /// <param name="criteria">
+        /// The IMAP search criteria describing which messages should be matched.
+        /// Must not be <c>null</c>.
+        /// </param>
+        /// <returns>
+        /// An array of message identifiers returned by the IMAP server. For a normal
+        /// <c>SEARCH</c> command these are message sequence numbers; for a
+        /// <c>UID SEARCH</c> they are UIDs.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, no mailbox is
+        /// selected, or the client is currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="criteria"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the IMAP server returns a <c>NO</c> or <c>BAD</c> response
+        /// to the <c>SEARCH</c> command.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
+        /// <remarks>
+        /// This method is a synchronous wrapper around <see cref="MessagesSearchAsync"/>.
+        /// It creates a cancellation token using the client's configured timeout and
+        /// blocks the calling thread until the asynchronous search operation completes.
+        /// </remarks>
+        public long[] MessagesSearch(IMAP_t_Search_Key criteria)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            return MessagesSearchAsync(criteria,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesSearchAsync
+
+        /// <summary>
+        /// Executes an IMAP <c>SEARCH</c> command against the currently selected mailbox
+        /// using the specified search criteria and returns the matching message numbers
+        /// (or UIDs when the criteria represent a UID SEARCH).
+        /// </summary>
+        /// <param name="criteria">
+        /// The IMAP search criteria describing which messages should be matched.
+        /// Must not be <c>null</c>.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// An array of message identifiers returned by the IMAP server. For a normal
+        /// <c>SEARCH</c> command these are message sequence numbers; for a
+        /// <c>UID SEARCH</c> they are UIDs.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, no mailbox is
+        /// selected, or the client is currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="criteria"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the IMAP server returns a <c>NO</c> or <c>BAD</c> response
+        /// to the <c>SEARCH</c> command.
+        /// </exception>
+        /// <remarks>
+        /// This method sends the IMAP <c>SEARCH</c> command and collects all untagged
+        /// <c>SEARCH</c> responses emitted by the server. Multiple untagged responses
+        /// are supported and their identifiers are accumulated. The final tagged
+        /// response is validated to ensure successful completion.
+        /// </remarks>
+        public async ValueTask<long[]> MessagesSearchAsync(IMAP_t_Search_Key criteria,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pSelectedFolder == null){
+                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(criteria == null){
-                throw new ArgumentNullException("criteria");
+                throw new ArgumentNullException(nameof(criteria));
             }
-            
-            List<int> retVal = new List<int>();
+
+            /* RFC 3501 — SEARCH Command
+               RFC 6855 — IMAP Support for UTF-8
+               RFC 9051 — IMAP4rev2 (Literal8 and UTF8=SEARCH)
+
+               The SEARCH command evaluates search criteria against messages in the
+               currently selected mailbox. SEARCH may operate in legacy ASCII mode
+               or in UTF‑8 mode depending on server capabilities and whether the
+               client has enabled UTF8=SEARCH.
+
+               SEARCH-Command = tag SP "SEARCH"
+                                [SP "CHARSET" SP charset]
+                                SP search-key *(SP search-key) CRLF
+
+               Search Keys (partial list):
+                 ALL, SEEN, UNSEEN, ANSWERED, UNANSWERED, FLAGGED, UNFLAGGED,
+                 DELETED, UNDELETED, DRAFT, UNDRAFT, RECENT, OLD,
+                 FROM <string>, TO <string>, CC <string>, BCC <string>,
+                 SUBJECT <string>, BODY <string>, TEXT <string>,
+                 BEFORE <date>, ON <date>, SINCE <date>,
+                 LARGER <n>, SMALLER <n>,
+                 NOT <key>, OR <key> <key>,
+                 UID <set>
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST return an untagged SEARCH response containing
+                   matching message numbers (or UIDs for UID SEARCH).
+                 - The server MUST send a final tagged OK response on success.
+                 - If the charset is unsupported, the server MUST return BAD.
+                 - If the search criteria are invalid or unsupported, the server
+                   MUST return BAD or NO.
+
+               CHARSET Rules:
+                 - In legacy mode (UTF8=SEARCH not enabled), servers MAY reject
+                   non-ASCII search keys and MAY reject CHARSET UTF-8.
+                 - CHARSET is OPTIONAL and often unsupported (e.g., Gmail, Exchange).
+                 - CHARSET UTF-8 is only valid if the server supports UTF8=SEARCH.
+                 - After enabling UTF8=SEARCH, CHARSET becomes redundant and SHOULD
+                   NOT be sent; all search keys are interpreted as UTF‑8.
+
+               UTF‑8 Mode (UTF8=SEARCH):
+                 - The client MUST enable UTF8=SEARCH using the ENABLE command:
+                     C: A01 ENABLE UTF8=SEARCH
+                     S: * ENABLED UTF8=SEARCH
+                     S: A01 OK ENABLE completed
+                 - After enabling, all search keys MUST be UTF‑8.
+                 - CHARSET MUST NOT specify any encoding other than UTF‑8.
+                 - CHARSET is unnecessary and SHOULD be omitted entirely.
+                 - Servers MUST accept UTF‑8 literals (literal8: {size+}).
+
+               Literals:
+                 - Legacy literal: {size} <bytes>
+                   Used in ASCII mode; servers may reject non-ASCII bytes.
+                 - Literal8: {size+} <UTF‑8 bytes>
+                   Required for UTF‑8 search keys when UTF8=SEARCH is enabled.
+                   Servers MUST accept literal8 in UTF‑8 mode.
+
+               Examples (Legacy Mode):
+                 C: A202 SEARCH SUBJECT "report"
+                 S: * SEARCH 5 9 11
+                 S: A202 OK SEARCH completed
+
+                 C: A203 SEARCH CHARSET UTF-8 SUBJECT "välja"
+                 S: BAD Unsupported charset
+
+               Examples (UTF‑8 Mode Enabled):
+                 C: A01 ENABLE UTF8=SEARCH
+                 S: * ENABLED UTF8=SEARCH
+                 S: A01 OK ENABLE completed
+
+                 C: A02 SEARCH SUBJECT {5+}
+                 C: välja
+                 S: * SEARCH 100 104
+                 S: A02 OK SEARCH completed
+
+               UID SEARCH Example:
+                 C: A204 UID SEARCH FROM "bob@example.com" UNSEEN
+                 S: * SEARCH 100 104 108
+                 S: A204 OK UID SEARCH completed
+            */
+
+            var cmdBuilder = new CommandBuilder(m_Utf8Search,m_LiteralPluss);
+            cmdBuilder.AddString($"{m_CommandIndex++:d5} SEARCH ");
+            criteria.ToCommandBuilder(cmdBuilder);
+            cmdBuilder.AddString("\r\n");
+            var cmdParts = cmdBuilder.Finish();
+
+            List<long> retVal = [];
 
             // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Search){
-                    retVal.AddRange(((IMAP_r_u_Search)e.Value).Values);
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){
+                if(e is IMAP_r_u_Search v){
+                    retVal.AddRange(v.Ids);
                 }
             };
 
-            using(SearchAsyncOP op = new SearchAsyncOP(uid,charset,criteria,callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<SearchAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.SearchAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            await SendCommandAsync(cmdParts,true,cancellationToken);
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
             return retVal.ToArray();
         }
-                
+
         #endregion
 
-        #region method SearchAsync
-
-        #region class SearchAsyncOP
+        #region method MessagesSearchUid
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.SearchAsync"/> asynchronous operation.
+        /// Executes an IMAP <c>UID SEARCH</c> command synchronously using the specified
+        /// search criteria and returns the matching message UIDs.
         /// </summary>
-        public class SearchAsyncOP : CmdAsyncOP<SearchAsyncOP>
+        /// <param name="criteria">
+        /// The IMAP search criteria describing which messages should be matched.
+        /// Must not be <c>null</c>.
+        /// </param>
+        /// <returns>
+        /// An array of UIDs returned by the IMAP server. Although the untagged
+        /// response is labeled <c>* SEARCH</c>, the numeric identifiers contained
+        /// within it MUST be interpreted as UIDs when the <c>UID SEARCH</c>
+        /// command is used.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, no mailbox is
+        /// selected, or the client is currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="criteria"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the IMAP server returns a <c>NO</c> or <c>BAD</c> response
+        /// to the <c>UID SEARCH</c> command.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown when the operation exceeds the configured timeout.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MessagesSearchUidAsync(IMAP_t_Search_Key, CancellationToken)"/>.
+        /// It creates a cancellation token using the client's configured timeout and
+        /// blocks the calling thread until the asynchronous UID SEARCH operation
+        /// completes.
+        /// </para>
+        /// <para>
+        /// Multiple untagged <c>* SEARCH</c> responses may be emitted by some IMAP
+        /// servers. All UIDs are accumulated and returned.
+        /// </para>
+        /// </remarks>
+        public long[] MessagesSearchUid(IMAP_t_Search_Key criteria)
         {
-            private bool             m_Uid       = false;
-            private Encoding?        m_pCharset  = null;
-            private IMAP_Search_Key  m_pCriteria;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="uid">Specifies if argument <b>seqSet</b> contains messages UID or sequence numbers.</param>
-            /// <param name="charset">Charset used in search criteria. Value null means ASCII. The UTF-8 is recomended value non ASCII searches.</param>
-            /// <param name="criteria">Search criteria.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>criteria</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public SearchAsyncOP(bool uid,Encoding? charset,IMAP_Search_Key criteria,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(criteria == null){
-                    throw new ArgumentNullException("criteria");
-                } 
-
-                m_Uid       = uid;
-                m_pCharset  = charset;
-                m_pCriteria = criteria;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.4.4.  SEARCH Command.
-                    Arguments:  OPTIONAL [CHARSET] specification
-                                   searching criteria (one or more)
-
-                    Responses:  REQUIRED untagged response: SEARCH
-
-                    Result:     OK - search completed
-                                NO - search error: can't search that [CHARSET] or criteria
-                               BAD - command unknown or arguments invalid
-
-                      The SEARCH command searches the mailbox for messages that match
-                      the given searching criteria.  Searching criteria consist of one
-                      or more search keys.  The untagged SEARCH response from the server
-                      contains a listing of message sequence numbers corresponding to
-                      those messages that match the searching criteria.
-
-                      When multiple keys are specified, the result is the intersection
-                      (AND function) of all the messages that match those keys.  For
-                      example, the criteria DELETED FROM "SMITH" SINCE 1-Feb-1994 refers
-                      to all deleted messages from Smith that were placed in the mailbox
-                      since February 1, 1994.  A search key can also be a parenthesized
-                      list of one or more search keys (e.g., for use with the OR and NOT
-                      keys).
-
-                      The OPTIONAL [CHARSET] specification consists of the word
-                      "CHARSET" followed by a registered [CHARSET].  It indicates the
-                      [CHARSET] of the strings that appear in the search criteria.
-                      [MIME-IMB] content transfer encodings, and [MIME-HDRS] strings in
-                      [RFC-2822]/[MIME-IMB] headers, MUST be decoded before comparing
-                      text in a [CHARSET] other than US-ASCII.  US-ASCII MUST be
-                      supported; other [CHARSET]s MAY be supported.
-                */
-
-                /* RFC 3501.
-                    literal = "{" number "}" CRLF *CHAR8
-                               ; Number represents the number of CHAR8s
-                    CHAR8   = %x01-ff
-                               ; any OCTET except NUL, %x00
-                         
-                    NOTE: Literal data is sent only when server responds "+ Continue ..."
-                */
-                
-                ByteBuilder currentCmdLine = new ByteBuilder();
-                List<ByteBuilder> cmdLines = new List<ByteBuilder>();                
-                cmdLines.Add(currentCmdLine);
-
-                currentCmdLine.Append((imap.m_CommandIndex++).ToString("d5"));
-                if(m_Uid){
-                    currentCmdLine.Append(" UID");
-                }
-                currentCmdLine.Append(" SEARCH");
-                if(m_pCharset != null){
-                    currentCmdLine.Append(" CHARSET " + m_pCharset.WebName.ToUpper());
-                }
-                currentCmdLine.Append(" ");
-                //--- Build search items --------------------------------------------
-                List<IMAP_Client_CmdPart> cmdParts = new List<IMAP_Client_CmdPart>();
-                m_pCriteria.ToCmdParts(cmdParts);
-                foreach(IMAP_Client_CmdPart cmdPart in cmdParts){
-                    // Command part is string constant.
-                    if(cmdPart.Type == IMAP_Client_CmdPart_Type.Constant){
-                        currentCmdLine.Append(cmdPart.Value);
-                    }
-                    // Command part is string value.
-                    else{
-                        // NOTE: If charset specified, we may not use IMAP utf-8 syntax and must use "literal" with specified charset for non ASCII values.
-                        
-                        // We need to use string as IMAP literal.
-                        if(IMAP_Utils.MustUseLiteralString(cmdPart.Value,(m_pCharset == null && imap.m_MailboxEncoding == IMAP_Mailbox_Encoding.ImapUtf8))){
-                            Encoding charset = m_pCharset ?? Encoding.UTF8;
-                            
-                            currentCmdLine.Append("{" + charset.GetByteCount(cmdPart.Value) + "}\r\n");                            
-                            // Add new command line and set it as active.
-                            currentCmdLine = new ByteBuilder();
-                            cmdLines.Add(currentCmdLine);
-                            // Append value.
-                            currentCmdLine.Append(charset,cmdPart.Value);
-                        }
-                        // We enabed "UTF-8 ACCEPT", we need to us IMAP utf-8 syntax.
-                        else if(m_pCharset == null && imap.m_MailboxEncoding == IMAP_Mailbox_Encoding.ImapUtf8){
-                            currentCmdLine.Append(IMAP_Utils.EncodeMailbox(cmdPart.Value,imap.m_MailboxEncoding));
-                        }
-                        // Normal ASCII quoted string.
-                        else{
-                            currentCmdLine.Append(TextUtils.QuoteString(cmdPart.Value));
-                        }
-                    }
-                }
-                //--------------------------------------------------------------------
-                currentCmdLine.Append("\r\n");
-
-                // Set command lines and their log lines.
-                List<string> logLines = new List<string>();
-                foreach(ByteBuilder cmdLine in cmdLines){
-                    this.CmdLines.Add(new CmdLine(cmdLine.ToByte(),Encoding.UTF8.GetString(cmdLine.ToByte()).TrimEnd()));
-                }
-            }
-
-            #endregion
+            return MessagesSearchUidAsync(criteria,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        /// <summary>
-        /// Starts executing SEARCH command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool SearchAsync(SearchAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pSelectedFolder == null){
-                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-                        
-            return op.Start(this);
-        }
+        #region method MessagesSearchUidAsync
 
-        #endregion
-
-        #region method StoreMessageFlags
-                
         /// <summary>
-        /// Stores specified message flags to the sepcified messages.
+        /// Executes an IMAP <c>UID SEARCH</c> command asynchronously using the specified
+        /// search criteria and returns the matching message UIDs.
         /// </summary>
-        /// <param name="uid">Specifies if <b>seqSet</b> contains UIDs or sequence-numbers.</param>
-        /// <param name="seqSet">Messages sequence-set.</param>
-        /// <param name="setType">Specifies how flags are set.</param>
-        /// <param name="flags">Message flags.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> or <b>flags</b> is null reference.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void StoreMessageFlags(bool uid,IMAP_t_SeqSet seqSet,IMAP_Flags_SetType setType,IMAP_t_MsgFlags flags)
+        /// <param name="criteria">
+        /// The IMAP search criteria describing which messages should be matched.
+        /// Must not be <c>null</c>.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// An array of UIDs returned by the IMAP server. The identifiers in the
+        /// untagged <c>* SEARCH</c> response are always UIDs when the <c>UID SEARCH</c>
+        /// command is used.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected, not authenticated, no mailbox is
+        /// selected, or the client is currently in the IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="criteria"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the IMAP server returns a <c>NO</c> or <c>BAD</c> response
+        /// to the <c>UID SEARCH</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method sends the IMAP <c>UID SEARCH</c> command and collects all
+        /// untagged <c>* SEARCH</c> responses emitted by the server. Although the
+        /// untagged response is labeled <c>SEARCH</c>, the numeric identifiers
+        /// contained within it MUST be interpreted as UIDs, as defined by RFC 3501
+        /// and RFC 9051.
+        /// </para>
+        /// <para>
+        /// Some IMAP servers may emit multiple untagged <c>SEARCH</c> responses.
+        /// All UIDs are accumulated and returned to the caller.
+        /// </para>
+        /// <para>
+        /// When UTF8=SEARCH is enabled, search keys MUST be UTF‑8 and literal8
+        /// ({size+}) MUST be used for UTF‑8 search keys.
+        /// </para>
+        /// </remarks>
+        public async ValueTask<long[]> MessagesSearchUidAsync(IMAP_t_Search_Key criteria,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -6998,245 +6306,471 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(m_pSelectedFolder == null){
                 throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }            
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+            if(criteria == null){
+                throw new ArgumentNullException(nameof(criteria));
+            }
+
+            /* RFC 3501 — UID SEARCH
+               RFC 9051 — IMAP4rev2 (UID command semantics)
+
+               UID SEARCH performs the same logical operation as SEARCH, but all
+               identifiers returned by the server are UIDs rather than message
+               sequence numbers.
+
+               Command Syntax:
+                 <tag> UID SEARCH <search-key> *(SP <search-key>) CRLF
+
+               Example:
+                 C: A204 UID SEARCH FROM "bob@example.com" UNSEEN
+                 S: * SEARCH 100 104 108
+                 S: A204 OK UID SEARCH completed
+
+               Key Behavioral Differences vs. SEARCH:
+                 - SEARCH returns message sequence numbers.
+                 - UID SEARCH returns UIDs.
+                 - The untagged response still uses "* SEARCH" (never "* UID SEARCH").
+                   The numbers inside MUST be interpreted as UIDs.
+
+               UID Properties:
+                 - UIDs are strictly increasing within a mailbox.
+                 - UIDs are never reused.
+                 - UIDs persist across sessions.
+                 - Sequence numbers are ephemeral and may change after EXPUNGE.
+
+               Server Requirements:
+                 - MUST return an untagged SEARCH response containing UIDs.
+                 - MUST send a final tagged OK response on success.
+                 - MUST NOT mix sequence numbers and UIDs in a UID SEARCH response.
+                 - SHOULD return UIDs in ascending order, but ordering is not guaranteed.
+
+               Client Requirements:
+                 - MUST treat returned identifiers as UIDs.
+                 - MUST NOT assume ordering; client SHOULD sort if ordering is required.
+                 - SHOULD accumulate multiple untagged SEARCH responses (some servers
+                   emit more than one).
+
+               UTF‑8 Mode (UTF8=SEARCH):
+                 - UID SEARCH follows the same UTF‑8 rules as SEARCH.
+                 - When UTF8=SEARCH is enabled, search keys MUST be UTF‑8.
+                 - Literal8 ({size+}) MUST be used for UTF‑8 search keys.
+                 - CHARSET parameter MUST NOT be used once UTF8=SEARCH is active.
+
+               Error Handling:
+                 - BAD → malformed syntax or unsupported search keys.
+                 - NO  → valid syntax but server refuses the operation.
+                 - Both MUST be treated as command failure.
+            */
+
+            var cmdBuilder = new CommandBuilder(m_Utf8Search,m_LiteralPluss);
+            cmdBuilder.AddString($"{m_CommandIndex++:d5} UID SEARCH ");
+            criteria.ToCommandBuilder(cmdBuilder);
+            cmdBuilder.AddString("\r\n");
+            var cmdParts = cmdBuilder.Finish();
+
+            List<long> retVal = [];
+
+            // Create callback. It is called for each untagged IMAP server response.
+            EventHandler<IMAP_r_u> callback = delegate(object? sender,IMAP_r_u e){                
+                if(e is IMAP_r_u_Search v){
+                    retVal.AddRange(v.Ids);
+                }
+            };
+
+            await SendCommandAsync(cmdParts,true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,callback,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+
+            return retVal.ToArray();
+        }
+
+        #endregion
+
+        #region method MessagesStoreFlags
+
+        /// <summary>
+        /// Executes the IMAP <c>STORE</c> command synchronously, updating message
+        /// flags for the messages identified by the specified sequence set.
+        /// </summary>
+        /// <param name="seqSet">The sequence set identifying the messages whose flags will be updated.</param>
+        /// <param name="flagsMode">The flag update mode used for the STORE operation.</param>
+        /// <param name="flags">The list of flags to apply. May be empty.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="flags"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>STORE</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MessagesStoreFlagsAsync(IMAP_t_SeqSet, IMAP_t_Store_FlagsMode, string[], CancellationToken)"/>.
+        /// It blocks until the <c>STORE</c> operation completes.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>RFC 3501 — STORE Command</b><br/>
+        /// The <c>STORE</c> command modifies message flags for the messages in the
+        /// provided sequence set. Depending on the selected mode, the operation
+        /// may replace the entire flag set, add new flags, or remove existing
+        /// flags. Silent variants suppress untagged <c>FETCH</c> responses.
+        /// </para>
+        ///
+        /// <para>
+        /// On success, the server returns a final tagged <c>OK</c> response.
+        /// Non‑silent operations cause the server to send untagged <c>FETCH</c>
+        /// responses containing updated flags. Silent operations suppress these
+        /// responses.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// STORE operates on message sequence numbers.
+        /// </item>
+        /// <item>
+        /// <see cref="IMAP_t_Store_FlagsMode"/> determines whether flags are
+        /// replaced, added, or removed, and whether the operation is silent.
+        /// </item>
+        /// <item>
+        /// The flag list may be empty. For <c>FLAGS</c>, this clears all flags.
+        /// For <c>+FLAGS</c> and <c>-FLAGS</c>, an empty list performs a no‑op.
+        /// </item>
+        /// <item>
+        /// The <c>\Deleted</c> flag marks a message as deleted but does not
+        /// physically remove it.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public void MessagesStoreFlags(IMAP_t_SeqSet seqSet,IMAP_t_Store_FlagsMode flagsMode, string[] flags)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesStoreFlagsAsync(seqSet,flagsMode,flags,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesStoreFlagsAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>STORE</c> command, updating message flags for the
+        /// messages identified by the specified sequence set.
+        /// </summary>
+        /// <param name="seqSet">The sequence set identifying the messages whose flags will be updated.</param>
+        /// <param name="flagsMode">The flag update mode used for the STORE operation.</param>
+        /// <param name="flags">The list of flags to apply. May be empty.</param>
+        /// <param name="cancellationToken">Token used to cancel the operation.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="flags"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>STORE</c> command.
+        /// </exception>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        /// <remarks>
+        /// <para>
+        /// <b>RFC 3501 — STORE Command</b><br/>
+        /// The <c>STORE</c> command modifies message flags for the messages in the
+        /// provided sequence set. Depending on the selected mode, the operation
+        /// may replace the entire flag set, add new flags, or remove existing
+        /// flags. Silent variants suppress untagged <c>FETCH</c> responses.
+        /// </para>
+        ///
+        /// <para>
+        /// On success, the server returns a final tagged <c>OK</c> response.
+        /// Non‑silent operations cause the server to send untagged <c>FETCH</c>
+        /// responses containing updated flags. Silent operations suppress these
+        /// responses.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// STORE operates on message sequence numbers.
+        /// </item>
+        /// <item>
+        /// <see cref="IMAP_t_Store_FlagsMode"/> determines whether flags are
+        /// replaced, added, or removed, and whether the operation is silent.
+        /// </item>
+        /// <item>
+        /// The flag list may be empty. For <c>FLAGS</c>, this clears all flags.
+        /// For <c>+FLAGS</c> and <c>-FLAGS</c>, an empty list performs a no‑op.
+        /// </item>
+        /// <item>
+        /// The <c>\Deleted</c> flag marks a message as deleted but does not
+        /// physically remove it.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public async ValueTask MessagesStoreFlagsAsync(IMAP_t_SeqSet seqSet,IMAP_t_Store_FlagsMode flagsMode, string[] flags,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pSelectedFolder == null){
+                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(seqSet == null){
-                throw new ArgumentNullException("seqSet");
-            }
+                throw new ArgumentNullException(nameof(seqSet));
+            }            
             if(flags == null){
-                throw new ArgumentNullException("flags");
+                throw new ArgumentNullException(nameof(flags));
             }
 
-            using(StoreMessageFlagsAsyncOP op = new StoreMessageFlagsAsyncOP(uid,seqSet,true,setType,flags,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<StoreMessageFlagsAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.StoreMessageFlagsAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            /* RFC 3501 — STORE Command (Flags)
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+               The STORE command changes message flags for the messages specified
+               by the given sequence set. STORE may add flags, remove flags, or
+               replace the entire flag set depending on the operation used.
+
+               STORE-Command = tag SP "STORE" SP sequence-set SP store-att-flags CRLF
+
+               store-att-flags = ( "FLAGS" / "FLAGS.SILENT"
+                                 / "+FLAGS" / "+FLAGS.SILENT"
+                                 / "-FLAGS" / "-FLAGS.SILENT" )
+                                 SP flag-list
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST apply the flag changes to each message in the
+                   sequence set.
+                 - For non-SILENT operations, the server MUST send untagged FETCH
+                   responses showing the updated flags.
+                 - For SILENT operations, the server MUST NOT send untagged FETCH
+                   responses.
+                 - The server MUST send a final tagged OK response on success.
+                 - If any flag is invalid or cannot be set, the server MUST return
+                   a tagged NO response.
+
+               Notes:
+                 - STORE operates on message sequence numbers.
+                 - FLAGS replaces the entire flag set.
+                 - +FLAGS adds the specified flags.
+                 - -FLAGS removes the specified flags.
+                 - The \Deleted flag marks a message as deleted but does not remove it.
+                 - SILENT variants suppress untagged FETCH responses.
+
+               Short Example:
+                 C: A202 STORE 5 +FLAGS (\Seen)
+                 S: * 5 FETCH (FLAGS (\Seen))
+                 S: A202 OK STORE completed
+
+                 C: A203 STORE 2:4 FLAGS.SILENT (\Deleted)
+                 S: A203 OK STORE completed
+            */
+
+            StringBuilder cmd = new StringBuilder();
+            cmd.Append($"{m_CommandIndex++:d5} STORE");
+            cmd.Append(" " + seqSet.ToString());
+            if(flagsMode == IMAP_t_Store_FlagsMode.Replace){
+                cmd.Append(" FLAGS");
+            }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.ReplaceSilent){
+                cmd.Append(" FLAGS.SILENT");
+            }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.Add){
+                cmd.Append(" +FLAGS");
+            }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.AddSilent){
+                cmd.Append(" +FLAGS.SILENT");
+            }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.Remove){
+                cmd.Append(" -FLAGS");
+            }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.RemoveSilent){
+                cmd.Append(" -FLAGS.SILENT");
+            }
+            else{
+                throw new ArgumentException($"Invalid flagMode '{flagsMode}' value, this never should happen.",nameof(flags));
+            }
+            cmd.Append(" (" + string.Join(' ',flags) + ")");
+            cmd.Append("\r\n");
+
+            await SendCommandLineAsync(cmd.ToString(),true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
         }
 
         #endregion
 
-        #region method StoreMessageFlagsAsync
-
-        #region class StoreMessageFlagsAsyncOP
+        #region method MessagesStoreFlagsUid
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.StoreMessageFlagsAsync"/> asynchronous operation.
+        /// Executes the IMAP <c>UID STORE</c> command synchronously, updating
+        /// message flags for the messages identified by the specified UID set.
         /// </summary>
-        public class StoreMessageFlagsAsyncOP : CmdAsyncOP<StoreMessageFlagsAsyncOP>
+        /// <param name="seqSet">The UID set identifying the messages whose flags will be updated.</param>
+        /// <param name="flagsMode">The flag update mode used for the UID STORE operation.</param>
+        /// <param name="flags">The list of flags to apply. May be empty.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="flags"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>UID STORE</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MessagesStoreFlagsUidAsync(IMAP_t_SeqSet, IMAP_t_Store_FlagsMode, string[], CancellationToken)"/>.
+        /// It blocks until the <c>UID STORE</c> operation completes.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>RFC 4315 — UIDPLUS Extension</b><br/>
+        /// The <c>UID STORE</c> command behaves like the standard <c>STORE</c>
+        /// command but operates on stable message UIDs instead of volatile
+        /// sequence numbers. Depending on the selected mode, the operation may
+        /// replace the entire flag set, add new flags, or remove existing flags.
+        /// Silent variants suppress untagged <c>FETCH</c> responses.
+        /// </para>
+        ///
+        /// <para>
+        /// On success, the server returns a final tagged <c>OK</c> response.
+        /// Non‑silent operations cause the server to send untagged <c>FETCH</c>
+        /// responses containing updated flags. Silent operations suppress these
+        /// responses.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// UID STORE operates on message UIDs, which remain stable throughout
+        /// the session.
+        /// </item>
+        /// <item>
+        /// <see cref="IMAP_t_Store_FlagsMode"/> determines whether flags are
+        /// replaced, added, or removed, and whether the operation is silent.
+        /// </item>
+        /// <item>
+        /// The flag list may be empty. For <c>FLAGS</c>, this clears all flags.
+        /// For <c>+FLAGS</c> and <c>-FLAGS</c>, an empty list performs a no‑op.
+        /// </item>
+        /// <item>
+        /// The <c>\Deleted</c> flag marks a message as deleted but does not
+        /// physically remove it.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public void MessagesStoreFlagsUid(IMAP_t_SeqSet seqSet,IMAP_t_Store_FlagsMode flagsMode,string[] flags)
         {
-            private bool               m_Uid          = false;
-            private IMAP_t_SeqSet      m_pSeqSet;
-            private bool               m_Silent       = true;
-            private IMAP_Flags_SetType m_FlagsSetType = IMAP_Flags_SetType.Replace;
-            private IMAP_t_MsgFlags    m_pMsgFlags;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="uid">Specifies if <b>seqSet</b> contains UIDs or message-numberss.</param>
-            /// <param name="seqSet">Messages sequence set.</param>
-            /// <param name="silent">If true, no FETCH (FLAGS) response returned by server.</param>
-            /// <param name="setType">Specifies how flags are set.</param>
-            /// <param name="msgFlags">Message flags.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> or <b>msgFlags</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public StoreMessageFlagsAsyncOP(bool uid,IMAP_t_SeqSet seqSet,bool silent,IMAP_Flags_SetType setType,IMAP_t_MsgFlags msgFlags,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(seqSet == null){
-                    throw new ArgumentNullException("seqSet");
-                }
-                if(msgFlags == null){
-                    throw new ArgumentNullException("msgFlags");
-                }
-
-                m_Uid          = uid;
-                m_pSeqSet      = seqSet;
-                m_Silent       = silent;
-                m_FlagsSetType = setType;
-                m_pMsgFlags    = msgFlags;
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.4.6. STORE Command.
-                    Arguments:  sequence set
-                                message data item name
-                                value for message data item
-
-                    Responses:  untagged responses: FETCH
-
-                    Result:     OK - store completed
-                                NO - store error: can't store that data
-                                BAD - command unknown or arguments invalid
-
-                    The STORE command alters data associated with a message in the
-                    mailbox.  Normally, STORE will return the updated value of the
-                    data with an untagged FETCH response.  A suffix of ".SILENT" in
-                    the data item name prevents the untagged FETCH, and the server
-                    SHOULD assume that the client has determined the updated value
-                    itself or does not care about the updated value.
-
-                        Note: Regardless of whether or not the ".SILENT" suffix
-                        was used, the server SHOULD send an untagged FETCH
-                        response if a change to a message's flags from an
-                        external source is observed.  The intent is that the
-                        status of the flags is determinate without a race
-                        condition.
-
-                    The currently defined data items that can be stored are:
-
-                    FLAGS <flag list>
-                        Replace the flags for the message (other than \Recent) with the
-                        argument.  The new value of the flags is returned as if a FETCH
-                        of those flags was done.
-
-                    FLAGS.SILENT <flag list>
-                        Equivalent to FLAGS, but without returning a new value.
-
-                    +FLAGS <flag list>
-                        Add the argument to the flags for the message.  The new value
-                        of the flags is returned as if a FETCH of those flags was done.
-
-                    +FLAGS.SILENT <flag list>
-                        Equivalent to +FLAGS, but without returning a new value.
-
-                    -FLAGS <flag list>
-                        Remove the argument from the flags for the message.  The new
-                        value of the flags is returned as if a FETCH of those flags was
-                        done.
-
-                    -FLAGS.SILENT <flag list>
-                        Equivalent to -FLAGS, but without returning a new value.
-
-
-                    Example:    C: A003 STORE 2:4 +FLAGS (\Deleted)
-                                S: * 2 FETCH (FLAGS (\Deleted \Seen))
-                                S: * 3 FETCH (FLAGS (\Deleted))
-                                S: * 4 FETCH (FLAGS (\Deleted \Flagged \Seen))
-                                S: A003 OK STORE completed
-                */
-
-                StringBuilder command = new StringBuilder();
-                command.Append((imap.m_CommandIndex++).ToString("d5"));
-                if(m_Uid){
-                    command.Append(" UID");
-                }
-                command.Append(" STORE");
-                command.Append(" " + m_pSeqSet.ToString());
-                if(m_FlagsSetType == IMAP_Flags_SetType.Add){
-                    command.Append(" +FLAGS");
-                }
-                else if(m_FlagsSetType == IMAP_Flags_SetType.Remove){
-                    command.Append(" -FLAGS");
-                }
-                else if(m_FlagsSetType == IMAP_Flags_SetType.Replace){
-                    command.Append(" FLAGS");
-                }
-                else{
-                    throw new NotSupportedException("Not supported argument 'setType' value '" + m_FlagsSetType.ToString() + "'.");
-                }
-                if(m_Silent){
-                    command.Append(".SILENT");
-                }
-                if(m_pMsgFlags != null){
-                    command.Append(" (");
-                    string[] flags = m_pMsgFlags.ToArray();
-                    for(int i=0;i<flags.Length;i++){
-                        if(i > 0){
-                            command.Append(" ");
-                        }
-                        command.Append(flags[i]);
-                    }                
-                    command.Append(")\r\n");
-                }
-                else{
-                    command.Append(" ()\r\n");
-                }
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes(command.ToString());
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
+            MessagesStoreFlagsUidAsync(seqSet,flagsMode,flags,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method MessagesStoreFlagsUidAsync
+
         /// <summary>
-        /// Executes STORE command.
+        /// Executes the IMAP <c>UID STORE</c> command, updating message flags for
+        /// the messages identified by the specified UID set.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool StoreMessageFlagsAsync(StoreMessageFlagsAsyncOP op)
+        /// <param name="seqSet">The UID set identifying the messages whose flags will be updated.</param>
+        /// <param name="flagsMode">The flag update mode used for the UID STORE operation.</param>
+        /// <param name="flags">The list of flags to apply. May be empty.</param>
+        /// <param name="cancellationToken">Token used to cancel the operation.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> or <paramref name="flags"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>UID STORE</c> command.
+        /// </exception>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        /// <remarks>
+        /// <para>
+        /// <b>RFC 4315 — UIDPLUS Extension</b><br/>
+        /// The <c>UID STORE</c> command behaves like the standard <c>STORE</c>
+        /// command but operates on stable message UIDs instead of volatile
+        /// sequence numbers. Depending on the selected mode, the operation may
+        /// replace the entire flag set, add new flags, or remove existing flags.
+        /// Silent variants suppress untagged <c>FETCH</c> responses.
+        /// </para>
+        ///
+        /// <para>
+        /// On success, the server returns a final tagged <c>OK</c> response.
+        /// Non‑silent operations cause the server to send untagged <c>FETCH</c>
+        /// responses containing updated flags. Silent operations suppress these
+        /// responses.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// UID STORE operates on message UIDs, which remain stable throughout
+        /// the session.
+        /// </item>
+        /// <item>
+        /// <see cref="IMAP_t_Store_FlagsMode"/> determines whether flags are
+        /// replaced, added, or removed, and whether the operation is silent.
+        /// </item>
+        /// <item>
+        /// The flag list may be empty. For <c>FLAGS</c>, this clears all flags.
+        /// For <c>+FLAGS</c> and <c>-FLAGS</c>, an empty list performs a no‑op.
+        /// </item>
+        /// <item>
+        /// The <c>\Deleted</c> flag marks a message as deleted but does not
+        /// physically remove it.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public async ValueTask MessagesStoreFlagsUidAsync(IMAP_t_SeqSet seqSet,IMAP_t_Store_FlagsMode flagsMode, string[] flags,CancellationToken cancellationToken = default)
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pSelectedFolder == null){
-                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method CopyMessages
-        
-        /// <summary>
-        /// Copies specified messages from current selected folder to the specified target folder.
-        /// </summary>
-        /// <param name="uid">Specifies if <b>seqSet</b> contains UIDs or message-numberss.</param>
-        /// <param name="seqSet">Messages sequence set.</param>
-        /// <param name="targetFolder">Target folder name with path.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> or <b>targetFolder</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void CopyMessages(bool uid,IMAP_t_SeqSet seqSet,string targetFolder)
-        {    
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
@@ -7248,247 +6782,236 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(m_pSelectedFolder == null){
                 throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }            
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(seqSet == null){
-                throw new ArgumentNullException("seqSet");
-            }
-            if(targetFolder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(targetFolder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
+                throw new ArgumentNullException(nameof(seqSet));
+            }            
+            if(flags == null){
+                throw new ArgumentNullException(nameof(flags));
             }
 
-            using(CopyMessagesAsyncOP op = new CopyMessagesAsyncOP(uid,seqSet,targetFolder,null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<CopyMessagesAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.CopyMessagesAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+            /* RFC 4315 — UIDPLUS Extension: UID STORE Command (Flags)
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+               The UID STORE command modifies message flags for the messages whose
+               UIDs appear in the specified UID set. UID STORE behaves identically
+               to the standard STORE command except that it operates on stable
+               message UIDs rather than volatile sequence numbers.
+
+               UID-STORE-Command = tag SP "UID" SP "STORE"
+                                   SP uid-set SP store-att-flags CRLF
+
+               store-att-flags = ( "FLAGS" / "FLAGS.SILENT"
+                                 / "+FLAGS" / "+FLAGS.SILENT"
+                                 / "-FLAGS" / "-FLAGS.SILENT" )
+                                 SP flag-list
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST apply the flag changes to each message whose UID
+                   is included in the provided UID set.
+                 - For non-SILENT operations, the server MUST send untagged FETCH
+                   responses showing the updated flags.
+                 - For SILENT operations, the server MUST NOT send untagged FETCH
+                   responses.
+                 - The server MUST send a final tagged OK response on success.
+                 - If any flag is invalid or cannot be set, the server MUST return
+                   a tagged NO response.
+                 - UID STORE does not require UIDPLUS support; however, servers
+                   implementing UIDPLUS MAY include additional response codes.
+
+               Notes:
+                 - UID STORE operates on message UIDs, which do not change during
+                   the session, unlike message sequence numbers.
+                 - FLAGS replaces the entire flag set.
+                 - +FLAGS adds the specified flags.
+                 - -FLAGS removes the specified flags.
+                 - The \Deleted flag marks a message as deleted but does not remove it.
+                 - SILENT variants suppress untagged FETCH responses.
+                 - The flag list may be empty. For FLAGS, this clears all flags.
+                   For +FLAGS and -FLAGS, an empty list performs a no-op.
+
+               Short Example:
+                 C: A202 UID STORE 100 +FLAGS (\Seen)
+                 S: * 7 FETCH (FLAGS (\Seen))
+                 S: A202 OK UID STORE completed
+
+                 C: A203 UID STORE 200:205 FLAGS.SILENT (\Deleted)
+                 S: A203 OK UID STORE completed
+            */
+
+            StringBuilder cmd = new StringBuilder();
+            cmd.Append($"{m_CommandIndex++:d5} UID STORE");
+            cmd.Append(" " + seqSet.ToString());
+            if(flagsMode == IMAP_t_Store_FlagsMode.Replace){
+                cmd.Append(" FLAGS");
             }
-        }
-
-        /// <summary>
-        /// Copies specified messages from current selected folder to the specified target folder.
-        /// </summary>
-        /// <param name="op">Copy messages operation.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void CopyMessages(CopyMessagesAsyncOP op)
-        {
-            if(op == null){
-                throw new ArgumentNullException("op");
+            else if(flagsMode == IMAP_t_Store_FlagsMode.ReplaceSilent){
+                cmd.Append(" FLAGS.SILENT");
             }
-
-            using(ManualResetEvent wait = new ManualResetEvent(false)){
-                op.CompletedAsync += delegate(object? s1,EventArgs<CopyMessagesAsyncOP> e1){
-                    wait.Set();
-                };
-                if(!this.CopyMessagesAsync(op)){
-                    wait.Set();
-                }
-                wait.WaitOne();
-
-                if(op.Error != null){
-                    throw op.Error;
-                }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.Add){
+                cmd.Append(" +FLAGS");
             }
-        }
-
-        #endregion
-
-        #region method CopyMessagesAsync
-
-        #region class CopyMessagesAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.CopyMessagesAsync"/> asynchronous operation.
-        /// </summary>
-        public class CopyMessagesAsyncOP : CmdAsyncOP<CopyMessagesAsyncOP>
-        {
-            private bool          m_Uid          = false;
-            private IMAP_t_SeqSet m_pSeqSet;
-            private string        m_TargetFolder;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="uid">Specifies if <b>seqSet</b> contains UIDs or message-numberss.</param>
-            /// <param name="seqSet">Messages sequence set.</param>
-            /// <param name="targetFolder">Target folder name with path.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> or <b>targetFolder</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public CopyMessagesAsyncOP(bool uid,IMAP_t_SeqSet seqSet,string targetFolder,EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-                if(seqSet == null){
-                    throw new ArgumentNullException("seqSet");
-                }
-                if(targetFolder == null){
-                    throw new ArgumentNullException("targetFolder");
-                }
-                if(string.IsNullOrEmpty(targetFolder)){
-                    throw new ArgumentException("Argument 'targetFolder' value must be specified.","targetFolder");
-                }
-
-                m_Uid          = uid;
-                m_pSeqSet      = seqSet;
-                m_TargetFolder = targetFolder;
+            else if(flagsMode == IMAP_t_Store_FlagsMode.AddSilent){
+                cmd.Append(" +FLAGS.SILENT");
             }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.4.7. COPY Command.
-                    Arguments:  sequence set
-                                mailbox name
-
-                    Responses:  no specific responses for this command
-
-                    Result:     OK - copy completed
-                                NO - copy error: can't copy those messages or to that
-                                     name
-                                BAD - command unknown or arguments invalid
-
-                    The COPY command copies the specified message(s) to the end of the
-                    specified destination mailbox.  The flags and internal date of the
-                    message(s) SHOULD be preserved, and the Recent flag SHOULD be set,
-                    in the copy.
-
-                    If the destination mailbox does not exist, a server SHOULD return
-                    an error.  It SHOULD NOT automatically create the mailbox.  Unless
-                    it is certain that the destination mailbox can not be created, the
-                    server MUST send the response code "[TRYCREATE]" as the prefix of
-                    the text of the tagged NO response.  This gives a hint to the
-                    client that it can attempt a CREATE command and retry the COPY if
-                    the CREATE is successful.
-
-                    If the COPY command is unsuccessful for any reason, server
-                    implementations MUST restore the destination mailbox to its state
-                    before the COPY attempt.
-
-                    Example:    C: A003 COPY 2:4 MEETING
-                                S: A003 OK COPY completed
-                */
-                
-                if(m_Uid){
-                    byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " UID COPY " + m_pSeqSet.ToString() + " " + IMAP_Utils.EncodeMailbox(m_TargetFolder,imap.m_MailboxEncoding) + "\r\n");
-                    this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-                }
-                else{
-                    byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " COPY " + m_pSeqSet.ToString() + " " + IMAP_Utils.EncodeMailbox(m_TargetFolder,imap.m_MailboxEncoding) + "\r\n");
-                    this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-                }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.Remove){
+                cmd.Append(" -FLAGS");
             }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets <b>COPYUID</b> optional response. Returns null if IMAP server doesn't support <b>UIDPLUS</b> extention.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_t_orc_CopyUid? CopyUid
-            {
-                get{ 
-                    if(this.State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(this.State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    if(this.FinalResponse != null && this.FinalResponse.OptionalResponse != null && this.FinalResponse.OptionalResponse is IMAP_t_orc_CopyUid){
-                        return ((IMAP_t_orc_CopyUid)this.FinalResponse.OptionalResponse);
-                    }
-                    else{
-                        return null;
-                    }
-                }
+            else if(flagsMode == IMAP_t_Store_FlagsMode.RemoveSilent){
+                cmd.Append(" -FLAGS.SILENT");
             }
+            else{
+                throw new ArgumentException($"Invalid flagMode '{flagsMode}' value, this never should happen.",nameof(flags));
+            }
+            cmd.Append(" (" + string.Join(' ',flags) + ")");
+            cmd.Append("\r\n");
 
-            #endregion
+            await SendCommandLineAsync(cmd.ToString(),true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
+        #region method MessagesCopy
+
         /// <summary>
-        /// Executes COPY command.
+        /// Executes the IMAP <c>COPY</c> command synchronously, copying the
+        /// specified messages to the target mailbox using message sequence
+        /// numbers.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool CopyMessagesAsync(CopyMessagesAsyncOP op)
+        /// <param name="seqSet">The sequence set identifying the messages to copy.</param>
+        /// <param name="folder">The target mailbox to which the messages are copied.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>COPY</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MessagesCopyAsync(IMAP_t_SeqSet, string, CancellationToken)"/>.
+        /// It blocks until the <c>COPY</c> operation completes.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>RFC 3501 — COPY Command</b><br/>
+        /// The <c>COPY</c> command copies the messages identified by the provided
+        /// sequence set to the end of the target mailbox. The source messages
+        /// remain unchanged in the currently selected mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// The server returns a final tagged <c>OK</c> response on success.
+        /// If the target mailbox does not exist or cannot be accessed, the
+        /// server returns a tagged <c>NO</c> response.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// COPY operates on <b>message sequence numbers</b>, which refer to the
+        /// current positions of messages in the selected mailbox.
+        /// </item>
+        /// <item>
+        /// The target mailbox name must be valid and accessible to the
+        /// authenticated user.
+        /// </item>
+        /// <item>
+        /// COPY does not modify flags on the source messages.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public void MessagesCopy(IMAP_t_SeqSet seqSet,string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesCopyAsync(seqSet,folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesCopyAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>COPY</c> command, copying the specified messages
+        /// to the target mailbox using message sequence numbers.
+        /// </summary>
+        /// <param name="seqSet">The sequence set identifying the messages to copy.</param>
+        /// <param name="folder">The target mailbox to which the messages are copied.</param>
+        /// <param name="cancellationToken">Token to cancel the operation.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>COPY</c> command.
+        /// </exception>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        /// <remarks>
+        /// <para>
+        /// <b>RFC 3501 — COPY Command</b><br/>
+        /// The <c>COPY</c> command copies the messages identified by the provided
+        /// sequence set to the end of the target mailbox. The source messages
+        /// remain unchanged in the currently selected mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// The server returns a final tagged <c>OK</c> response on success.
+        /// If the target mailbox does not exist or cannot be accessed, the
+        /// server returns a tagged <c>NO</c> response.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// COPY operates on <b>message sequence numbers</b>, which refer to the
+        /// current positions of messages in the selected mailbox.
+        /// </item>
+        /// <item>
+        /// The target mailbox name must be valid and accessible to the
+        /// authenticated user.
+        /// </item>
+        /// <item>
+        /// COPY does not modify flags on the source messages.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public async ValueTask MessagesCopyAsync(IMAP_t_SeqSet seqSet,string folder,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
-            }
-            if(!this.IsAuthenticated){
-                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
-            }
-            if(m_pSelectedFolder == null){
-                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-                
-        #region method MoveMessages
-               
-        /// <summary>
-        /// Moves specified messages from current selected folder to the specified target folder.
-        /// </summary>
-        /// <param name="uid">Specifies if <b>seqSet</b> contains UIDs or message-numberss.</param>
-        /// <param name="seqSet">Messages sequence set.</param>
-        /// <param name="targetFolder">Target folder name with path.</param>
-        /// <param name="expunge">If ture messages are expunged from selected folder, otherwise they are marked as <b>Deleted</b>.
-        /// Note: If true - then all messages marked as <b>Deleted</b> are expunged !</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void MoveMessages(bool uid,IMAP_t_SeqSet seqSet,string targetFolder,bool expunge)
-        {            
             if(!this.IsConnected){
                 throw new InvalidOperationException("Not connected, you need to connect first.");
             }
@@ -7497,38 +7020,775 @@ namespace LumiSoft.Net.IMAP.Client
             }
             if(m_pSelectedFolder == null){
                 throw new InvalidOperationException("Not selected state, you need to select some folder first.");
-            }            
+            }
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
             if(seqSet == null){
-                throw new ArgumentNullException("seqSet");
-            }
-            if(targetFolder == null){
-                throw new ArgumentNullException("folder");
-            }
-            if(targetFolder == string.Empty){
-                throw new ArgumentException("Argument 'folder' value must be specified.","folder");
+                throw new ArgumentNullException(nameof(seqSet));
+            }            
+            if(string.IsNullOrEmpty(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
             }
 
-            CopyMessages(uid,seqSet,targetFolder);
-            StoreMessageFlags(uid,seqSet,IMAP_Flags_SetType.Add,IMAP_t_MsgFlags.Parse(IMAP_t_MsgFlags.Deleted));
-            if(expunge){
-                Expunge();
+            /* RFC 3501 — COPY Command
+
+               The COPY command copies the specified messages to the end of the
+               target mailbox. The source messages remain unchanged in the
+               currently selected mailbox.
+
+               COPY-Command = tag SP "COPY" SP sequence-set SP mailbox CRLF
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST copy each message in the sequence-set to the
+                   target mailbox.
+                 - The server MUST NOT alter the source messages.
+                 - The server MUST send a final tagged OK response on success.
+                 - If the target mailbox does not exist, the server MUST return
+                   a tagged NO response.
+
+               Notes:
+                 - COPY uses message sequence numbers. These refer to the current
+                   positions of messages in the selected mailbox.
+                 - The target mailbox name MUST be valid and accessible to the
+                   authenticated user.
+                 - COPY does not set or clear any flags on the source messages.
+
+               Short Example:
+                 C: A142 COPY 1:3 "Archive"
+                 S: A142 OK COPY completed
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} COPY {seqSet.ToString()} {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
         }
 
         #endregion
 
-        #region method Expunge
+        #region method MessagesCopyUid
 
         /// <summary>
-        /// Deletes all messages in selected folder which has "Deleted" flag set.
+        /// Executes the IMAP <c>UID COPY</c> command synchronously, copying the
+        /// messages identified by the specified UID set to the target mailbox.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public void Expunge()
+        /// <param name="seqSet">The UID set identifying the messages to copy.</param>
+        /// <param name="folder">The target mailbox to which the messages are copied.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>UID COPY</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MessagesCopyUidAsync(IMAP_t_SeqSet, string, CancellationToken)"/>.
+        /// It blocks until the <c>UID COPY</c> operation completes.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>RFC 4315 — UIDPLUS Extension</b><br/>
+        /// The <c>UID COPY</c> command copies the messages whose UIDs appear in
+        /// the provided UID set to the end of the target mailbox. The source
+        /// messages remain unchanged in the currently selected mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// On success, the server returns a final tagged <c>OK</c> response.
+        /// If supported, the server SHOULD include a <c>COPYUID</c> response code:
+        /// <c>COPYUID &lt;uidvalidity&gt; &lt;source-uids&gt; &lt;dest-uids&gt;</c>,
+        /// which maps the copied source UIDs to the newly assigned UIDs in the
+        /// target mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// UID COPY operates on stable message UIDs rather than volatile
+        /// sequence numbers.
+        /// </item>
+        /// <item>
+        /// The target mailbox name must be valid and accessible to the
+        /// authenticated user.
+        /// </item>
+        /// <item>
+        /// COPY does not modify flags on the source messages.
+        /// </item>
+        /// <item>
+        /// The <c>COPYUID</c> response code is optional but recommended for
+        /// servers implementing UIDPLUS.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public void MessagesCopyUid(IMAP_t_SeqSet seqSet,string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesCopyUidAsync(seqSet,folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesCopyUidAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>UID COPY</c> command, copying the messages
+        /// identified by the specified UID set to the target mailbox.
+        /// </summary>
+        /// <param name="seqSet">The UID set identifying the messages to copy.</param>
+        /// <param name="folder">The target mailbox to which the messages are copied.</param>
+        /// <param name="cancellationToken">Token to cancel the operation.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>UID COPY</c> command.
+        /// </exception>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        /// <remarks>
+        /// <para>
+        /// <b>RFC 4315 — UIDPLUS Extension</b><br/>
+        /// The <c>UID COPY</c> command copies the messages whose UIDs appear in
+        /// the provided UID set to the end of the target mailbox. The source
+        /// messages remain unchanged in the currently selected mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// On success, the server returns a final tagged <c>OK</c> response.
+        /// If supported, the server SHOULD include a <c>COPYUID</c> response code:
+        /// <c>COPYUID &lt;uidvalidity&gt; &lt;source-uids&gt; &lt;dest-uids&gt;</c>,
+        /// which maps the copied source UIDs to the newly assigned UIDs in the
+        /// target mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// <list type="bullet">
+        /// <item>
+        /// UID COPY operates on stable message UIDs rather than volatile
+        /// sequence numbers.
+        /// </item>
+        /// <item>
+        /// The target mailbox name must be valid and accessible to the
+        /// authenticated user.
+        /// </item>
+        /// <item>
+        /// COPY does not modify flags on the source messages.
+        /// </item>
+        /// <item>
+        /// The <c>COPYUID</c> response code is optional but recommended for
+        /// servers implementing UIDPLUS.
+        /// </item>
+        /// </list>
+        /// </para>
+        /// </remarks>
+        public async ValueTask MessagesCopyUidAsync(IMAP_t_SeqSet seqSet,string folder,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pSelectedFolder == null){
+                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+            if(seqSet == null){
+                throw new ArgumentNullException(nameof(seqSet));
+            }            
+            if(string.IsNullOrEmpty(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
+            }
+
+            /* RFC 4315 — UIDPLUS Extension: UID COPY Command
+
+               The UID COPY command copies the messages whose UIDs appear in the
+               specified UID set to the end of the target mailbox. The source
+               messages remain unchanged in the currently selected mailbox.
+
+               UID-COPY-Command = tag SP "UID" SP "COPY" SP uid-set SP mailbox CRLF
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - Requires server support for the UIDPLUS extension to return
+                   the COPYUID response code.
+                 - The server MUST copy each message whose UID is included in
+                   the provided UID set.
+                 - The server MUST NOT alter the source messages.
+                 - On success, the server MUST send a final tagged OK response.
+                 - If supported, the server SHOULD include a COPYUID response code:
+                       COPYUID <uidvalidity> <source-uids> <dest-uids>
+                   which maps the copied source UIDs to the newly assigned UIDs
+                   in the target mailbox.
+                 - If the target mailbox does not exist, the server MUST return
+                   a tagged NO response.
+
+               Notes:
+                 - UID COPY operates on stable message UIDs rather than volatile
+                   sequence numbers.
+                 - The target mailbox name MUST be valid and accessible to the
+                   authenticated user.
+                 - COPY does not modify flags on the source messages.
+                 - The COPYUID response code is optional but recommended for
+                   servers implementing UIDPLUS.
+
+               Short Example:
+                 C: A003 UID COPY 100:102 "Archive"
+                 S: A003 OK [COPYUID 385752 100:102 200:202] COPY completed
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} UID COPY {seqSet.ToString()} {folder}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
+        }
+
+        #endregion
+
+        #region method MessagesMove
+
+        /// <summary>
+        /// Sends a <c>MOVE</c> command for the specified message sequence set,
+        /// relocating the messages to the target mailbox. This method executes
+        /// the operation synchronously using the client's configured timeout.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The method creates a cancellation token based on the client's timeout
+        /// value and invokes <see cref="MessagesMoveAsync"/> to perform the
+        /// actual MOVE operation. If the server supports the IMAP <c>MOVE</c>
+        /// extension (RFC 6851), the relocation is performed atomically. If not,
+        /// a compatibility sequence consisting of <c>COPY</c>, <c>STORE</c>
+        /// <c>+FLAGS.SILENT (\Deleted)</c>, and <c>EXPUNGE</c> is used.
+        /// </para>
+        /// <para>
+        /// Any error reported by the final command completion response results in
+        /// an <see cref="IMAP_ClientException"/> being thrown.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The message sequence set identifying which messages are to be moved.
+        /// </param>
+        /// <param name="folder">
+        /// The name of the destination mailbox to which the messages will be
+        /// relocated.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public void MessagesMove(IMAP_t_SeqSet seqSet,string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesMoveAsync(seqSet,folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesMoveAsync
+
+        /// <summary>
+        /// Sends a <c>MOVE</c> command for the specified message sequence set,
+        /// relocating the messages to the target mailbox. When the server
+        /// supports the IMAP <c>MOVE</c> extension (RFC 6851), the operation is
+        /// performed atomically; otherwise, a compatibility sequence is used.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// If the server advertises the <c>MOVE</c> capability, the method issues
+        /// a <c>MOVE</c> command that copies the messages to the destination
+        /// mailbox and removes them from the currently selected mailbox as a
+        /// single atomic operation. The method then waits for the final command
+        /// completion response. If the final response indicates an error, an
+        /// <see cref="IMAP_ClientException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the server does not support the <c>MOVE</c> extension, the method
+        /// performs a fallback sequence equivalent to <c>MOVE</c>:
+        /// <list type="number">
+        /// <item><description><c>COPY</c> the messages to the destination mailbox</description></item>
+        /// <item><description><c>STORE +FLAGS.SILENT (\Deleted)</c> on the source messages</description></item>
+        /// <item><description><c>EXPUNGE</c> the selected mailbox</description></item>
+        /// </list>
+        /// This provides MOVE‑equivalent behavior for servers implementing only
+        /// RFC 3501.
+        /// </para>
+        /// <para>
+        /// The method operates on message sequence numbers. A UID‑based variant
+        /// is available through <c>MessagesMoveUidAsync</c>.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The message sequence set identifying which messages are to be moved.
+        /// </param>
+        /// <param name="folder">
+        /// The name of the destination mailbox to which the messages will be
+        /// relocated.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public async ValueTask MessagesMoveAsync(IMAP_t_SeqSet seqSet,string folder,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pSelectedFolder == null){
+                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+            if(seqSet == null){
+                throw new ArgumentNullException(nameof(seqSet));
+            }            
+            if(string.IsNullOrEmpty(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
+            }
+
+            /* RFC 6851 — MOVE Command
+
+               The MOVE command relocates the specified messages to the end of the
+               target mailbox. After the messages are successfully copied, they are
+               removed from the source mailbox as part of the same atomic operation.
+
+               MOVE-Command = tag SP "MOVE" SP sequence-set SP mailbox CRLF
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST copy each message in the sequence-set to the
+                   target mailbox.
+                 - After copying, the server MUST remove the source messages from
+                   the currently selected mailbox.
+                 - The server MUST send a final tagged OK response on success.
+                 - If the target mailbox does not exist, the server MUST return
+                   a tagged NO response.
+                 - If the server supports UIDPLUS, it MAY include a MOVEUID response
+                   code:
+                       MOVEUID <uidvalidity> <source-uids> <dest-uids>
+                   which maps the moved source UIDs to the newly assigned UIDs in
+                   the target mailbox.
+
+               Notes:
+                 - MOVE is functionally equivalent to COPY followed by
+                   STORE +FLAGS.SILENT (\Deleted) and then EXPUNGE, but performed
+                   as a single atomic command.
+                 - The target mailbox name MUST be valid and accessible to the
+                   authenticated user.
+                 - MOVE operates on message sequence numbers. The UID variant
+                   (UID MOVE) operates on stable message UIDs.
+
+               Short Example:
+                 C: A143 MOVE 1:3 "Archive"
+                 S: A143 OK MOVE completed
+
+               UID Example:
+                 C: A144 UID MOVE 100:102 "Archive"
+                 S: A144 OK [MOVEUID 385752 100:102 200:202] MOVE completed
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            if(this.SupportsCapability("MOVE")){
+                await SendCommandLineAsync($"{m_CommandIndex++:d5} MOVE {seqSet.ToString()} {folder}\r\n",true,cancellationToken);
+
+                var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+                if(response.IsError){
+                    throw new IMAP_ClientException(response);
+                }
+            }
+            else{
+                await MessagesCopyAsync(seqSet,folder,cancellationToken);
+                await MessagesStoreFlagsAsync(seqSet,IMAP_t_Store_FlagsMode.AddSilent,new string[]{"\\Deleted"},cancellationToken);
+                await MessagesExpungeAsync(cancellationToken);
+            }
+        }
+
+        #endregion
+
+        #region method MessagesMoveUid
+
+        /// <summary>
+        /// Sends a <c>UID MOVE</c> command for the specified UID set, relocating
+        /// the messages to the target mailbox. This method executes the operation
+        /// synchronously using the client's configured timeout.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The method creates a cancellation token based on the client's timeout
+        /// value and invokes <see cref="MessagesMoveUidAsync"/> to perform the
+        /// actual UID MOVE operation. If the server supports the IMAP
+        /// <c>MOVE</c> extension (RFC 6851), the relocation is performed
+        /// atomically. If not, a compatibility sequence consisting of
+        /// <c>UID COPY</c>, <c>UID STORE +FLAGS.SILENT (\Deleted)</c>, and either
+        /// <c>UID EXPUNGE</c> (when <c>UIDPLUS</c> is supported) or a normal
+        /// <c>EXPUNGE</c> is used.
+        /// </para>
+        /// <para>
+        /// Any error reported by the final command completion response results in
+        /// an <see cref="IMAP_ClientException"/> being thrown.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The UID set identifying which messages are to be moved.
+        /// </param>
+        /// <param name="folder">
+        /// The name of the destination mailbox to which the messages will be
+        /// relocated.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public void MessagesMoveUid(IMAP_t_SeqSet seqSet,string folder)
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesMoveUidAsync(seqSet,folder,cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesMoveUidAsync
+
+        /// <summary>
+        /// Sends a <c>UID MOVE</c> command for the specified UID set, relocating
+        /// the messages to the target mailbox. When the server supports the IMAP
+        /// <c>MOVE</c> extension (RFC 6851), the operation is performed atomically.
+        /// Otherwise, a compatibility sequence using UID‑based operations is used.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// If the server advertises the <c>MOVE</c> capability, the method issues
+        /// a <c>UID MOVE</c> command that copies the messages to the destination
+        /// mailbox and removes them from the currently selected mailbox as a
+        /// single atomic operation. The method then waits for the final command
+        /// completion response. If the final response indicates an error, an
+        /// <see cref="IMAP_ClientException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the server does not support the <c>MOVE</c> extension, the method
+        /// performs a fallback sequence equivalent to <c>UID MOVE</c>:
+        /// <list type="number">
+        /// <item><description><c>UID COPY</c> the messages to the destination mailbox</description></item>
+        /// <item><description><c>UID STORE +FLAGS.SILENT (\Deleted)</c> on the source messages</description></item>
+        /// <item><description>
+        /// If the server supports <c>UIDPLUS</c>, issue <c>UID EXPUNGE</c> for the
+        /// specified UID set; otherwise, issue a normal <c>EXPUNGE</c>.
+        /// </description></item>
+        /// </list>
+        /// This provides MOVE‑equivalent behavior for servers implementing only
+        /// RFC 3501 and RFC 4315.
+        /// </para>
+        /// <para>
+        /// The method operates on stable message UIDs. A sequence‑number variant
+        /// is available through <c>MessagesMoveAsync</c>.
+        /// </para>
+        /// </remarks>
+        /// <param name="seqSet">
+        /// The UID set identifying which messages are to be moved.
+        /// </param>
+        /// <param name="folder">
+        /// The name of the destination mailbox to which the messages will be
+        /// relocated.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to cancel the operation.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder
+        /// is selected, or the client is in an IDLE state.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="folder"/> is <c>null</c> or empty.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the final command response indicates an error.
+        /// </exception>
+        public async ValueTask MessagesMoveUidAsync(IMAP_t_SeqSet seqSet,string folder,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pSelectedFolder == null){
+                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
+            }
+            if(m_pIdle != null){
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
+            }
+            if(seqSet == null){
+                throw new ArgumentNullException(nameof(seqSet));
+            }            
+            if(string.IsNullOrEmpty(folder)){
+                throw new ArgumentException("Folder name must be specified.", nameof(folder));
+            }
+
+            /* RFC 6851 — MOVE Command
+
+               The MOVE command relocates the specified messages to the end of the
+               target mailbox. After the messages are successfully copied, they are
+               removed from the source mailbox as part of the same atomic operation.
+
+               MOVE-Command = tag SP "MOVE" SP sequence-set SP mailbox CRLF
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST copy each message in the sequence-set to the
+                   target mailbox.
+                 - After copying, the server MUST remove the source messages from
+                   the currently selected mailbox.
+                 - The server MUST send a final tagged OK response on success.
+                 - If the target mailbox does not exist, the server MUST return
+                   a tagged NO response.
+                 - If the server supports UIDPLUS, it MAY include a MOVEUID response
+                   code:
+                       MOVEUID <uidvalidity> <source-uids> <dest-uids>
+                   which maps the moved source UIDs to the newly assigned UIDs in
+                   the target mailbox.
+
+               Notes:
+                 - MOVE is functionally equivalent to COPY followed by
+                   STORE +FLAGS.SILENT (\Deleted) and then EXPUNGE, but performed
+                   as a single atomic command.
+                 - The target mailbox name MUST be valid and accessible to the
+                   authenticated user.
+                 - MOVE operates on message sequence numbers. The UID variant
+                   (UID MOVE) operates on stable message UIDs.
+
+               Short Example:
+                 C: A143 MOVE 1:3 "Archive"
+                 S: A143 OK MOVE completed
+
+               UID Example:
+                 C: A144 UID MOVE 100:102 "Archive"
+                 S: A144 OK [MOVEUID 385752 100:102 200:202] MOVE completed
+            */
+
+            folder = IMAP_Utils.EncodeMailbox(folder,m_MailboxEncoding);
+
+            if(this.SupportsCapability("MOVE")){
+                await SendCommandLineAsync($"{m_CommandIndex++:d5} UID MOVE {seqSet.ToString()} {folder}\r\n",true,cancellationToken);
+
+                var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+                if(response.IsError){
+                    throw new IMAP_ClientException(response);
+                }
+            }
+            else{
+                await MessagesCopyUidAsync(seqSet,folder,cancellationToken);
+                await MessagesStoreFlagsUidAsync(seqSet,IMAP_t_Store_FlagsMode.AddSilent,new string[]{"\\Deleted"},cancellationToken);
+                if(this.SupportsCapability("UIDPLUS")){
+                    await MessagesExpungeUidAsync(seqSet,cancellationToken);
+                }
+                else{
+                    await MessagesExpungeAsync(cancellationToken);
+                }
+            }
+        }
+
+        #endregion
+
+        #region method MessagesExpunge
+
+        /// <summary>
+        /// Executes the IMAP <c>EXPUNGE</c> command on the currently selected mailbox.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The <c>EXPUNGE</c> command permanently removes all messages in the selected
+        /// mailbox that have the <c>\Deleted</c> flag set. For each removed message,
+        /// the server sends untagged <c>EXPUNGE</c> responses indicating that messages
+        /// have been expunged.
+        /// </para>
+        ///
+        /// <para>
+        /// This synchronous wrapper invokes <see cref="MessagesExpungeAsync"/> and
+        /// blocks until the operation completes.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Client Responsibilities</b><br/>
+        /// The client must update its local message cache based on untagged
+        /// <c>EXPUNGE</c> responses received during command execution.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// The <c>EXPUNGE</c> command has no arguments and always processes all
+        /// messages flagged <c>\Deleted</c> in the selected mailbox.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>EXPUNGE</c> command.
+        /// </exception>
+        public void MessagesExpunge()
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            MessagesExpungeAsync(cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method MessagesExpungeAsync
+
+        /// <summary>
+        /// Executes the IMAP <c>EXPUNGE</c> command on the currently selected mailbox.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// RFC 3501 section 6.4.3 — <b>EXPUNGE Command</b><br/>
+        /// The <c>EXPUNGE</c> command permanently removes all messages in the
+        /// selected mailbox that have the <c>\Deleted</c> flag set. For each
+        /// message removed, the server sends an untagged <c>EXPUNGE</c> response
+        /// indicating that a message has been expunged from the mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Server Behavior</b>
+        /// <list type="bullet">
+        ///   <item><description>Valid only in the Selected state.</description></item>
+        ///   <item><description>All messages marked <c>\Deleted</c> are removed.</description></item>
+        ///   <item><description>
+        ///     The server sends one untagged <c>EXPUNGE</c> response per removed
+        ///     message.
+        ///   </description></item>
+        ///   <item><description>
+        ///     A final tagged <c>OK</c> response indicates completion of the command.
+        ///   </description></item>
+        /// </list>
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Client Responsibilities</b><br/>
+        /// The client must update its local message cache based on untagged
+        /// <c>EXPUNGE</c> responses received during command execution.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// The <c>EXPUNGE</c> command has no arguments and always processes all
+        /// messages flagged <c>\Deleted</c> in the selected mailbox.
+        /// </para>
+        /// </remarks>
+        /// <param name="cancellationToken">Token to cancel the operation.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or the client is currently in IDLE mode.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>EXPUNGE</c> command.
+        /// </exception>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        public async ValueTask MessagesExpungeAsync(CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -7546,105 +7806,169 @@ namespace LumiSoft.Net.IMAP.Client
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
 
-            using(ExpungeAsyncOP op = new ExpungeAsyncOP(null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<ExpungeAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.ExpungeAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
+           /* RFC 3501 section 6.4.3 — EXPUNGE Command
 
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
+               The EXPUNGE command permanently removes all messages in the selected
+               mailbox that have the \Deleted flag set. For each message removed,
+               the server MUST send an untagged EXPUNGE response reporting the
+               message’s *current* sequence number at the moment of removal.
+
+               Important:
+                 - EXPUNGE reports the sequence number of the message being removed.
+                 - It does NOT report updated sequence numbers for the remaining
+                   messages.
+                 - Although remaining messages shift down internally, EXPUNGE
+                   responses only describe the message that is actually expunged.
+
+               EXPUNGE-Command = tag SP "EXPUNGE" CRLF
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - The server MUST remove every message marked \Deleted.
+                 - For each removed message, the server MUST send:
+                       "<seqno> EXPUNGE"
+                   where <seqno> is the message’s sequence number BEFORE removal.
+                 - After each EXPUNGE response, all higher sequence numbers shift
+                   down by one, but this shift is NOT reported directly.
+                 - EXPUNGE responses MUST be sent in strictly ascending order of
+                   the original sequence numbers.
+                 - The server MUST send a final tagged OK response:
+                       tag SP "OK" SP resp-text CRLF
+
+               Notes:
+                 - EXPUNGE has no arguments; it always processes all \Deleted messages.
+                 - Clients MUST update their internal sequence maps after each
+                   EXPUNGE response.
+                 - EXPUNGE does not affect session state beyond mailbox contents.
+
+               Example:
+                 Initial mailbox sequence numbers:
+                   1  2  3  4  5
+                   (messages 2 and 4 are marked \Deleted)
+
+                 C: A202 EXPUNGE
+                 S: 2 EXPUNGE        ; message 2 removed
+                                     ; remaining messages shift: 1,2,3,4
+                 S: 3 EXPUNGE        ; original message 4 is now at seqno 3
+                                     ; remaining messages shift: 1,2,3
+                 S: A202 OK EXPUNGE completed
+            */
+
+            await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " EXPUNGE\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
         }
 
         #endregion
 
-        #region method ExpungeAsync
-
-        #region class ExpungeAsyncOP
+        #region method MessagesExpungeUid
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.ExpungeAsync"/> asynchronous operation.
+        /// Executes the IMAP <c>UID EXPUNGE</c> command synchronously, removing
+        /// only the messages whose UIDs are included in the specified UID set.
         /// </summary>
-        public class ExpungeAsyncOP : CmdAsyncOP<ExpungeAsyncOP>
+        /// <param name="seqSet">The UID set specifying which messages to expunge.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, the client is currently in IDLE mode, or the server does not
+        /// support UIDPLUS.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>UID EXPUNGE</c> command.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MessagesExpungeUidAsync(IMAP_t_SeqSet, CancellationToken)"/>.
+        /// It blocks until the <c>UID EXPUNGE</c> operation completes.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>RFC 4315 — UIDPLUS Extension</b><br/>
+        /// The <c>UID EXPUNGE</c> command permanently removes only those messages
+        /// in the selected mailbox that both appear in the provided UID set and
+        /// have the <c>\Deleted</c> flag set. Messages marked <c>\Deleted</c> but
+        /// not included in the UID set remain in the mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// This command requires server support for the UIDPLUS extension.
+        /// If UIDPLUS is not available, clients must fall back to marking
+        /// messages <c>\Deleted</c> via <c>UID STORE</c> and issuing a normal
+        /// <c>EXPUNGE</c>.
+        /// </para>
+        /// </remarks>
+        public void MessagesExpungeUid(IMAP_t_SeqSet seqSet)
         {
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public ExpungeAsyncOP(EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-            }
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.4.3. EXPUNGE Command.
-                    Arguments:  none
-
-                    Responses:  untagged responses: EXPUNGE
-
-                    Result:     OK - expunge completed
-                                NO - expunge failure: can't expunge (e.g., permission
-                                     denied)
-                                BAD - command unknown or arguments invalid
-
-                    The EXPUNGE command permanently removes all messages that have the
-                    \Deleted flag set from the currently selected mailbox.  Before
-                    returning an OK to the client, an untagged EXPUNGE response is
-                    sent for each message that is removed.
-
-                    Example:    C: A202 EXPUNGE
-                                S: * 3 EXPUNGE
-                                S: * 3 EXPUNGE
-                                S: * 5 EXPUNGE
-                                S: * 8 EXPUNGE
-                                S: A202 OK EXPUNGE completed
-
-                    Note: In this example, messages 3, 4, 7, and 11 had the
-                    \Deleted flag set.  See the description of the EXPUNGE
-                    response for further explanation.
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " EXPUNGE" + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
+            MessagesExpungeUidAsync(seqSet,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method MessagesExpungeUidAsync
+
         /// <summary>
-        /// Executes EXPUNGE command.
+        /// Executes the IMAP <c>UID EXPUNGE</c> command, selectively removing
+        /// messages whose UIDs are included in the specified UID set.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool ExpungeAsync(ExpungeAsyncOP op)
+        /// <param name="seqSet">The UID set specifying which messages to expunge.</param>
+        /// <param name="cancellationToken">Token to cancel the operation.</param>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance is disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="seqSet"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, the client is currently in IDLE mode, or the server does not
+        /// support UIDPLUS.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server returns an error response to the <c>UID EXPUNGE</c> command.
+        /// </exception>
+        /// <returns>A task representing the asynchronous operation.</returns>
+        /// <remarks>
+        /// <para>
+        /// <b>RFC 4315 — UIDPLUS Extension</b><br/>
+        /// The <c>UID EXPUNGE</c> command permanently removes only those messages
+        /// in the selected mailbox that both appear in the provided UID set and
+        /// have the <c>\Deleted</c> flag set. Messages marked <c>\Deleted</c> but
+        /// not included in the UID set remain in the mailbox.
+        /// </para>
+        ///
+        /// <para>
+        /// For each removed message, the server sends an untagged
+        /// <c>EXPUNGE</c> response, followed by a final tagged <c>OK</c> response
+        /// indicating completion of the command.
+        /// </para>
+        ///
+        /// <para>
+        /// <b>Notes</b><br/>
+        /// This command requires server support for the UIDPLUS extension.
+        /// If UIDPLUS is not available, clients must fall back to marking
+        /// messages <c>\Deleted</c> via <c>UID STORE</c> and issuing a normal
+        /// <c>EXPUNGE</c>, which removes all <c>\Deleted</c> messages.
+        /// </para>
+        /// </remarks>
+        public async ValueTask MessagesExpungeUidAsync(IMAP_t_SeqSet seqSet,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
             if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
+                throw new InvalidOperationException("Not connected, you need to connect first.");
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
@@ -7655,423 +7979,140 @@ namespace LumiSoft.Net.IMAP.Client
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+            if(seqSet == null){
+                throw new ArgumentNullException(nameof(seqSet));
             }
 
-            return op.Start(this);
+            /* RFC 4315 — UIDPLUS Extension: UID EXPUNGE Command
+
+               The UID EXPUNGE command selectively removes messages from the
+               selected mailbox. Only messages whose UIDs appear in the specified
+               UID set and that also have the \Deleted flag set are expunged.
+               Messages marked \Deleted but not included in the UID set remain
+               in the mailbox.
+
+               UID-EXPUNGE-Command = tag SP "UID" SP "EXPUNGE" SP uid-set CRLF
+
+               Server Behavior:
+                 - Valid only in the Selected state.
+                 - Requires server support for the UIDPLUS extension.
+                 - The server MUST expunge only those messages that:
+                     (1) have the \Deleted flag set, and
+                     (2) appear in the provided UID set.
+                 - For each removed message, the server sends an untagged
+                   EXPUNGE response of the form:
+                       "* <seqno> EXPUNGE"
+                   where <seqno> is the current sequence number of the message
+                   being removed.
+                 - The server MUST send a final tagged OK response indicating
+                   completion of the command.
+
+               Notes:
+                 - UID EXPUNGE provides selective expunging based on stable UIDs.
+                 - If UIDPLUS is not supported, clients must fall back to marking
+                   messages \Deleted via UID STORE and issuing a normal EXPUNGE.
+                 - UID EXPUNGE has no effect on messages not included in the UID set.
+
+               Short Example:
+                 C: A001 UID EXPUNGE 100:102
+                 S: * 3 EXPUNGE
+                 S: * 5 EXPUNGE
+                 S: * 7 EXPUNGE
+                 S: A001 OK UID EXPUNGE completed
+            */
+
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} UID EXPUNGE {seqSet.ToString()}\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
+            }
         }
 
         #endregion
 
-        #region method IdleAsync
-
-        #region class IdleAsyncOP
+        #region method IdleStart
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.IdleAsync"/> asynchronous operation.
+        /// Synchronously starts the IMAP <c>IDLE</c> command on the currently selected folder.
         /// </summary>
-        public class IdleAsyncOP : IDisposable,IAsyncOP
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around <see cref="IdleStartAsync"/> and behaves
+        /// identically, including all protocol requirements and error conditions. The client
+        /// enters the IMAP <c>IDLE</c> state after the server sends the continuation response
+        /// (<c>+</c>), and begins receiving untagged mailbox update responses until
+        /// <see cref="IdleStop"/> is called.
+        /// </para>
+        /// <para>
+        /// The operation is executed with the client's configured <see cref="Timeout"/>, and
+        /// will throw if the server does not respond within that interval.
+        /// </para>
+        /// <para>
+        /// Only one <c>IDLE</c> operation may be active at a time. Any other IMAP command is
+        /// invalid while idling and must be preceded by a call to <see cref="IdleStop"/>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is selected,
+        /// or an <c>IDLE</c> operation is already active.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server does not accept the <c>IDLE</c> command.
+        /// </exception>
+        public void IdleStart()
         {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-            private bool                               m_DoneSent       = false;
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            /// <summary>
-            /// Default constructor.
-            /// </summary>             
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public IdleAsyncOP(EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                m_pCallback = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Done
-
-            /// <summary>
-            /// Starts exiting IDLE state.
-            /// </summary>
-            /// <exception cref="InvalidOperationException">Is raised when this not in valid state.</exception>
-            public void Done()
-            {
-                if(this.State != AsyncOP_State.Active){
-                    throw new InvalidOperationException("Mehtod 'Done' can be called only AsyncOP_State.Active state.");
-                }
-                if(m_DoneSent){
-                    throw new InvalidOperationException("Mehtod 'Done' already called, Done is in progress.");
-                }
-                ArgumentNullException.ThrowIfNull(m_pImapClient);
-                ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-                                
-                m_DoneSent = true;
-
-                byte[] cmdLine = Encoding.ASCII.GetBytes("DONE\r\n");
-
-                // Log
-                m_pImapClient.LogAddWrite(cmdLine.Length,"DONE");
-
-                // Start command sending.
-                m_pImapClient.TcpStream.BeginWrite(
-                    cmdLine,
-                    0,
-                    cmdLine.Length,
-                    delegate(IAsyncResult ar){
-                        try{
-                            m_pImapClient.TcpStream.EndWrite(ar);
-                        }
-                        catch(Exception x){
-                            m_pException = x;
-                            m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    },
-                    null
-                );
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                                
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 2177.3. IDLE Command.
-                        Arguments:  none
-
-                        Responses:  continuation data will be requested; the client sends
-                                    the continuation data "DONE" to end the command
-
-                        Result:     OK - IDLE completed after client sent "DONE"
-                                    NO - failure: the server will not allow the IDLE
-                                         command at this time
-                                    BAD - command unknown or arguments invalid
-
-                        The IDLE command may be used with any IMAP4 server implementation
-                        that returns "IDLE" as one of the supported capabilities to the
-                        CAPABILITY command.  If the server does not advertise the IDLE
-                        capability, the client MUST NOT use the IDLE command and must poll
-                        for mailbox updates.  In particular, the client MUST continue to be
-                        able to accept unsolicited untagged responses to ANY command, as
-                        specified in the base IMAP specification.
-
-                        The IDLE command is sent from the client to the server when the
-                        client is ready to accept unsolicited mailbox update messages.  The
-                        server requests a response to the IDLE command using the continuation
-                        ("+") response.  The IDLE command remains active until the client
-                        responds to the continuation, and as long as an IDLE command is
-                        active, the server is now free to send untagged EXISTS, EXPUNGE, and
-                        other messages at any time.
-
-                        The IDLE command is terminated by the receipt of a "DONE"
-                        continuation from the client; such response satisfies the server's
-                        continuation request.  At that point, the server MAY send any
-                        remaining queued untagged responses and then MUST immediately send
-                        the tagged response to the IDLE command and prepare to process other
-                        commands. As in the base specification, the processing of any new
-                        command may cause the sending of unsolicited untagged responses,
-                        subject to the ambiguity limitations.  The client MUST NOT send a
-                        command while the server is waiting for the DONE, since the server
-                        will not be able to distinguish a command from a continuation.             
-                     
-                        Example:    C: A001 SELECT INBOX
-                                    S: * FLAGS (Deleted Seen)
-                                    S: * 3 EXISTS
-                                    S: * 0 RECENT
-                                    S: * OK [UIDVALIDITY 1]
-                                    S: A001 OK SELECT completed
-                                    C: A002 IDLE
-                                    S: + idling
-                                    ...time passes; new mail arrives...
-                                    S: * 4 EXISTS
-                                    C: DONE
-                                    S: A002 OK IDLE terminated
-                    */
-
-                    m_pImapClient.m_pIdle = this;
-                    
-                    byte[] cmdLine    = Encoding.UTF8.GetBytes((m_pImapClient.m_CommandIndex++).ToString("d5") + " IDLE\r\n");
-                    string cmdLineLog = Encoding.UTF8.GetString(cmdLine).TrimEnd();
-
-                    SendCmdAndReadRespAsyncOP args = new SendCmdAndReadRespAsyncOP(cmdLine,cmdLineLog,m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<SendCmdAndReadRespAsyncOP> e){
-                        ProecessCmdResult(e.Value);
-                    };
-                    // Operation completed synchronously.
-                    if(!m_pImapClient.SendCmdAndReadRespAsync(args)){
-                        ProecessCmdResult(args);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ProecessCmdResult
-
-            /// <summary>
-            /// Processes command result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProecessCmdResult(SendCmdAndReadRespAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Command send/receive failed.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                        m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    }
-                    // Command send/receive succeeded.
-                    else{ 
-                        // IMAP server returned error response.
-                        if(op.FinalResponse.IsError){
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        // IMAP server returned "+" continue response.
-                        else if(op.FinalResponse.IsContinue){
-                            ReadFinalResponseAsyncOP readFinalRespOP = new ReadFinalResponseAsyncOP(m_pCallback);
-                            readFinalRespOP.CompletedAsync += delegate(object? sender,EventArgs<ReadFinalResponseAsyncOP> e){
-                                ProcessReadFinalResponseResult(e.Value);
-                            };
-                            // Operation completed synchronously.
-                            if(!m_pImapClient.ReadFinalResponseAsync(readFinalRespOP)){
-                                ProcessReadFinalResponseResult(readFinalRespOP);
-                            }
-                        }
-                        // IMAP server returned success response. We should not get such response, but consider it as IDLE done.
-                        else{
-                            m_pFinalResponse = op.FinalResponse;
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    }                    
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-            #region method ProcessReadFinalResponseResult
-
-            /// <summary>
-            /// Processes IDLE final(final response after +) response reading result.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void ProcessReadFinalResponseResult(ReadFinalResponseAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(op.FinalResponse);
-
-                    // Command send/receive failed.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                        m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    }
-                    // Command send/receive succeeded.
-                    else{ 
-                        // IMAP server returned error response.
-                        if(op.FinalResponse.IsError){
-                            m_pException = new IMAP_ClientException(op.FinalResponse);
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        // IMAP server returned success response.
-                        else{
-                            m_pImapClient.m_pIdle = null;
-                            m_pFinalResponse = op.FinalResponse;
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    }                    
-                }
-                finally{
-                    op.Dispose();
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<IdleAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<IdleAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
+            IdleStartAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region method IdleStartAsync
+
         /// <summary>
-        /// Executes IDLE command.
+        /// Starts the IMAP <c>IDLE</c> command on the currently selected folder.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool IdleAsync(IdleAsyncOP op)
+        /// <remarks>
+        /// <para>
+        /// The <c>IDLE</c> command places the connection into a server‑driven state where
+        /// the server sends untagged mailbox update responses (such as <c>EXISTS</c>,
+        /// <c>EXPUNGE</c>, and <c>FETCH</c> flag changes) as they occur.
+        /// </para>
+        /// <para>
+        /// Only one <c>IDLE</c> operation may be active at a time. Any other IMAP command
+        /// is invalid while the client is idling and must be preceded by a call to
+        /// <see cref="IdleStopAsync"/>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or an <c>IDLE</c> operation is already active.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown if the server does not accept the <c>IDLE</c> command.
+        /// </exception>
+        /// <param name="cancellationToken">
+        /// Optional cancellation token for aborting the initial <c>IDLE</c> command
+        /// transmission or continuation response read.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation.
+        /// </returns>
+        public async ValueTask IdleStartAsync(CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
             if(!this.IsConnected){
-                throw new InvalidOperationException("You must connect first.");
+                throw new InvalidOperationException("Not connected, you need to connect first.");
             }
             if(!this.IsAuthenticated){
                 throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
@@ -8080,16 +8121,135 @@ namespace LumiSoft.Net.IMAP.Client
                 throw new InvalidOperationException("Not selected state, you need to select some folder first.");
             }
             if(m_pIdle != null){
-                throw new InvalidOperationException("Already idling !");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
 
-            return op.Start(this);
+            await SendCommandLineAsync($"{m_CommandIndex++:d5} IDLE\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(!response.IsContinue){
+                throw new IMAP_ClientException(response);
+            }
+              
+            m_pIdle = Task.Run(async () => await ReadFinalResponseAsync(true,null,cancellationToken));
+        }
+
+        #endregion
+
+        #region method IdleStop
+
+        /// <summary>
+        /// Synchronously stops the IMAP <c>IDLE</c> command and returns the client to
+        /// normal command mode.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This method is a synchronous wrapper around <see cref="IdleStopAsync"/> and
+        /// behaves identically. It sends the <c>DONE</c> command to terminate the active
+        /// <c>IDLE</c> operation and waits for the server's final tagged completion
+        /// response, which causes the idle loop to exit.
+        /// </para>
+        /// <para>
+        /// Any exception raised by the idle loop—such as connection failures, protocol
+        /// errors, or <c>NO</c>/<c>BAD</c> server responses—is allowed to propagate
+        /// directly to the caller. This ensures that the caller receives the original
+        /// error condition without suppression or wrapping.
+        /// </para>
+        /// <para>
+        /// The operation is executed with the client's configured <see cref="Timeout"/>,
+        /// and will throw if the server does not complete the <c>IDLE</c> termination
+        /// within that interval.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or no <c>IDLE</c> operation is currently active.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if the timeout elapses before the <c>IDLE</c> termination completes.
+        /// </exception>
+        /// <exception cref="Exception">
+        /// Propagated from the idle loop if the server returns an error response or the
+        /// connection fails while waiting for the final <c>IDLE</c> completion.
+        /// </exception>
+        public void IdleStop()
+        {
+            using var cts = new CancellationTokenSource(this.Timeout);
+
+            IdleStopAsync(cts.Token).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method IdleStopAsync
+
+        /// <summary>
+        /// Stops the IMAP <c>IDLE</c> command and returns the client to normal command mode.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Any exception raised by the idle loop (for example, connection loss, protocol
+        /// errors, or <c>NO</c>/<c>BAD</c> server responses) is allowed to propagate to the
+        /// caller. This ensures that the caller receives the original error condition
+        /// rather than a wrapped or suppressed exception.
+        /// </para>
+        /// <para>
+        /// After the idle loop completes—whether normally or due to an error—the internal
+        /// idle state is cleared, allowing new IMAP commands or a subsequent
+        /// <see cref="IdleStartAsync"/> call.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not connected, not authenticated, no folder is
+        /// selected, or no <c>IDLE</c> operation is currently active.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if the provided <paramref name="cancellationToken"/> is canceled before
+        /// the <c>DONE</c> command is sent.
+        /// </exception>
+        /// <exception cref="Exception">
+        /// Propagated from the idle loop if the server returns an error response or the
+        /// connection fails while waiting for the final <c>IDLE</c> completion.
+        /// </exception>
+        /// <param name="cancellationToken">
+        /// Optional cancellation token for aborting the transmission of <c>DONE</c>.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation.
+        /// </returns>
+        public async ValueTask IdleStopAsync(CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(!this.IsConnected){
+                throw new InvalidOperationException("Not connected, you need to connect first.");
+            }
+            if(!this.IsAuthenticated){
+                throw new InvalidOperationException("Not authenticated, you need to authenticate first.");
+            }
+            if(m_pSelectedFolder == null){
+                throw new InvalidOperationException("Not selected state, you need to select some folder first.");
+            }
+            if(m_pIdle == null){
+                throw new InvalidOperationException("This command is only valid in IDLE state, you need start idling before calling this command.");
+            }
+
+            await SendCommandLineAsync("DONE\r\n",true,cancellationToken);
+            
+            try{            
+                // Wait server to send final resonse to Idle loop, it will exit.
+                await m_pIdle;
+            }
+            finally{
+                m_pIdle = null;
+            }            
         }
 
         #endregion
@@ -8098,147 +8258,102 @@ namespace LumiSoft.Net.IMAP.Client
         #region method Capability
 
         /// <summary>
-        /// Gets IMAP server capabilities.
+        /// Executes the IMAP <c>CAPABILITY</c> command synchronously by invoking
+        /// <see cref="CapabilityAsync(CancellationToken)"/> and blocking until the
+        /// operation completes. The CAPABILITY command, defined in RFC 3501
+        /// section 6.1.1, requests that the server report the set of supported
+        /// IMAP protocol features, extensions, authentication mechanisms, and
+        /// server-specific tokens.
         /// </summary>
-        /// <returns>Returns CAPABILITIES responses.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
-        public IMAP_r_u_Capability[] Capability()
+        /// <remarks>
+        /// <para>
+        /// This synchronous wrapper creates a <see cref="CancellationTokenSource"/>
+        /// using the client's configured <see cref="Timeout"/> value and waits for
+        /// the asynchronous CAPABILITY operation to finish. Server returned capabilities are stored in the client's
+        /// <see cref="Capabilities"/> collection.
+        /// </para>
+        /// <para>
+        /// After all untagged capability data has been delivered, the server MUST
+        /// send a final tagged completion response. If the server returns <c>OK</c>,
+        /// the command completes normally. If the server returns <c>NO</c> or
+        /// <c>BAD</c>, the underlying asynchronous method throws an
+        /// <see cref="IMAP_ClientException"/>, which is propagated to the caller
+        /// of this synchronous wrapper.
+        /// </para>
+        /// <para>
+        /// The command is not valid while the client is in the IDLE state; callers
+        /// must stop IDLE mode before issuing <c>CAPABILITY</c>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected or when the command is issued
+        /// while the client is in the IDLE state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a <c>NO</c> or <c>BAD</c> completion
+        /// response for the <c>CAPABILITY</c> command.
+        /// </exception>
+        public void Capability()
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            List<IMAP_r_u_Capability> retVal = new List<IMAP_r_u_Capability>();
-
-            // Create callback. It is called for each untagged IMAP server response.
-            EventHandler<EventArgs<IMAP_r_u>> callback = delegate(object? sender,EventArgs<IMAP_r_u> e){
-                if(e.Value is IMAP_r_u_Capability){
-                    retVal.Add((IMAP_r_u_Capability)e.Value);
-                }
-            };
-
-            using(CapabilityAsyncOP op = new CapabilityAsyncOP(callback)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<CapabilityAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.CapabilityAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
-
-            return retVal.ToArray();
+            CapabilityAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method CapabilityAsync
-
-        #region class CapabilityAsyncOP
+        #region mehtod CapabilityAsync
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.CapabilityAsync"/> asynchronous operation.
+        /// Sends the IMAP <c>CAPABILITY</c> command to the server and waits for the
+        /// tagged completion response. The CAPABILITY command, defined in RFC 3501
+        /// section 6.1.1, requests that the server report the set of supported IMAP
+        /// protocol features, extensions, authentication mechanisms, and
+        /// server-specific tokens.
         /// </summary>
-        public class CapabilityAsyncOP : CmdAsyncOP<CapabilityAsyncOP>
-        {
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public CapabilityAsyncOP(EventHandler<EventArgs<IMAP_r_u>> callback) : base(callback)
-            {
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.1.1. CAPABILITY Command.
-                    Arguments:  none
-
-                    Responses:  REQUIRED untagged response: CAPABILITY
-
-                    Result:     OK - capability completed
-                                BAD - command unknown or arguments invalid
-
-                    The CAPABILITY command requests a listing of capabilities that the
-                    server supports.  The server MUST send a single untagged
-                    CAPABILITY response with "IMAP4rev1" as one of the listed
-                    capabilities before the (tagged) OK response.
-
-                    A capability name which begins with "AUTH=" indicates that the
-                    server supports that particular authentication mechanism.  All
-                    such names are, by definition, part of this specification.  For
-                    example, the authorization capability for an experimental
-                    "blurdybloop" authenticator would be "AUTH=XBLURDYBLOOP" and not
-                    "XAUTH=BLURDYBLOOP" or "XAUTH=XBLURDYBLOOP".
-
-                    Other capability names refer to extensions, revisions, or
-                    amendments to this specification.  See the documentation of the
-                    CAPABILITY response for additional information.  No capabilities,
-                    beyond the base IMAP4rev1 set defined in this specification, are
-                    enabled without explicit client action to invoke the capability.
-
-                    Client and server implementations MUST implement the STARTTLS,
-                    LOGINDISABLED, and AUTH=PLAIN (described in [IMAP-TLS])
-                    capabilities.  See the Security Considerations section for
-                    important information.
-
-                    See the section entitled "Client Commands -
-                    Experimental/Expansion" for information about the form of site or
-                    implementation-specific capabilities.
-
-                    Example:    C: abcd CAPABILITY
-                                S: * CAPABILITY IMAP4rev1 STARTTLS AUTH=GSSAPI LOGINDISABLED
-                                S: abcd OK CAPABILITY completed
-                                C: efgh STARTTLS
-                                S: efgh OK STARTLS completed
-                                   <TLS negotiation, further commands are under [TLS] layer>
-                                C: ijkl CAPABILITY
-                                S: * CAPABILITY IMAP4rev1 AUTH=GSSAPI AUTH=PLAIN
-                                S: ijkl OK CAPABILITY completed
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " CAPABILITY" + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes CAPABILITY command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool CapabilityAsync(CapabilityAsyncOP op)
+        /// <remarks>
+        /// <para>
+        /// When the client issues <c>CAPABILITY</c>, the server responds with one or
+        /// more untagged <c>* CAPABILITY</c> responses, each containing a space‑
+        /// separated list of capability atoms. Server returned capabilities are stored in the client's
+        /// <see cref="Capabilities"/> collection.
+        /// </para>
+        /// <para>
+        /// After all untagged capability data has been delivered, the server MUST
+        /// send a final tagged completion response. If the server returns <c>OK</c>,
+        /// the command is considered successful. If the server returns <c>NO</c> or
+        /// <c>BAD</c>, this method throws an <see cref="IMAP_ClientException"/>
+        /// containing the server's completion status.
+        /// </para>
+        /// <para>
+        /// The command is not valid while the client is in the IDLE state; callers
+        /// must stop IDLE mode before issuing <c>CAPABILITY</c>.
+        /// </para>
+        /// </remarks>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous write or read
+        /// operations associated with sending the command and receiving the final
+        /// response.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous CAPABILITY
+        /// operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected or when the command is issued
+        /// while the client is in the IDLE state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a <c>NO</c> or <c>BAD</c> completion
+        /// response for the <c>CAPABILITY</c> command.
+        /// </exception>
+        public async ValueTask CapabilityAsync(CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -8249,14 +8364,59 @@ namespace LumiSoft.Net.IMAP.Client
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+
+            /* RFC 3501 section 6.1.1 — CAPABILITY Command
+
+               The CAPABILITY command requests that the server return a list of
+               supported IMAP protocol features, extensions, authentication
+               mechanisms, and server-specific tokens. The server responds with
+               one or more untagged CAPABILITY responses followed by a tagged
+               status response indicating completion of the command.
+
+               Capability-Command = tag SP "CAPABILITY" CRLF
+
+               Server Responses:
+                 Capability-Response = "* CAPABILITY" *(SP capability) CRLF
+                 Capability-Complete = tag SP ("OK" / "BAD") SP resp-text CRLF
+
+               capability = atom
+                            ; Case-insensitive token identifying a protocol feature.
+                            ; Examples include:
+                            ;   IMAP4rev1     — Required base protocol
+                            ;   STARTTLS      — TLS negotiation supported
+                            ;   LOGINDISABLED — LOGIN disabled until TLS active
+                            ;   AUTH=mechanism
+                            ;   LITERAL+      — Non-synchronizing literals
+                            ;   SASL-IR       — SASL initial client response
+                            ;   IDLE, UIDPLUS, MOVE, ESEARCH, UNSELECT, etc.
+
+               Notes:
+                 - CAPABILITY responses never contain literals or quoted strings.
+                 - The server may include CAPABILITY information in the initial
+                   greeting; clients SHOULD still issue CAPABILITY after STARTTLS
+                   or authentication to discover updated capabilities.
+                 - Servers MAY send unsolicited CAPABILITY responses at any time.
+
+               Examples:
+                 C: A001 CAPABILITY
+                 S: * CAPABILITY IMAP4rev1 STARTTLS AUTH=PLAIN IDLE UIDPLUS
+                 S: A001 OK CAPABILITY completed
+
+                 C: A002 CAPABILITY
+                 S: * CAPABILITY IMAP4rev1 LITERAL+ SASL-IR MOVE ESEARCH
+                 S: A002 OK CAPABILITY completed
+            */
+
+            await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " CAPABILITY\r\n",true,cancellationToken);
+            
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
 
-            return op.Start(this);
+            if(SupportsCapability("LITERAL+")){
+                m_LiteralPluss = true;
+            }
         }
 
         #endregion
@@ -8264,106 +8424,104 @@ namespace LumiSoft.Net.IMAP.Client
         #region method Noop
 
         /// <summary>
-        /// Sends NOOP command to IMAP server.
+        /// Executes the IMAP <c>NOOP</c> command synchronously by invoking
+        /// <see cref="NoopAsync(CancellationToken)"/> and blocking until the
+        /// operation completes. The NOOP command, defined in RFC 3501 section
+        /// 6.1.2, performs no action but allows the server to deliver any pending
+        /// untagged status or mailbox update responses.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="IMAP_ClientException">Is raised when server refuses to complete this command and returns error.</exception>
+        /// <remarks>
+        /// <para>
+        /// This synchronous wrapper creates a <see cref="CancellationTokenSource"/>
+        /// using the client's configured <see cref="Timeout"/> value and waits for
+        /// the asynchronous NOOP operation to finish. Any untagged responses
+        /// generated by the server—such as <c>EXISTS</c>, <c>RECENT</c>,
+        /// <c>EXPUNGE</c>, <c>FETCH</c>, <c>FLAGS</c>, or <c>OK [ALERT]</c>—are
+        /// processed as part of normal IMAP
+        /// event handling.
+        /// </para>
+        /// <para>
+        /// After all untagged responses have been processed, the server MUST send
+        /// a final tagged completion response. If the server returns <c>OK</c>,
+        /// the command completes normally. If the server returns <c>NO</c> or
+        /// <c>BAD</c>, the underlying asynchronous method throws an
+        /// <see cref="IMAP_ClientException"/>, which is propagated to the caller
+        /// of this synchronous wrapper.
+        /// </para>
+        /// <para>
+        /// The command is not valid while the client is in the IDLE state; callers
+        /// must stop IDLE mode before issuing <c>NOOP</c>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected or when the command is issued
+        /// while the client is in the IDLE state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a <c>NO</c> or <c>BAD</c> completion
+        /// response for the <c>NOOP</c> command.
+        /// </exception>
         public void Noop()
         {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(!this.IsConnected){
-                throw new InvalidOperationException("Not connected, you need to connect first.");
-            }            
-            if(m_pIdle != null){
-                throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
-            }
+            using var cts = new CancellationTokenSource(this.Timeout);
 
-            using(NoopAsyncOP op = new NoopAsyncOP(null)){
-                using(ManualResetEvent wait = new ManualResetEvent(false)){
-                    op.CompletedAsync += delegate(object? s1,EventArgs<NoopAsyncOP> e1){
-                        wait.Set();
-                    };
-                    if(!this.NoopAsync(op)){
-                        wait.Set();
-                    }
-                    wait.WaitOne();
-
-                    if(op.Error != null){
-                        throw op.Error;
-                    }
-                }
-            }
+            NoopAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method NoopAsync
-
-        #region class NoopAsyncOP
+        #region mehtod NoopAsync
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.NoopAsync"/> asynchronous operation.
+        /// Sends the IMAP <c>NOOP</c> command to the server and waits for the
+        /// tagged completion response. The NOOP command, defined in RFC 3501
+        /// section 6.1.2, performs no action but allows the server to deliver
+        /// any pending untagged status or mailbox update responses.
         /// </summary>
-        public class NoopAsyncOP : CmdAsyncOP<NoopAsyncOP>
-        {
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public NoopAsyncOP(EventHandler<EventArgs<IMAP_r_u>>? callback) : base(callback)
-            {
-            }
-
-
-            #region override method OnInitCmdLine
-
-            /// <summary>
-            /// Is called when we need to init command line info.
-            /// </summary>
-            /// <param name="imap">IMAP client.</param>
-            protected override void OnInitCmdLine(IMAP_Client imap)
-            {
-                /* RFC 3501 6.1.2. NOOP Command.
-                    Arguments:  none
-
-                    Responses:  no specific responses for this command (but see below)
-
-                    Result:     OK - noop completed
-                               BAD - command unknown or arguments invalid
-
-                    The NOOP command always succeeds.  It does nothing.
-
-                    Since any command can return a status update as untagged data, the
-                    NOOP command can be used as a periodic poll for new messages or
-                    message status updates during a period of inactivity (this is the
-                    preferred method to do this).  The NOOP command can also be used
-                    to reset any inactivity autologout timer on the server.            
-                */
-
-                byte[] cmdLine = Encoding.UTF8.GetBytes((imap.m_CommandIndex++).ToString("d5") + " NOOP" + "\r\n");
-                this.CmdLines.Add(new CmdLine(cmdLine,Encoding.UTF8.GetString(cmdLine).TrimEnd()));
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Executes NOOP command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="CmdAsyncOP{T}.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when IMAP client is not in valid state. For example 'not connected'.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public bool NoopAsync(NoopAsyncOP op)
+        /// <remarks>
+        /// <para>
+        /// When a <c>NOOP</c> command is issued, the server MAY send any number
+        /// of untagged responses defined in RFC 3501 sections 7.1–7.4, including
+        /// mailbox size changes (<c>EXISTS</c>, <c>RECENT</c>), message status
+        /// updates (<c>EXPUNGE</c>, <c>FETCH</c>, <c>FLAGS</c>), or server status
+        /// notifications such as <c>OK [ALERT]</c>. These responses are processed
+        /// as part of normal IMAP event flow.
+        /// </para>
+        /// <para>
+        /// After all untagged responses have been processed, the server MUST send
+        /// a final tagged completion response. If the server returns <c>OK</c>,
+        /// the command is considered successful. If the server returns <c>NO</c>
+        /// or <c>BAD</c>, this method throws an <see cref="IMAP_ClientException"/>
+        /// containing the server's completion status.
+        /// </para>
+        /// <para>
+        /// The command is not valid while the client is in the IDLE state; callers
+        /// must stop IDLE mode before issuing <c>NOOP</c>.
+        /// </para>
+        /// </remarks>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous write or read
+        /// operations associated with sending the command and receiving the final
+        /// response.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous NOOP operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the client is not connected or when the command is issued
+        /// while the client is in the IDLE state.
+        /// </exception>
+        /// <exception cref="IMAP_ClientException">
+        /// Thrown when the server returns a <c>NO</c> or <c>BAD</c> completion
+        /// response for the <c>NOOP</c> command.
+        /// </exception>
+        public async ValueTask NoopAsync(CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -8374,1501 +8532,592 @@ namespace LumiSoft.Net.IMAP.Client
             if(m_pIdle != null){
                 throw new InvalidOperationException("This command is not valid in IDLE state, you need stop idling before calling this command.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
+
+            /* RFC 3501 section 6.1.2 — NOOP Command
+
+               The NOOP command does nothing. It is used by the client to poll the
+               server for any pending status updates, mailbox changes, or other
+               untagged responses. The server MUST return a tagged status response
+               indicating completion of the command.
+
+               NOOP-Command = tag SP "NOOP" CRLF
+
+               Server Responses:
+                 - The server MAY send any number of untagged status or mailbox
+                   update responses (RFC 3501 sections 7.1–7.4), including:
+                       * EXISTS
+                       * RECENT
+                       * EXPUNGE
+                       * FETCH
+                       * FLAGS
+                       * OK [ALERT]
+                       * Other unsolicited responses
+                 - The server MUST send a final tagged OK response:
+                       tag SP "OK" SP resp-text CRLF
+
+               Notes:
+                 - NOOP is commonly used to keep the connection alive and to allow
+                   the server to deliver pending mailbox changes.
+                 - NOOP does not affect session state and is valid in any state
+                   except before authentication.
+                 - Servers MAY send unsolicited responses at any time; NOOP simply
+                   provides a convenient synchronization point for clients.
+
+               Example:
+                 C: A047 NOOP
+                 S: * 22 EXISTS
+                 S: * 1 RECENT
+                 S: A047 OK NOOP completed
+            */
+
+            await SendCommandLineAsync((m_CommandIndex++).ToString("d5") + " NOOP\r\n",true,cancellationToken);
+
+            var response = await ReadFinalResponseAsync(true,null,cancellationToken);
+            if(response.IsError){
+                throw new IMAP_ClientException(response);
             }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-            
-            return op.Start(this);
         }
 
         #endregion
 
 
-        #region override method OnConnected
+        #region method SendCommandAsync
 
-        
         /// <summary>
-        /// This method is called when TCP client has sucessfully connected.
+        /// Sends an IMAP command composed of multiple <see cref="CommandPart"/> segments,
+        /// handling literal continuation responses as required by RFC 3501.
         /// </summary>
-        /// <param name="callback">Callback to be called to complete connect operation.</param>
-        protected override void OnConnected(CompleteConnectCallback callback)
+        /// <param name="cmdItems">
+        /// The ordered sequence of command segments to send. Each segment is either a
+        /// command-line fragment or a literal payload. Literal headers (<c>{N}\r\n</c>)
+        /// must appear as non-literal items immediately followed by a literal item.
+        /// </param>
+        /// <param name="log">
+        /// Indicates whether command-line fragments should be logged. Literal payloads
+        /// are never logged for security reasons.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous send operation.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous send operation.
+        /// </returns>
+        /// <remarks>
+        /// IMAP literal continuation requires the client to pause after sending a
+        /// literal header (<c>{N}\r\n</c>) and wait for a server continuation response
+        /// (<c>+</c>). Only after receiving this continuation may the client transmit
+        /// the literal payload.
+        ///
+        /// This method enforces that rule by reading a continuation response only when
+        /// the next <see cref="CommandPart"/> in the sequence is a literal payload.
+        /// No continuation is read after sending literal bytes or after the final
+        /// command terminator.
+        /// 
+        /// The sequence must follow this pattern:
+        /// <list type="bullet">
+        /// <item><description>
+        /// Non-literal item containing a literal header (<c>{N}\r\n</c>)
+        /// </description></item>
+        /// <item><description>
+        /// Literal item containing the literal payload
+        /// </description></item>
+        /// <item><description>
+        /// Additional non-literal items completing the command
+        /// </description></item>
+        /// </list>
+        /// </remarks>
+        private async ValueTask SendCommandAsync(CommandPart[] cmdItems,bool log,CancellationToken cancellationToken = default)
         {
-            // Read IMAP server greeting.
-            ReadResponseAsyncOP op = new ReadResponseAsyncOP();
-            op.CompletedAsync += delegate(object? sender,EventArgs<IMAP_Client.ReadResponseAsyncOP> e){
-                ProcessGreetingResult(op,callback);
-            };
-            // Operation completed synchronously.
-            if(!ReadResponseAsync(op)){
-                ProcessGreetingResult(op,callback);                
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
             }
-        }
+            ArgumentNullException.ThrowIfNull(cmdItems);
+            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
-        #endregion
+            for(int i=0; i<cmdItems.Length; i++){
+                CommandPart cmdItem = cmdItems[i];
 
-        #region method ProcessGreetingResult
-
-        /// <summary>
-        /// Processes IMAP server greeting reading result.
-        /// </summary>
-        /// <param name="op">Reading operation.</param>
-        /// <param name="connectCallback">Callback to be called to complete connect operation.</param>
-        private void ProcessGreetingResult(ReadResponseAsyncOP op,CompleteConnectCallback connectCallback)
-        {
-            Exception? error = null;
-            
-            try{
-                // Operation failed.
-                if(op.Error != null){
-                    error = op.Error;
+                if(cmdItem.IsLiteral){
+                    await this.TcpStream.WriteAsync(cmdItem.Literal,cancellationToken);
+                    if(log){
+                        LogAddWrite(0,$"<literal {cmdItem.Literal!.Length} bytes>");
+                    }
                 }
-                // Operation succeeded.
                 else{
-                    if(op.Response is IMAP_r_u_ServerStatus){
-                        IMAP_r_u_ServerStatus statusResp = (IMAP_r_u_ServerStatus)op.Response;
-
-                        // IMAP server rejected connection.
-                        if(statusResp.IsError){
-                            error = new IMAP_ClientException(statusResp.ResponseCode,statusResp.ResponseText);
-                        }
-                        else{
-                            m_GreetingText = statusResp.ResponseText;
-                        }
+                    await this.TcpStream.WriteLineAsync(cmdItem.CommandLine!,cancellationToken);
+                    if(log){
+                        LogAddWrite(cmdItem.CommandLine!.Length,cmdItem.CommandLine.Trim());
                     }
-                    else{
-                        error = new Exception("Unexpected IMAP server greeting response: " + op.Response?.ToString());
-                    }
-                }                
-            }
-            catch(Exception x){
-                error = x;
-            }
-
-            // Complete TCP_Client connect operation.
-            connectCallback(error);
-        }
-
-        #endregion
-
-
-        #region method SendCmdAndReadRespAsync
-
-        #region class SendCmdAndReadRespAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.SendCmdAndReadRespAsync"/> asynchronous operation.
-        /// </summary>
-        private class SendCmdAndReadRespAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private Queue<CmdLine>                     m_pCmdLines;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="cmdLine">IMAP command line.</param>
-            /// <param name="cmdLineLogText">IMAP command line log text.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>cmdLine</b> or <b>cmdLineLogText</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public SendCmdAndReadRespAsyncOP(byte[] cmdLine,string cmdLineLogText,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                if(cmdLine == null){
-                    throw new ArgumentNullException("cmdLine");
-                }
-                if(cmdLine.Length < 1){
-                    throw new ArgumentException("Argument 'cmdLine' value must be specified.","cmdLine");
-                }
-                if(cmdLineLogText == null){
-                    throw new ArgumentNullException("cmdLineLogText");
-                }
-
-                m_pCallback = callback;
-
-                m_pCmdLines = new Queue<CmdLine>();
-                m_pCmdLines.Enqueue(new CmdLine(cmdLine,cmdLineLogText));
-            }
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="cmdLines">IMAP command lines.</param>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>cmdLines</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            public SendCmdAndReadRespAsyncOP(CmdLine[] cmdLines,EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                if(cmdLines == null){
-                    throw new ArgumentNullException("cmdLines");
-                }
-
-                m_pCmdLines = new Queue<CmdLine>(cmdLines);
-                m_pCallback = callback;                
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion       
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
+                } 
                 
-                m_pImapClient = owner;
-                        
-                SetState(AsyncOP_State.Active);
+                // Next itmem is literal, need to read + Continue response, before continuing.
+                if(i < cmdItems.Length - 1 && cmdItems[i + 1].IsLiteral){
+                    IMAP_r response = await ReadResponseAsync(log,cancellationToken);
+                    if(response is not IMAP_r_ServerStatus){
+                            throw new Exception("Unexcpected server response.");
+                    }
 
-                SendCmdLine();
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
+                    IMAP_r_ServerStatus statusReponse = ((IMAP_r_ServerStatus)response);
+                    if(!statusReponse.IsContinue){
+                        throw new IMAP_ClientException(statusReponse);
                     }
                 }
             }
+        }
 
-            #endregion            
-
-            #region method SendCmdLine
-
-            /// <summary>
-            /// Sends next command line to IMAP server.
-            /// </summary>
-            private void SendCmdLine()
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-
-                    // Check that we have next command line.
-                    if (m_pCmdLines.Count == 0){
-                        throw new Exception("Internal error: No next IMAP command line.");
-                    }
-
-                    CmdLine cmdLine = m_pCmdLines.Dequeue();
-
-                    // Log
-                    m_pImapClient.LogAddWrite(cmdLine.Data.Length,cmdLine.LogText);
-
-                    // Start command sending.
-                    m_pImapClient.TcpStream.BeginWrite(cmdLine.Data,0,cmdLine.Data.Length,this.ProcessCmdLineSendResult,null);                    
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient?.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
+        #endregion
+             
+        #region method SendCommandLineAsync
+         
+        /// <summary>
+        /// Sends a single IMAP command-line fragment to the server. The fragment must
+        /// already be terminated with a CRLF sequence (<c>\r\n</c>). This method is
+        /// used for command segments that do not contain literal payloads.
+        /// </summary>
+        /// <param name="cmdLine">
+        /// The IMAP command-line text to send. The value must end with a CRLF
+        /// terminator and must not contain literal payload bytes.
+        /// </param>
+        /// <param name="log">
+        /// When true, the command-line fragment is written to the protocol log. Any
+        /// sensitive values (such as credentials in the LOGIN command) must already be
+        /// masked by the caller before invoking this method.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous write operation.
+        /// </param>
+        /// <returns>
+        /// A <see cref="ValueTask"/> representing the asynchronous write operation.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="cmdLine"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="cmdLine"/> does not end with the required CRLF
+        /// terminator.
+        /// </exception>
+        private async ValueTask SendCommandLineAsync(string cmdLine,bool log,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
             }
+            ArgumentNullException.ThrowIfNull(cmdLine);
+            if(!cmdLine.EndsWith("\r\n")){
+                throw new ArgumentException("Argument cmdLine does not end with CRLF",nameof(cmdLine));
+            }   
 
-            #endregion
-
-            #region method ProcessCmdLineSendResult
-
-            /// <summary>
-            /// Processes command line sending result.
-            /// </summary>
-            /// <param name="ar">Asynchronous result.</param>
-            private void ProcessCmdLineSendResult(IAsyncResult ar)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-
-                    m_pImapClient.TcpStream.EndWrite(ar);
-
-                    ReadFinalResponseAsyncOP args = new ReadFinalResponseAsyncOP(m_pCallback);
-                    args.CompletedAsync += delegate(object? sender,EventArgs<ReadFinalResponseAsyncOP> e){
-                        try{
-                            ArgumentNullException.ThrowIfNull(args.FinalResponse);
-
-                            // Command failed.
-                            if (args.Error != null){
-                                m_pException = e.Value.Error;
-                                SetState(AsyncOP_State.Completed);
-                            }
-                            else{
-                                // We must send next command line of multi-line command line.
-                                // Send only if we have any available, otherwise return reponse to user.
-                                if(args.FinalResponse.IsContinue && m_pCmdLines.Count > 0){
-                                    SendCmdLine();
-                                }
-                                else{
-                                    m_pFinalResponse = (IMAP_r_ServerStatus)args.FinalResponse;
-                                    SetState(AsyncOP_State.Completed);
-                                }
-                            }                            
-                        }
-                        finally{
-                            args.Dispose();
-                        }
-                    };
-                    // Read final response completed synchronously.
-                    if(!m_pImapClient.ReadFinalResponseAsync(args)){
-                        try{
-                            // Fetch failed.
-                            if(args.Error != null){
-                                m_pException = args.Error;
-                            }
-                            else{
-                                m_pFinalResponse = args.FinalResponse;
-                            }
-
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        finally{
-                            args.Dispose();
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient?.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
+            if(log){
+                LogAddWrite(Encoding.UTF8.GetByteCount(cmdLine),cmdLine.TrimEnd());
             }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<SendCmdAndReadRespAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<SendCmdAndReadRespAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
+            
+            await this.TcpStream.WriteLineAsync(cmdLine,cancellationToken);
         }
 
         #endregion
 
+        #region method ReadFinalResponseAsync
+
         /// <summary>
-        /// Sends IMAP command to server and reads server responses.
+        /// Reads IMAP server responses until a tagged <see cref="IMAP_r_ServerStatus"/>
+        /// response is encountered. This overload does not provide a FETCH store‑stream
+        /// callback and therefore uses the client’s default storage mechanism for any
+        /// literal‑based FETCH data items.
         /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="SendCmdAndReadRespAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any oth the arguments has invalid value.</exception>
-        private bool SendCmdAndReadRespAsync(SendCmdAndReadRespAsyncOP op)
+        /// <param name="log">
+        /// When true, each response line read from the server is written to the
+        /// protocol log.
+        /// </param>
+        /// <param name="callback">
+        /// Optional callback invoked for each untagged non‑FETCH response received
+        /// while waiting for the final server status.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous read operation.
+        /// </param>
+        /// <returns>
+        /// The final tagged <see cref="IMAP_r_ServerStatus"/> response returned by the
+        /// server, indicating whether the command succeeded (<c>OK</c>), failed
+        /// (<c>NO</c>), or was rejected (<c>BAD</c>).
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        private ValueTask<IMAP_r_ServerStatus> ReadFinalResponseAsync(bool log,EventHandler<IMAP_r_u>? callback,CancellationToken cancellationToken = default)
         {
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
+            return ReadFinalResponseAsync(log,callback,null,cancellationToken);
+        }
+
+                /// <summary>
+        /// Reads IMAP server responses until a tagged <see cref="IMAP_r_ServerStatus"/>
+        /// response is encountered. This method is used to obtain the final completion
+        /// status of a command after all intermediate untagged responses have been
+        /// processed.
+        /// </summary>
+        /// <param name="log">
+        /// When true, each response line read from the server is written to the
+        /// protocol log. The logging behavior is identical to that of
+        /// <see cref="ReadResponseAsync(bool, CancellationToken)"/>.
+        /// </param>
+        /// <param name="callback">
+        /// Optional callback invoked for each untagged non‑FETCH response received
+        /// while waiting for the final server status. This includes unsolicited
+        /// responses such as <c>EXISTS</c>, <c>EXPUNGE</c>, and <c>FLAGS</c>.
+        /// </param>
+        /// <param name="fetchGetStoreStreamCallback">
+        /// Optional callback invoked when a FETCH response requires a storage stream
+        /// for a literal‑based data item (for example <c>RFC822</c>, <c>RFC822.HEADER</c>,
+        /// <c>RFC822.TEXT</c>, <c>BODY[]</c>, or <c>BODY[section]</c>). The callback
+        /// allows the caller to supply a stream into which the literal payload will be
+        /// written. If not provided, the client uses its default storage mechanism.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous read operation.
+        /// </param>
+        /// <returns>
+        /// The final tagged <see cref="IMAP_r_ServerStatus"/> response returned by the
+        /// server, indicating whether the command succeeded (<c>OK</c>), failed
+        /// (<c>NO</c>), or was rejected (<c>BAD</c>).
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the client instance has already been disposed.
+        /// </exception>
+        private async ValueTask<IMAP_r_ServerStatus> ReadFinalResponseAsync(bool log,EventHandler<IMAP_r_u>? callback,EventHandler<IMAP_e_Fetch_GetStoreStream>? fetchGetStoreStreamCallback,CancellationToken cancellationToken = default)
+        {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
             }
 
-            return op.Start(this);
+            while(true){
+                IMAP_r r = await ReadResponseAsync(log,fetchGetStoreStreamCallback,cancellationToken);                
+                if(r is IMAP_r_ServerStatus){
+                    return (IMAP_r_ServerStatus)r;
+                }
+                if(r is IMAP_r_u u && callback != null){
+                    callback(this,u);
+                }
+            }
         }
 
         #endregion
 
         #region method ReadResponseAsync
 
-        #region class ReadResponseAsyncOP
+        /// <summary>
+        /// Reads a single IMAP server response line and returns the corresponding
+        /// <see cref="IMAP_r"/> object. This overload does not provide a FETCH
+        /// store‑stream callback and therefore uses the client’s default storage
+        /// mechanism for any literal‑based FETCH data items.
+        /// </summary>
+        /// <param name="log">
+        /// When true, the received response line is written to the protocol log.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous read operation.
+        /// </param>
+        /// <returns>
+        /// A <see cref="IMAP_r"/> instance representing the server response. This may
+        /// be an untagged response (<see cref="IMAP_r_u"/>), a continuation response
+        /// (<c>+</c>), or a tagged completion response
+        /// (<see cref="IMAP_r_ServerStatus"/>).
+        /// </returns>
+        private ValueTask<IMAP_r> ReadResponseAsync(bool log,CancellationToken cancellationToken = default)
+        {
+            return ReadResponseAsync(log,null,cancellationToken);
+        }
 
         /// <summary>
-        /// This class represents <see cref="IMAP_Client.ReadResponseAsync"/> asynchronous operation.
+        /// Reads a single IMAP server response line and returns the corresponding
+        /// <see cref="IMAP_r"/> object. This method handles all untagged, continuation,
+        /// and completion responses defined in RFC 3501, including FETCH responses
+        /// that may contain literal data.
         /// </summary>
-        private class ReadResponseAsyncOP : IDisposable,IAsyncOP
+        /// <param name="log">
+        /// When true, the received response line is written to the protocol log.
+        /// </param>
+        /// <param name="fetchGetStoreStreamCallback">
+        /// Optional callback invoked when a FETCH response requires a storage stream
+        /// for a literal‑based data item (such as <c>RFC822</c>, <c>RFC822.HEADER</c>,
+        /// <c>RFC822.TEXT</c>, <c>BODY[]</c>, or <c>BODY[section]</c>). The callback
+        /// allows the caller to supply a destination stream into which the literal
+        /// payload will be written. If not provided, the client uses its default
+        /// storage mechanism.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A token that may be used to cancel the asynchronous read operation.
+        /// </param>
+        /// <returns>
+        /// A parsed <see cref="IMAP_r"/> instance representing the server response.
+        /// This may be an untagged response (<see cref="IMAP_r_u"/>), a continuation
+        /// response (<c>+</c>), or a tagged completion response
+        /// (<see cref="IMAP_r_ServerStatus"/>).
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the client instance has already been disposed.
+        /// </exception>
+        /// <exception cref="IOException">
+        /// Thrown if the server closes the connection unexpectedly.
+        /// </exception>
+        private async ValueTask<IMAP_r> ReadResponseAsync(bool log,EventHandler<IMAP_e_Fetch_GetStoreStream>? fetchGetStoreStreamCallback,CancellationToken cancellationToken = default)
         {
-            private object                       m_pLock         = new object();
-            private AsyncOP_State                m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?                   m_pException    = null;
-            private IMAP_r?                      m_pResponse     = null;
-            private IMAP_Client?                 m_pImapClient   = null;
-            private bool                         m_RiseCompleted = false;
-            private SmartStream.ReadLineAsyncOP? m_pReadLineOP   = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            public ReadResponseAsyncOP()
-            {                
-            }
-                        
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException  = null;
-                m_pImapClient = null;
-                m_pResponse   = null;
-                if(m_pReadLineOP != null){
-                    m_pReadLineOP.Dispose();
-                }
-                m_pReadLineOP = null;
-
-                this.CompletedAsync = null;
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
             }
 
-            #endregion
-                                    
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                ArgumentNullException.ThrowIfNull(owner.TcpStream);
-
-                m_pImapClient = owner;
-
-                m_pReadLineOP = new SmartStream.ReadLineAsyncOP(new byte[m_pImapClient.Settings.ResponseLineSize],SizeExceededAction.JunkAndThrowException);
-                m_pReadLineOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadLineAsyncOP>>(m_pReadLineOP_Completed);
-
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    // Read line completed synchronously.
-                    if(owner.TcpStream.ReadLine(m_pReadLineOP,true)){
-                        ReadLineCompleted(m_pReadLineOP);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
+            ReadLineResult responseline = await this.TcpStream.ReadLineAsync(m_LineReadBuffer,SizeExceededAction.JunkAndThrowException,cancellationToken);
+            // Server closed connection.
+            if(responseline.BytesInBuffer == 0){
+                throw new IOException("IMAP server closed connection.");
             }
+            else{
+                string  responseLine = responseline.LineUtf8 ?? "";
+                IMAP_r? response     = null;
 
-            #endregion
+                LogAddRead(responseline.BytesInBuffer,responseLine);
 
-            #region method Reuse
+                var imapReader = new _IMAP_Reader(responseLine,m_LineReadBuffer,this);
 
-            /// <summary>
-            /// Prepares this class for reuse.
-            /// </summary>
-            /// <exception cref="InvalidOperationException">Is raised when this is not valid state.</exception>
-            public void Reuse()
-            {
-                if(m_State != AsyncOP_State.Completed){
-                    throw new InvalidOperationException("Reuse is valid only in Completed state.");
-                }
+                // Untagged response.
+                if(responseLine.StartsWith("*")){
+                    string[] parts = responseLine.Split(new char[]{' '},4);
+                    string   word  = responseLine.Split(' ')[1];
 
-                m_State         = AsyncOP_State.WaitingForStart;
-                m_pException    = null;
-                m_pResponse     = null;
-                m_pImapClient   = null;
-                m_RiseCompleted = false;
-            }
+                    #region Untagged status responses. RFC 3501 7.1.
 
-            #endregion
+                    // OK,NO,BAD,PREAUTH,BYE
 
+                    if(word.Equals("OK",StringComparison.OrdinalIgnoreCase)){
+                        IMAP_r_u_ServerStatus statusResponse = IMAP_r_u_ServerStatus.Parse(responseLine);
+                        response = statusResponse;
 
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method m_pReadLineOP_Completed
-
-            /// <summary>
-            /// Is called when TcpStream.ReadLine has completed.
-            /// </summary>
-            /// <param name="sender">Sender.</param>
-            /// <param name="e">Event data.</param>
-            private void m_pReadLineOP_Completed(object? sender,EventArgs<SmartStream.ReadLineAsyncOP> e)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pReadLineOP);
-
-                    ReadLineCompleted(m_pReadLineOP);
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-            #region method ReadLineCompleted
-
-            /// <summary>
-            /// Is called when read line has completed.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-            private void ReadLineCompleted(SmartStream.ReadLineAsyncOP op)
-            {
-                if(op == null){
-                    throw new ArgumentNullException("op");
-                }
-
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-
-                    // Line reading failed, we are done.
-                    if (op.Error != null){
-                        m_pException = op.Error;
-                    }
-                    // Remote host shut down socket.                        
-                    else if(op.BytesInBuffer == 0){
-                        m_pException = new IOException("The remote host shut-down socket.");
-                    }
-                    // Line reading succeeded.
-                    else{
-                        string? responseLine = op.LineUtf8;
-                        if(responseLine == null){
-                            throw new ArgumentException("Invalid IMAP response.");
-                        }
-
-                        // Log.
-                        m_pImapClient.LogAddRead(op.BytesInBuffer,responseLine);
-
-                        // Untagged response.
-                        if(responseLine.StartsWith("*")){
-                            string[] parts = responseLine.Split(new char[]{' '},4);
-                            string   word  = responseLine.Split(' ')[1];
-
-                            #region Untagged status responses. RFC 3501 7.1.
-
-                            // OK,NO,BAD,PREAUTH,BYE
-
-                            if(word.Equals("OK",StringComparison.InvariantCultureIgnoreCase)){
-                                IMAP_r_u_ServerStatus statusResponse = IMAP_r_u_ServerStatus.Parse(responseLine);
-                                m_pResponse = statusResponse;
-
-                                // Process optional response-codes(7.2). ALERT,BADCHARSET,CAPABILITY,PARSE,PERMANENTFLAGS,READ-ONLY,
-                                // READ-WRITE,TRYCREATE,UIDNEXT,UIDVALIDITY,UNSEEN                                
-                                if(statusResponse.OptionalResponse != null){
-                                    if(statusResponse.OptionalResponse is IMAP_t_orc_PermanentFlags){
-                                        if(m_pImapClient.SelectedFolder != null){
-                                            m_pImapClient.SelectedFolder.SetPermanentFlags(((IMAP_t_orc_PermanentFlags)statusResponse.OptionalResponse).Flags);
-                                        }
-                                    }
-                                    else if(statusResponse.OptionalResponse is IMAP_t_orc_ReadOnly){
-                                        if(m_pImapClient.SelectedFolder != null){
-                                            m_pImapClient.SelectedFolder.SetReadOnly(true);
-                                        }
-                                    }
-                                    else if(statusResponse.OptionalResponse is IMAP_t_orc_ReadWrite){
-                                        if(m_pImapClient.SelectedFolder != null){
-                                            m_pImapClient.SelectedFolder.SetReadOnly(true);
-                                        }
-                                    }
-                                    else if(statusResponse.OptionalResponse is IMAP_t_orc_UidNext){
-                                        if(m_pImapClient.SelectedFolder != null){
-                                            m_pImapClient.SelectedFolder.SetUidNext(((IMAP_t_orc_UidNext)statusResponse.OptionalResponse).UidNext);
-                                        }
-                                    }
-                                    else if(statusResponse.OptionalResponse is IMAP_t_orc_UidValidity){
-                                        if(m_pImapClient.SelectedFolder != null){
-                                            m_pImapClient.SelectedFolder.SetUidValidity(((IMAP_t_orc_UidValidity)statusResponse.OptionalResponse).Uid);
-                                        }
-                                    }
-                                    else if(statusResponse.OptionalResponse is IMAP_t_orc_Unseen){
-                                        if(m_pImapClient.SelectedFolder != null){
-                                            m_pImapClient.SelectedFolder.SetFirstUnseen(((IMAP_t_orc_Unseen)statusResponse.OptionalResponse).SeqNo);
-                                        }
-                                    }
-                                    // We don't care about other response codes.                            
-                                }
-
-                                m_pImapClient.OnUntaggedStatusResponse((IMAP_r_u)m_pResponse);
-                            }
-                            else if(word.Equals("NO",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_ServerStatus.Parse(responseLine);
-
-                                m_pImapClient.OnUntaggedStatusResponse((IMAP_r_u)m_pResponse);
-                            }
-                            else if(word.Equals("BAD",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_ServerStatus.Parse(responseLine);
-
-                                m_pImapClient.OnUntaggedStatusResponse((IMAP_r_u)m_pResponse);
-                            }
-                            else if(word.Equals("PREAUTH",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_ServerStatus.Parse(responseLine);
-
-                                m_pImapClient.OnUntaggedStatusResponse((IMAP_r_u)m_pResponse);
-                            }
-                            else if(word.Equals("BYE",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_ServerStatus.Parse(responseLine);
-
-                                m_pImapClient.OnUntaggedStatusResponse((IMAP_r_u)m_pResponse);
-                            }
-
-                            #endregion
-
-                            #region Untagged server and mailbox status. RFC 3501 7.2.
-
-                            // CAPABILITY,LIST,LSUB,STATUS,SEARCH,FLAGS
-
-                            #region CAPABILITY
-
-                            else if(word.Equals("CAPABILITY",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Capability.Parse(responseLine); 
-                               
-                                // Cache IMAP server capabilities.
-                                m_pImapClient.m_pCapabilities = new List<string>();
-                                m_pImapClient.m_pCapabilities.AddRange(((IMAP_r_u_Capability)m_pResponse).Capabilities);
-                            }
-
-                            #endregion
-
-                            #region LIST
-
-                            else if(word.Equals("LIST",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_List.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region LSUB
-
-                            else if(word.Equals("LSUB",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_LSub.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region STATUS
-
-                            else if(word.Equals("STATUS",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Status.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region SEARCH
-
-                            else if(word.Equals("SEARCH",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Search.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region FLAGS
-
-                            else if(word.Equals("FLAGS",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Flags.Parse(responseLine);
-
-                                if(m_pImapClient.m_pSelectedFolder != null){
-                                    m_pImapClient.m_pSelectedFolder.SetFlags(((IMAP_r_u_Flags)m_pResponse).Flags);
+                        // Process optional response-codes(7.2). ALERT,BADCHARSET,CAPABILITY,PARSE,PERMANENTFLAGS,READ-ONLY,
+                        // READ-WRITE,TRYCREATE,UIDNEXT,UIDVALIDITY,UNSEEN                                
+                        if(statusResponse.OptionalResponse != null){
+                            if(statusResponse.OptionalResponse is IMAP_t_orc_PermanentFlags){
+                                if(this.SelectedFolder != null){
+                                    this.SelectedFolder.SetPermanentFlags(((IMAP_t_orc_PermanentFlags)statusResponse.OptionalResponse).Flags);
                                 }
                             }
-
-                            #endregion
-
-                            #endregion
-
-                            #region Untagged mailbox size. RFC 3501 7.3.
-
-                            // EXISTS,RECENT
-
-                            else if(Net_Utils.IsInteger(word) && parts[2].Equals("EXISTS",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Exists.Parse(responseLine);
-
-                                if(m_pImapClient.m_pSelectedFolder != null){
-                                    m_pImapClient.m_pSelectedFolder.SetMessagesCount(((IMAP_r_u_Exists)m_pResponse).MessageCount);
+                            else if(statusResponse.OptionalResponse is IMAP_t_orc_ReadOnly){
+                                if(this.SelectedFolder != null){
+                                    this.SelectedFolder.SetReadOnly(true);
                                 }
                             }
-                            else if(Net_Utils.IsInteger(word) && parts[2].Equals("RECENT",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Recent.Parse(responseLine);
-
-                                if(m_pImapClient.m_pSelectedFolder != null){
-                                    m_pImapClient.m_pSelectedFolder.SetRecentMessagesCount(((IMAP_r_u_Recent)m_pResponse).MessageCount);
+                            else if(statusResponse.OptionalResponse is IMAP_t_orc_ReadWrite){
+                                if(this.SelectedFolder != null){
+                                    this.SelectedFolder.SetReadOnly(true);
                                 }
                             }
-                                                
-                            #endregion
-
-                            #region Untagged message status. RFC 3501 7.4.
-
-                            // EXPUNGE,FETCH
-
-                            else if(Net_Utils.IsInteger(word) && parts[2].Equals("EXPUNGE",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Expunge.Parse(responseLine);
-                                m_pImapClient.OnMessageExpunged((IMAP_r_u_Expunge)m_pResponse);
+                            else if(statusResponse.OptionalResponse is IMAP_t_orc_UidNext){
+                                if(this.SelectedFolder != null){
+                                    this.SelectedFolder.SetUidNext(((IMAP_t_orc_UidNext)statusResponse.OptionalResponse).UidNext);
+                                }
                             }
-                            else if(Net_Utils.IsInteger(word) && parts[2].Equals("FETCH",StringComparison.InvariantCultureIgnoreCase)){
-                                // FETCH parsing may complete asynchornously, the method FetchParsingCompleted is called when parsing has completed.
-
-                                IMAP_r_u_Fetch fetch = new IMAP_r_u_Fetch(1);                                
-                                m_pResponse = fetch;
-                                fetch.ParseAsync(m_pImapClient,responseLine,this.FetchParsingCompleted);
-
-                                // Return skips SetState(AsyncOP_State.Completed), it will be called when fetch has completed.
-                                return;
+                            else if(statusResponse.OptionalResponse is IMAP_t_orc_UidValidity){
+                                if(this.SelectedFolder != null){
+                                    this.SelectedFolder.SetUidValidity(((IMAP_t_orc_UidValidity)statusResponse.OptionalResponse).Uid);
+                                }
                             }
-
-                            #endregion
-
-                            #region Untagged acl realted. RFC 4314.
-
-                            else if(word.Equals("ACL",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Acl.Parse(responseLine);
+                            else if(statusResponse.OptionalResponse is IMAP_t_orc_Unseen){
+                                if(this.SelectedFolder != null){
+                                    this.SelectedFolder.SetFirstUnseen(((IMAP_t_orc_Unseen)statusResponse.OptionalResponse).SeqNo);
+                                }
                             }
-                            else if(word.Equals("LISTRIGHTS",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_ListRights.Parse(responseLine);
-                            }
-                            else if(word.Equals("MYRIGHTS",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_MyRights.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region Untagged quota related. RFC 2087.
-
-                            else if(word.Equals("QUOTA",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Quota.Parse(responseLine);
-                            }
-                            else if(word.Equals("QUOTAROOT",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_QuotaRoot.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region Untagged namespace related. RFC 2342.
-
-                            else if(word.Equals("NAMESPACE",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Namespace.Parse(responseLine);
-                            }
-
-                            #endregion
-
-                            #region Untagged enable related. RFC 5161.
-
-                            else if(word.Equals("ENABLED",StringComparison.InvariantCultureIgnoreCase)){
-                                m_pResponse = IMAP_r_u_Enable.Parse(responseLine);
-                            }
-
-                            #endregion
-                            
-                            // Raise event 'UntaggedResponse'.
-                            if (m_pResponse != null){
-                                m_pImapClient.OnUntaggedResponse((IMAP_r_u)m_pResponse);
-                            }
+                            // We don't care about other response codes.                            
                         }
-                        // Command continuation response.
-                        else if(responseLine.StartsWith("+")){
-                            m_pResponse = IMAP_r_ServerStatus.Parse(responseLine);
-                        }
-                        // Completion status response.
-                        else{
-                            // Command response reading has completed.
-                            m_pResponse = IMAP_r_ServerStatus.Parse(responseLine);
-                        }
-                    }                    
-                }
-                catch(Exception x){
-                    m_pException = x;
-                }
 
-                SetState(AsyncOP_State.Completed);
-            }
-
-            #endregion
-
-
-            #region method FetchParsingCompleted
-
-            /// <summary>
-            /// This method is called when FETCH parsing has completed.
-            /// </summary>
-            /// <param name="sender">Sender.</param>
-            /// <param name="e">Event data.</param>
-            private void FetchParsingCompleted(object? sender,EventArgs<Exception?> e)
-            {             
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-
-                    // Fetch parsing failed.
-                    if (e.Value != null){
-                        m_pException = e.Value;
+                        OnUntaggedStatusResponse((IMAP_r_u)response);
                     }
+                    else if(word.Equals("NO",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_ServerStatus.Parse(responseLine);
+
+                        OnUntaggedStatusResponse((IMAP_r_u)response);
+                    }
+                    else if(word.Equals("BAD",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_ServerStatus.Parse(responseLine);
+
+                        OnUntaggedStatusResponse((IMAP_r_u)response);
+                    }
+                    else if(word.Equals("PREAUTH",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_ServerStatus.Parse(responseLine);
+
+                        OnUntaggedStatusResponse((IMAP_r_u)response);
+                    }
+                    else if(word.Equals("BYE",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_ServerStatus.Parse(responseLine);
+
+                        OnUntaggedStatusResponse((IMAP_r_u)response);
+                    }
+
+                    #endregion
+
+                    #region Untagged server and mailbox status. RFC 3501 7.2.
+
+                    // CAPABILITY,LIST,LSUB,STATUS,SEARCH,FLAGS
+
+                    #region CAPABILITY
+
+                    else if(word.Equals("CAPABILITY",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Capability.Parse(responseLine); 
+                       
+                        // Cache IMAP server capabilities.
+                        m_pCapabilities = new List<string>();
+                        m_pCapabilities.AddRange(((IMAP_r_u_Capability)response).Capabilities);
+                    }
+
+                    #endregion
+
+                    #region LIST
+
+                    else if(word.Equals("LIST",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_List.Parse(imapReader,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region LSUB
+
+                    else if(word.Equals("LSUB",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_LSub.Parse(imapReader,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region STATUS
+
+                    else if(word.Equals("STATUS",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_Status.Parse(imapReader,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region SEARCH
+
+                    else if(word.Equals("SEARCH",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Search.Parse(responseLine);
+                    }
+
+                    #endregion
+
+                    #region FLAGS
+
+                    else if(word.Equals("FLAGS",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Flags.Parse(responseLine);
+
+                        if(m_pSelectedFolder != null){
+                            m_pSelectedFolder.SetFlags(((IMAP_r_u_Flags)response).Flags);
+                        }
+                    }
+
+                    #endregion
+
+                    #endregion
+
+                    #region Untagged mailbox size. RFC 3501 7.3.
+
+                    // EXISTS,RECENT
+
+                    else if(Net_Utils.IsInteger(word) && parts[2].Equals("EXISTS",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Exists.Parse(responseLine);
+
+                        if(m_pSelectedFolder != null){
+                            m_pSelectedFolder.SetMessagesCount(((IMAP_r_u_Exists)response).MessageCount);
+                        }
+                    }
+                    else if(Net_Utils.IsInteger(word) && parts[2].Equals("RECENT",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Recent.Parse(responseLine);
+
+                        if(m_pSelectedFolder != null){
+                            m_pSelectedFolder.SetRecentMessagesCount(((IMAP_r_u_Recent)response).MessageCount);
+                        }
+                    }
+                                        
+                    #endregion
+
+                    #region Untagged message status. RFC 3501 7.4.
+
+                    // EXPUNGE,FETCH
+
+                    else if(Net_Utils.IsInteger(word) && parts[2].Equals("EXPUNGE",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Expunge.Parse(responseLine);
+                        OnMessageExpunged((IMAP_r_u_Expunge)response);
+                    }
+                    else if(Net_Utils.IsInteger(word) && parts[2].Equals("FETCH",StringComparison.InvariantCultureIgnoreCase)){                        
+                        response = await IMAP_r_u_Fetch.ParseAsync(imapReader,fetchGetStoreStreamCallback,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region Untagged acl realted. RFC 4314.
+
+                    else if(word.Equals("ACL",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_Acl.ParseAsync(imapReader,cancellationToken);
+                    }
+                    else if(word.Equals("LISTRIGHTS",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_ListRights.ParseAsync(imapReader,cancellationToken);
+                    }
+                    else if(word.Equals("MYRIGHTS",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_MyRights.Parse(imapReader,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region Untagged quota related. RFC 2087.
+
+                    else if(word.Equals("QUOTA",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_Quota.Parse(imapReader,cancellationToken);
+                    }
+                    else if(word.Equals("QUOTAROOT",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_QuotaRoot.Parse(imapReader,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region Untagged namespace related. RFC 2342.
+
+                    else if(word.Equals("NAMESPACE",StringComparison.InvariantCultureIgnoreCase)){
+                        response = await IMAP_r_u_Namespace.Parse(imapReader,cancellationToken);
+                    }
+
+                    #endregion
+
+                    #region Untagged enable related. RFC 5161.
+
+                    else if(word.Equals("ENABLED",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Enabled.Parse(responseLine);
+                    }
+
+                    #endregion
+
+                    else if(word.Equals("BYE",StringComparison.InvariantCultureIgnoreCase)){
+                        response = IMAP_r_u_Bye.Parse(responseLine);
+                    }
+                    
+                    // TODO: Unknown
 
                     // Raise event 'UntaggedResponse'.
-                    if(m_pResponse != null){
-                        m_pImapClient.OnUntaggedResponse((IMAP_r_u)m_pResponse);
+                    if(response != null){
+                        OnUntaggedResponse((IMAP_r_u)response);
                     }
                 }
-                catch(Exception x){
-                    m_pException = x;
+                // Command continuation response.
+                else if(responseLine.StartsWith("+")){
+                    response = IMAP_r_ServerStatus.Parse(responseLine);
                 }
+                // Completion status response.
+                else{
+                    // Command response reading has completed.
+                    response = IMAP_r_ServerStatus.Parse(responseLine);
+                }                
 
-                SetState(AsyncOP_State.Completed);
+                return response!;
             }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r? Response
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<ReadResponseAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<ReadResponseAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
         }
 
         #endregion
-
-        /// <summary>
-        /// Starts reading IMAP server response.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="ReadResponseAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any oth the arguments has invalid value.</exception>
-        private bool ReadResponseAsync(ReadResponseAsyncOP op)
-        {
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
- 
-        #region method ReadFinalResponseAsync
-
-        #region class ReadFinalResponseAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.ReadFinalResponseAsyncOP"/> asynchronous operation.
-        /// </summary>
-        private class ReadFinalResponseAsyncOP : IDisposable,IAsyncOP
-        {
-            private object                             m_pLock          = new object();
-            private AsyncOP_State                      m_State          = AsyncOP_State.WaitingForStart;
-            private Exception?                         m_pException     = null;
-            private IMAP_r_ServerStatus?               m_pFinalResponse = null;
-            private IMAP_Client?                       m_pImapClient    = null;
-            private bool                               m_RiseCompleted  = false;
-            private EventHandler<EventArgs<IMAP_r_u>>? m_pCallback      = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="callback">Optional callback to be called for each received untagged response.</param>
-            public ReadFinalResponseAsyncOP(EventHandler<EventArgs<IMAP_r_u>>? callback)
-            {
-                m_pCallback = callback;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException     = null;
-                m_pImapClient    = null;
-                m_pFinalResponse = null;
-                m_pCallback      = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
-                
-                m_pImapClient = owner;
-                
-                SetState(AsyncOP_State.Active);
-
-                try{                    
-                    ReadResponseAsyncOP args = new ReadResponseAsyncOP();
-                    args.CompletedAsync += delegate(object? sender,EventArgs<ReadResponseAsyncOP> e){
-                        try{
-                            ResponseReadingCompleted(e.Value);
-                            args.Reuse();
-
-                            // Read responses while we get final response.
-                            while(m_State == AsyncOP_State.Active && !m_pImapClient.ReadResponseAsync(args)){
-                                ResponseReadingCompleted(args);
-                                args.Reuse();
-                            }
-                        }
-                        catch(Exception x){
-                            m_pException = x;
-                            m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    };
-                    // Read responses while reading completes synchronously.
-                    while(m_State == AsyncOP_State.Active && !m_pImapClient.ReadResponseAsync(args)){
-                        ResponseReadingCompleted(args);
-                        args.Reuse();
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pImapClient.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ResponseReadingCompleted
-
-            /// <summary>
-            /// Is called when IMAP server response reading has completed.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            /// <exception cref="ReadResponseAsyncOP">Is raiswed when <b>op</b> is null reference.</exception>
-            private void ResponseReadingCompleted(ReadResponseAsyncOP op)
-            {
-                if(op == null){
-                    throw new ArgumentNullException("op");
-                }
-
-                try{
-                    // Response reading failed.
-                    if(op.Error != null){
-                        m_pException = op.Error;
-                        SetState(AsyncOP_State.Completed);
-                    }
-                    else{
-                        // We are done, we got final response.
-                        if(op.Response is IMAP_r_ServerStatus){
-                            m_pFinalResponse = (IMAP_r_ServerStatus)op.Response;
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        else{
-                            if(m_pCallback != null && op.Response != null){
-                                m_pCallback(this,new EventArgs<IMAP_r_u>((IMAP_r_u)op.Response));
-                            }
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Returns IMAP server final response.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public IMAP_r_ServerStatus? FinalResponse
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Response' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pFinalResponse; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<ReadFinalResponseAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<ReadFinalResponseAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Starts reading IMAP server final(OK/BAD/NO/+) response.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="ReadFinalResponseAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any oth the arguments has invalid value.</exception>
-        private bool ReadFinalResponseAsync(ReadFinalResponseAsyncOP op)
-        {            
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-                        
-            return op.Start(this);
-        }
-
-        #endregion
-                
-        #region method ReadStringLiteralAsync
-
-        #region class ReadStringLiteralAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="IMAP_Client.ReadStringLiteralAsync"/> asynchronous operation.
-        /// </summary>
-        internal class ReadStringLiteralAsyncOP : IDisposable,IAsyncOP
-        {
-            private object         m_pLock         = new object();
-            private AsyncOP_State  m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?     m_pException    = null;
-            private Stream         m_pStream;
-            private int            m_LiteralSize   = 0;
-            private IMAP_Client?   m_pImapClient   = null;
-            private bool           m_RiseCompleted = false;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="stream">Store stream.</param>
-            /// <param name="literalSize">String literal size in bytes.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-            public ReadStringLiteralAsyncOP(Stream stream,int literalSize)
-            {
-                if(stream == null){
-                    throw new ArgumentNullException("stream");
-                }
-
-                m_pStream     = stream;
-                m_LiteralSize = literalSize;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-
-                m_pException  = null;
-                m_pImapClient = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner IMAP client.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            public bool Start(IMAP_Client owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                ArgumentNullException.ThrowIfNull(owner.TcpStream);
-
-                m_pImapClient = owner;
-
-                SetState(AsyncOP_State.Active);
-
-                owner.TcpStream.BeginReadFixedCount(m_pStream,m_LiteralSize,this.ReadingCompleted,null);
-
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ReadingCompleted
-
-            /// <summary>
-            /// This method is called when string-literal reading has completed.
-            /// </summary>
-            /// <param name="result">Asynchronous result.</param>
-            private void ReadingCompleted(IAsyncResult result)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pImapClient);
-                    ArgumentNullException.ThrowIfNull(m_pImapClient.TcpStream);
-
-                    m_pImapClient.TcpStream.EndReadFixedCount(result);
-
-                    // Log
-                    m_pImapClient.LogAddRead(m_LiteralSize,"Readed string-literal " + m_LiteralSize.ToString() + " bytes.");
-                }
-                catch(Exception x){
-                    m_pException = x;
-                }
-
-                SetState(AsyncOP_State.Completed);
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Gets literal stream.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Stream? Stream
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pStream; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<ReadStringLiteralAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<ReadStringLiteralAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Starts reading string-literal from IMAP server.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="ReadStringLiteralAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any oth the arguments has invalid value.</exception>
-        internal bool ReadStringLiteralAsync(ReadStringLiteralAsyncOP op)
-        {
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
+        
 
         #region method SupportsCapability
 
@@ -9889,7 +9138,7 @@ namespace LumiSoft.Net.IMAP.Client
             }
             else{
                 foreach(string c in m_pCapabilities){
-                    if(string.Equals(c,capability,StringComparison.InvariantCultureIgnoreCase)){
+                    if(string.Equals(c.Split('=')[0],capability,StringComparison.OrdinalIgnoreCase)){
                         return true;
                     }
                 }
@@ -9904,10 +9153,31 @@ namespace LumiSoft.Net.IMAP.Client
         #region Properties implementation
 
         /// <summary>
-        /// Gets session authenticated user identity, returns null if not authenticated.
+        /// Gets the identity of the user authenticated for the current IMAP session,
+        /// or <c>null</c> if no authentication has been performed.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and IMAP client is not connected.</exception>
+        /// <remarks>
+        /// <para>
+        /// The value is set when an authentication command (such as <c>LOGIN</c> or a
+        /// SASL mechanism) completes successfully. Until that point, the property
+        /// remains <c>null</c>. The identity reflects the credentials used for the
+        /// session and is not modified by subsequent IMAP operations.
+        /// </para>
+        /// <para>
+        /// Accessing this property requires the client to be connected. If the client
+        /// is not connected, an <see cref="InvalidOperationException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the IMAP client has been disposed, accessing this property will throw an
+        /// <see cref="ObjectDisposedException"/>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the IMAP client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not currently connected.
+        /// </exception>
         public override GenericIdentity? AuthenticatedUserIdentity
         {
             get{ 
@@ -9918,15 +9188,36 @@ namespace LumiSoft.Net.IMAP.Client
 				    throw new InvalidOperationException("You must connect first.");
 			    }
 
-                return m_pAuthenticatedUser; 
+                return m_pAuthdUserIdentity; 
             }
         }
 
         /// <summary>
-        /// Get IMAP server greeting text.
+        /// Gets the IMAP server greeting text received immediately after the TCP
+        /// connection is established.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and IMAP client is not connected.</exception>
+        /// <remarks>
+        /// <para>
+        /// The greeting is the first line sent by the server upon connection, before
+        /// any authentication or mailbox selection occurs. It typically contains an
+        /// <c>OK</c>, <c>PREAUTH</c>, or <c>BYE</c> status along with optional
+        /// capability information or server‑specific metadata.
+        /// </para>
+        /// <para>
+        /// Accessing this property requires the client to be connected. If the client
+        /// is not connected, an <see cref="InvalidOperationException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the IMAP client has been disposed, accessing this property will throw an
+        /// <see cref="ObjectDisposedException"/>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the IMAP client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not currently connected.
+        /// </exception>
         public string GreetingText
         {
             get{ 
@@ -9942,10 +9233,36 @@ namespace LumiSoft.Net.IMAP.Client
         }
 
         /// <summary>
-        /// Get IMAP server(CAPABILITY command cached) supported capabilities.
+        /// Gets the list of IMAP protocol capabilities advertised by the server for
+        /// the current connection.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and IMAP client is not connected.</exception>
+        /// <remarks>
+        /// <para>
+        /// The capability list is populated from the server's <c>CAPABILITY</c>
+        /// response, either from the initial greeting or from an explicit
+        /// <c>CAPABILITY</c> command issued by the client. The values indicate which
+        /// IMAP extensions, authentication mechanisms, and protocol features the
+        /// server supports for the active session.
+        /// </para>
+        /// <para>
+        /// Accessing this property requires the client to be connected. If the client
+        /// is not connected, an <see cref="InvalidOperationException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the IMAP client has been disposed, accessing this property will throw an
+        /// <see cref="ObjectDisposedException"/>.
+        /// </para>
+        /// <para>
+        /// If the server has not advertised any capabilities, the property returns an
+        /// empty array rather than <c>null</c>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the IMAP client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not currently connected.
+        /// </exception>
         public string[] Capabilities
         {
             get{ 
@@ -9965,36 +9282,87 @@ namespace LumiSoft.Net.IMAP.Client
         }
 
         /// <summary>
-        /// Gets IMAP server folder separator.
+        /// Gets the list of SASL authentication mechanisms advertised by the IMAP
+        /// server for the current connection.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and IMAP client is not connected.</exception>
-        public char FolderSeparator
+        /// <remarks>
+        /// <para>
+        /// The returned array contains the SASL mechanism names extracted from
+        /// capability tokens of the form <c>AUTH=mechanism</c>. These values are
+        /// provided exactly as reported by the server and may include mechanisms such
+        /// as <c>PLAIN</c>, <c>LOGIN</c>, <c>CRAM-MD5</c>, <c>DIGEST-MD5</c>,
+        /// <c>XOAUTH2</c>, or other implementation‑specific extensions.
+        /// </para>
+        /// <para>
+        /// The list is derived from the server's <c>CAPABILITY</c> response. If the
+        /// server does not advertise any <c>AUTH=</c> tokens, the property returns an
+        /// empty array rather than <c>null</c>.
+        /// </para>
+        /// <para>
+        /// Accessing this property requires the client to be connected. If the client
+        /// is not connected, an <see cref="InvalidOperationException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the IMAP client has been disposed, accessing this property will throw an
+        /// <see cref="ObjectDisposedException"/>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the IMAP client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not currently connected.
+        /// </exception>
+        public string[] SaslAuthMethods
         {
-            get{ 
+            get{
                 if(this.IsDisposed){
                     throw new ObjectDisposedException(this.GetType().Name);
                 }
                 if(!this.IsConnected){
-				    throw new InvalidOperationException("You must connect first.");
-			    }
+                    throw new InvalidOperationException("You must connect first.");
+                }
 
-                // Empty folder name forces server to return hierarchy delimiter.
-                IMAP_r_u_List[] retVal = GetFolders("");
-                if(retVal.Length == 0){
-                    throw new Exception("Unexpected result: IMAP server didn't return LIST response for [... LIST \"\" \"\"].");
+                // Search AUTH entries.
+                List<string> retVal = new List<string>();
+                foreach(string feature in this.Capabilities){
+                    if(feature.StartsWith("AUTH=",StringComparison.OrdinalIgnoreCase)){
+                        // Syntax: AUTH=mechanism
+                        retVal.Add(feature.Substring(5).Trim());
+                    }
                 }
-                else{
-                    return retVal[0].HierarchyDelimiter;
-                }
+
+                return retVal.ToArray();
             }
         }
 
         /// <summary>
-        /// Gets selected folder. Returns null if no folder selected.
+        /// Gets the currently selected IMAP mailbox, or <c>null</c> if no mailbox
+        /// has been selected for the active session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and IMAP client is not connected.</exception>
+        /// <remarks>
+        /// <para>
+        /// The value is set when a <c>SELECT</c> or <c>EXAMINE</c> command completes
+        /// successfully. Until that point, the property remains <c>null</c>. The
+        /// returned <see cref="IMAP_Client_SelectedFolder"/> instance exposes all
+        /// server‑reported mailbox metadata and provides methods for creating
+        /// message sets within the selected mailbox.
+        /// </para>
+        /// <para>
+        /// Accessing this property requires the client to be connected. If the client
+        /// is not connected, an <see cref="InvalidOperationException"/> is thrown.
+        /// </para>
+        /// <para>
+        /// If the IMAP client has been disposed, accessing this property will throw an
+        /// <see cref="ObjectDisposedException"/>.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if the IMAP client instance has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the client is not currently connected.
+        /// </exception>
         public IMAP_Client_SelectedFolder? SelectedFolder
         {
             get{ 
@@ -10006,40 +9374,6 @@ namespace LumiSoft.Net.IMAP.Client
 			    }
 
                 return m_pSelectedFolder; 
-            }
-        }
-
-        /// <summary>
-        /// Gets active IDLE operation or null if no active IDLE operation.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this property is accessed and IMAP client is not connected.</exception>
-        public IdleAsyncOP? IdleOP
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(!this.IsConnected){
-				    throw new InvalidOperationException("You must connect first.");
-			    }
-
-                return m_pIdle; 
-            }
-        }
-
-        /// <summary>
-        /// Gets IMAP client settings.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public SettingsHolder Settings
-        {
-            get{ 
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-
-                return m_pSettings; 
             }
         }
 
@@ -10103,27 +9437,6 @@ namespace LumiSoft.Net.IMAP.Client
         {
             if(this.MessageExpunged != null){
                 this.MessageExpunged(this,new EventArgs<IMAP_r_u_Expunge>(response));
-            }
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when FETCH response parsing allows to specify stream where to store binary data.
-        /// </summary>
-        /// <remarks>Thhis event is raised for FETCH BODY[]/RFC822/RFC822.HEADER/RFC822.TEXT data-items.</remarks>
-        public event EventHandler<IMAP_Client_e_FetchGetStoreStream>? FetchGetStoreStream = null;
-
-        #region method OnFetchGetStoreStream
-
-        /// <summary>
-        /// Raises <b>FetchGetStoreStream</b> event.
-        /// </summary>
-        /// <param name="e">Event data.</param>
-        internal void OnFetchGetStoreStream(IMAP_Client_e_FetchGetStoreStream e)
-        {
-            if(this.FetchGetStoreStream != null){
-                this.FetchGetStoreStream(this,e);
             }
         }
 

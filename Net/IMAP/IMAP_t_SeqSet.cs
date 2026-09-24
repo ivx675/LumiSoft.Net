@@ -16,13 +16,53 @@ namespace LumiSoft.Net.IMAP
 	///		
 	///		NOTES:
 	///			*) comma separates sequence parts
-	///			*) * means maximum value.
+	///			*) * means last message.
 	/// </code>
 	/// </summary>
     public class IMAP_t_SeqSet
     {
         private List<Range_long> m_pSequenceParts;
-        private string           m_SequenceString = "";
+
+		/// <summary>
+		/// Default constructor.
+		/// </summary>
+		/// <param name="seqNumber">Sequence number.</param>
+		/// <exception cref="ArgumentException">Is raised when 'seqNo' is less than 1.</exception>
+		public IMAP_t_SeqSet(long seqNumber)
+        {
+			if(seqNumber < 1){
+				throw new ArgumentException("Sequence number must be >= 1.",nameof(seqNumber));
+			}
+
+            m_pSequenceParts = new List<Range_long>();
+
+			m_pSequenceParts.Add(new Range_long(seqNumber));
+        }
+
+		/// <summary>
+		/// Default constructor.
+		/// </summary>
+		/// <param name="seqNumbers">Sequence number.</param>
+		/// <exception cref="ArgumentException">Is raised when 'seqNo' is less than 1.</exception>
+		public IMAP_t_SeqSet(long[] seqNumbers)
+        {
+			if(seqNumbers == null){
+				throw new ArgumentNullException(nameof(seqNumbers));
+			}
+			if(seqNumbers.Length < 1){
+				throw new ArgumentException("Sequence numbers array can't be empty.",nameof(seqNumbers));
+			}
+
+            m_pSequenceParts = new List<Range_long>();
+
+			foreach(long seqNumber in seqNumbers){
+				if(seqNumber < 1){
+					throw new ArgumentException("Sequence number must be >= 1.",nameof(seqNumber));
+				}
+
+				m_pSequenceParts.Add(new Range_long(seqNumber));
+			}
+        }
 
         /// <summary>
         /// Default constructor.
@@ -107,7 +147,7 @@ namespace LumiSoft.Net.IMAP
                         }                        			
 					}
 					else{
-						throw new Exception("Invalid <seq-range> '" + sequenceSet + "' value !");
+						throw new ParseException("Invalid <seq-range> '" + sequenceSet + "' value !");
 					}
 				}
 				// seq-number
@@ -116,8 +156,6 @@ namespace LumiSoft.Net.IMAP
 				}
 			}
 			//-----------------------------------------------------------------------------------//
-
-            retVal.m_SequenceString = value;
 
             return retVal;
         }
@@ -152,7 +190,23 @@ namespace LumiSoft.Net.IMAP
         /// <returns>Returns this as <b>sequence-set</b> string.</returns>
         public override string ToString()
         {
-            return m_SequenceString;
+			StringBuilder retVal = new StringBuilder();
+			bool first = true;
+			foreach(Range_long r in m_pSequenceParts){
+				string start = r.Start != long.MaxValue ? r.Start.ToString() : "*";
+				string end   = r.End != long.MaxValue ? r.End.ToString() : "*";
+				if(r.Start == r.End){
+					retVal.Append(first ? start : "," + start);
+				}
+				else{
+					retVal.Append(first ? start + ":" + end : "," + start + ":" + end);
+				}
+
+				
+				first = false;
+			}
+			
+            return retVal.ToString();
         }
 
         #endregion
@@ -176,12 +230,11 @@ namespace LumiSoft.Net.IMAP
 			}
 			// Number
 			else{
-				try{
-					return Convert.ToInt64(seqNumberValue);
+				if(!long.TryParse(seqNumberValue,out long seqNo)){
+					throw new ParseException("Invalid <seq-number> '" + seqNumberValue + "' value !");
 				}
-				catch{
-					throw new Exception("Invalid <seq-number> '" + seqNumberValue + "' value !");
-				}
+
+				return seqNo;
 			}
 		}
 

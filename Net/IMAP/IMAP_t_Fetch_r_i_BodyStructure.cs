@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 
 using LumiSoft.Net.MIME;
@@ -7,94 +8,102 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// This class represents IMAP FETCH response BODYSTRUCTURE data-item. Defined in RFC 3501 7.4.2.
+    /// Represents the <c>BODYSTRUCTURE</c> data item returned within an IMAP
+    /// <c>FETCH</c> response.
     /// </summary>
+    /// <remarks>
+    /// This class encapsulates a complete <c>BODYSTRUCTURE</c> element describing
+    /// the MIME structure of a message. 
+    /// </remarks>
     public class IMAP_t_Fetch_r_i_BodyStructure : IMAP_t_Fetch_r_i
     {
-        private IMAP_t_Fetch_r_i_BodyStructure_e m_pMessage;
+        private IMAP_t_BodyStructure m_pBodyStructure;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="IMAP_t_Fetch_r_i_BodyStructure"/>
+        /// class using the specified <c>BODYSTRUCTURE</c> element.
         /// </summary>
-        /// <param name="message">IMAP BODYSTRUCTURE entity.</param>
-        private IMAP_t_Fetch_r_i_BodyStructure(IMAP_t_Fetch_r_i_BodyStructure_e message)
+        /// <param name="bodyStructure">
+        /// The <c>BODYSTRUCTURE</c> element representing the MIME structure of the
+        /// message. This value must not be <c>null</c>.
+        /// </param>
+        public IMAP_t_Fetch_r_i_BodyStructure(IMAP_t_BodyStructure bodyStructure)
         {
-            ArgumentNullException.ThrowIfNull(message);
+            ArgumentNullException.ThrowIfNull(bodyStructure);
 
-            m_pMessage = message;
-        }
-                
-
-        #region static method Parse
-
-        /// <summary>
-        /// Parses IMAP FETCH BODYSTRUCTURE from reader.
-        /// </summary>
-        /// <param name="r">Fetch reader.</param>
-        /// <returns>Returns parsed bodystructure.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>r</b> is null reference.</exception>
-        public static IMAP_t_Fetch_r_i_BodyStructure Parse(StringReader r)
-        {
-            if(r == null){
-                throw new ArgumentNullException("r");
-            }
-
-            r.ReadToFirstChar();
-            // We have multipart message
-            if(r.StartsWith("(")){
-                return new IMAP_t_Fetch_r_i_BodyStructure(IMAP_t_Fetch_r_i_BodyStructure_e_Multipart.Parse(r));
-            }
-            // We have single-part message.
-            else{
-                return new IMAP_t_Fetch_r_i_BodyStructure(IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart.Parse(r));
-            }
+            m_pBodyStructure = bodyStructure;
         }
 
-        #endregion
 
-
-        #region method GetAttachments
+        #region static method ParseAsync
 
         /// <summary>
-        /// Gets message attachments.
+        /// Parses the IMAP <c>BODYSTRUCTURE</c> data item from a <c>FETCH</c>
+        /// response according to RFC 3501 section 7.4.2.
         /// </summary>
-        /// <param name="includeInline">Specifies if 'inline' entities are included.</param>
-        /// <returns>Returns message attachments.</returns>
-        public IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart[] GetAttachments(bool includeInline)
+        /// <param name="imapReader">
+        /// The IMAP reader positioned at the <c>BODYSTRUCTURE</c> atom.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that may be used to cancel the asynchronous operation.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="IMAP_t_Fetch_r_i_BodyStructure"/> instance containing the
+        /// parsed MIME structure of the message.
+        /// </returns>
+        /// <exception cref="ParseException">
+        /// Thrown when the <c>BODYSTRUCTURE</c> token is missing or when the
+        /// subsequent structure does not conform to RFC 3501.
+        /// </exception>
+        /// <remarks>
+        /// This method validates the presence of the <c>BODYSTRUCTURE</c> data item
+        /// and delegates the actual MIME structure parsing to
+        /// <see cref="IMAP_t_BodyStructure.ParseAsync"/>. The returned object
+        /// represents the complete MIME hierarchy of the message, including
+        /// single‑part, multipart, and nested multipart entities.
+        /// </remarks>
+        internal static async Task<IMAP_t_Fetch_r_i_BodyStructure> ParseAsync(_IMAP_Reader imapReader, CancellationToken cancellationToken = default)
         {
-            List<IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart> retVal = new List<IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart>();
-            foreach(IMAP_t_Fetch_r_i_BodyStructure_e entity in this.AllEntities){
-                MIME_h_ContentType?        contentType = entity.ContentType;
-                MIME_h_ContentDisposition? disposition = entity.ContentDisposition;
+            ArgumentNullException.ThrowIfNull(imapReader);
 
-                if(entity is IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart){
-                    if(disposition != null && string.Equals(disposition.DispositionType,"attachment",StringComparison.InvariantCultureIgnoreCase)){
-                        retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                    }
-                    else if(disposition != null && string.Equals(disposition.DispositionType,"inline",StringComparison.InvariantCultureIgnoreCase)){
-                        if(includeInline){
-                            retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                        }
-                    }
-                    else if(contentType != null && string.Equals(contentType.Type,"application",StringComparison.InvariantCultureIgnoreCase)){
-                        retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                    }
-                    else if(contentType != null && string.Equals(contentType.Type,"image",StringComparison.InvariantCultureIgnoreCase)){
-                        retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                    }
-                    else if(contentType != null && string.Equals(contentType.Type,"video",StringComparison.InvariantCultureIgnoreCase)){
-                        retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                    }
-                    else if(contentType != null && string.Equals(contentType.Type,"audio",StringComparison.InvariantCultureIgnoreCase)){
-                        retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                    }
-                    else if(contentType != null && string.Equals(contentType.Type,"message",StringComparison.InvariantCultureIgnoreCase)){
-                        retVal.Add((IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)entity);
-                    }
-                }
+            /*  BODYSTRUCTURE Response Data Item RFC 3501 Section 7.4.2                
+
+                Example (Multipart/Mixed):
+                --------------------------
+                BODYSTRUCTURE (
+                    ("TEXT" "PLAIN"
+                        ("CHARSET" "UTF-8")
+                        NIL
+                        NIL
+                        "7BIT"
+                        42
+                        3
+                        NIL
+                        ("INLINE" NIL)
+                        NIL
+                        NIL
+                    )
+                    ("IMAGE" "JPEG"
+                        NIL
+                        NIL
+                        "BASE64"
+                        2048
+                        NIL
+                        NIL
+                        ("ATTACHMENT" ("FILENAME" "photo.jpg"))
+                        NIL
+                        NIL
+                    )
+                    "MIXED"
+                    ("BOUNDARY" "----XYZ")
+                )
+            */
+
+            if(!string.Equals("BODYSTRUCTURE", imapReader.ReadAtom(), StringComparison.OrdinalIgnoreCase)){
+                throw new ParseException("Invalid FETCH response: BODYSTRUCTURE data-item not found.");
             }
 
-            return retVal.ToArray();
+            return new IMAP_t_Fetch_r_i_BodyStructure(await IMAP_t_BodyStructure.ParseAsync(imapReader, cancellationToken));
         }
 
         #endregion
@@ -103,99 +112,20 @@ namespace LumiSoft.Net.IMAP
         #region Properties implementation
 
         /// <summary>
-        /// Gets if message contains signed data.
+        /// Gets the IMAP <c>BODYSTRUCTURE</c> element associated with this
+        /// <c>FETCH</c> response item.
         /// </summary>
-        public bool IsSigned
+        /// <remarks>
+        /// The <c>BODYSTRUCTURE</c> element describes the MIME structure of the
+        /// message, including single‑part entities, multipart hierarchies, and
+        /// <c>message/rfc822</c> encapsulated messages. The value represents the
+        /// complete BODYSTRUCTURE object supplied to this instance and is never
+        /// <c>null</c>; construction of this type requires a valid BODYSTRUCTURE
+        /// element.
+        /// </remarks>
+        public IMAP_t_BodyStructure BodyStructure
         {
-            get{
-                foreach(IMAP_t_Fetch_r_i_BodyStructure_e entity in this.AllEntities){
-                    if(string.Equals(entity.ContentType?.TypeWithSubtype,MIME_MediaTypes.Application.pkcs7_mime,StringComparison.InvariantCultureIgnoreCase)){
-                        return true;
-                    }
-                    else if(string.Equals(entity.ContentType?.TypeWithSubtype,MIME_MediaTypes.Multipart.signed,StringComparison.InvariantCultureIgnoreCase)){
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Gets message entity.
-        /// </summary>
-        public IMAP_t_Fetch_r_i_BodyStructure_e Message
-        {
-            get{ return m_pMessage; }
-        }
-        
-        /// <summary>
-        /// Gets all MIME entities as list.
-        /// </summary>
-        public IMAP_t_Fetch_r_i_BodyStructure_e[] AllEntities
-        {
-            get{
-                List<IMAP_t_Fetch_r_i_BodyStructure_e> retVal        = new List<IMAP_t_Fetch_r_i_BodyStructure_e>();
-                List<IMAP_t_Fetch_r_i_BodyStructure_e> entitiesQueue = new List<IMAP_t_Fetch_r_i_BodyStructure_e>();
-                entitiesQueue.Add(m_pMessage);
-            
-                while(entitiesQueue.Count > 0){
-                    IMAP_t_Fetch_r_i_BodyStructure_e currentEntity = entitiesQueue[0];
-                    entitiesQueue.RemoveAt(0);
-        
-                    retVal.Add(currentEntity);
-
-                    // Current entity is multipart entity, add it's body-parts for processing.
-                    if(currentEntity is IMAP_t_Fetch_r_i_BodyStructure_e_Multipart){
-                        IMAP_t_Fetch_r_i_BodyStructure_e[] bodyParts = ((IMAP_t_Fetch_r_i_BodyStructure_e_Multipart)currentEntity).BodyParts;
-                        for(int i=0;i<bodyParts.Length;i++){
-                            entitiesQueue.Insert(i,bodyParts[i]);
-                        }
-                    }
-                }
-
-                return retVal.ToArray();
-            }
-        }
-
-        /// <summary>
-        /// Gets attachment entities. Content-Disposition "inline" not included, use GetAttachments method which allows to include "inline".
-        /// </summary>
-        public IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart[] Attachments
-        {
-            get{ return GetAttachments(false); }
-        }
-
-        /// <summary>
-        /// Gets first text/plain body entity, returns null if no such entity.
-        /// </summary>
-        public IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart? BodyTextEntity
-        {
-            get{ 
-                foreach(IMAP_t_Fetch_r_i_BodyStructure_e e in this.AllEntities){
-                    if(string.Equals(e.ContentType?.TypeWithSubtype,MIME_MediaTypes.Text.plain,StringComparison.InvariantCultureIgnoreCase)){
-                        return (IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)e;
-                    }
-                }
-
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Gets first text/html body entity, returns null if no such entity.
-        /// </summary>
-        public IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart? BodyTextHtmlEntity
-        {
-            get{ 
-                foreach(IMAP_t_Fetch_r_i_BodyStructure_e e in this.AllEntities){
-                    if(string.Equals(e.ContentType?.TypeWithSubtype,MIME_MediaTypes.Text.html,StringComparison.InvariantCultureIgnoreCase)){
-                        return (IMAP_t_Fetch_r_i_BodyStructure_e_SinglePart)e;
-                    }
-                }
-
-                return null;
-            }
+            get{ return m_pBodyStructure; }
         }
 
         #endregion

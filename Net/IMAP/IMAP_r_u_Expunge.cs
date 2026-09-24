@@ -5,17 +5,48 @@ using System.Text;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// This class represents IMAP EXPUNGE response. Defined in RFC 3501 7.4.1.
+    /// Represents the IMAP EXPUNGE untagged server status response as defined
+    /// in RFC 3501 section 7.4.1.
     /// </summary>
+    /// <remarks>
+    /// The EXPUNGE response reports that the message with the specified
+    /// sequence number has been permanently removed from the mailbox. After an
+    /// EXPUNGE, all messages with higher sequence numbers are immediately
+    /// decremented by one, and this renumbering is reflected in subsequent
+    /// server responses.
+    ///
+    /// An EXPUNGE response MUST NOT be sent when no command is in progress,
+    /// nor while responding to a FETCH, STORE, or SEARCH command. It MAY be
+    /// sent during UID FETCH, UID STORE, or UID SEARCH.
+    ///
+    /// Clients MUST record updates from the EXPUNGE response.
+    /// </remarks>
     public class IMAP_r_u_Expunge : IMAP_r_u
     {
         private int m_SeqNo = 1;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="IMAP_r_u_Expunge"/> class
+        /// using the message sequence number reported by the IMAP EXPUNGE response.
         /// </summary>
-        /// <param name="seqNo">Message sequence number.</param>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="seqNo">
+        /// The message sequence number of the expunged message, as reported by the
+        /// IMAP EXPUNGE response (RFC 3501, section 7.4.1). The value must be
+        /// greater than or equal to 1.
+        /// </param>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="seqNo"/> is less than 1.
+        /// </exception>
+        /// <remarks>
+        /// The EXPUNGE response indicates that the message with the specified
+        /// sequence number has been permanently removed from the mailbox. After an
+        /// EXPUNGE, all messages with higher sequence numbers are immediately
+        /// decremented by one, and this renumbering is reflected in subsequent
+        /// server responses.
+        ///
+        /// This constructor stores the sequence number of the expunged message for
+        /// later retrieval and serialization.
+        /// </remarks>
         public IMAP_r_u_Expunge(int seqNo)
         {
             if(seqNo < 1){
@@ -29,11 +60,39 @@ namespace LumiSoft.Net.IMAP
         #region static method Parse
 
         /// <summary>
-        /// Parses EXPUNGE response from expunge-response string.
+        /// Parses an IMAP EXPUNGE response as defined in RFC 3501 section 7.4.1.
         /// </summary>
-        /// <param name="response">Expunge response string.</param>
-        /// <returns>Returns parsed expunge response.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>response</b> is null reference.</exception>
+        /// <param name="response">
+        /// The raw IMAP server response string. Expected format:
+        /// <c>* &lt;sequenceNumber&gt; EXPUNGE</c>.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="IMAP_r_u_Expunge"/> instance containing the parsed
+        /// message sequence number of the expunged message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="response"/> is null.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Thrown when the response does not conform to the EXPUNGE syntax:
+        /// <list type="bullet">
+        /// <item><description>Missing or invalid untagged marker "*".</description></item>
+        /// <item><description>Missing or non-numeric message sequence number.</description></item>
+        /// <item><description>Missing or incorrect "EXPUNGE" keyword.</description></item>
+        /// </list>
+        /// </exception>
+        /// <remarks>
+        /// The EXPUNGE response reports that a specific message sequence number
+        /// has been permanently removed from the mailbox. After an EXPUNGE, all
+        /// higher-numbered messages are immediately decremented by one, and this
+        /// renumbering is reflected in subsequent server responses.
+        ///
+        /// An EXPUNGE response MUST NOT be sent when no command is in progress,
+        /// nor while responding to a FETCH, STORE, or SEARCH command. It MAY be
+        /// sent during UID FETCH, UID STORE, or UID SEARCH.
+        ///
+        /// Clients MUST record updates from the EXPUNGE response.
+        /// </remarks>
         public static IMAP_r_u_Expunge Parse(string response)
         {
             if(response == null){
@@ -81,8 +140,35 @@ namespace LumiSoft.Net.IMAP
 
                 Example:    S: * 44 EXPUNGE
             */
+
+            StringReader r = new StringReader(response);
+            
+            // "*"
+            string? commandTag = r.ReadWord();
+            if(commandTag == null){
+                throw new ParseException($"Invalid IMAP EXPUNGE response (missing *): {response}");
+            }
+            if(commandTag != "*"){
+                throw new ParseException($"Invalid IMAP EXPUNGE response (expected '*'): {response}");
+            }
+
+            // Messages count
+            string? word = r.ReadWord();
+            if(word == null || !int.TryParse(word,out int seqNo)){
+                throw new ParseException($"Invalid IMAP EXPUNGE response (invalid message sequence number): {response}");
+            }
+
+            // "EXPUNGE"
+            word = r.ReadWord();
+            if(word == null){
+                throw new ParseException($"Invalid IMAP EXPUNGE response (missing EXPUNGE): {response}");
+            }            
+            if(!string.Equals(word,"EXPUNGE",StringComparison.OrdinalIgnoreCase)){
+                throw new ParseException($"Invalid IMAP EXPUNGE response (expected 'EXPUNGE'): {response}");
+            }
+
                                                
-            return new IMAP_r_u_Expunge(Convert.ToInt32(response.Split(' ')[1]));
+            return new IMAP_r_u_Expunge(seqNo);
         }
 
         #endregion
@@ -91,9 +177,23 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns this as string.
+        /// Converts this EXPUNGE response to its IMAP wire‑format representation.
         /// </summary>
-        /// <returns>Returns this as string.</returns>
+        /// <returns>
+        /// A string formatted according to RFC 3501 section 7.4.1, representing an
+        /// untagged EXPUNGE response. The format is:
+        /// <c>* &lt;sequenceNumber&gt; EXPUNGE\r\n</c>
+        /// </returns>
+        /// <remarks>
+        /// The EXPUNGE response reports that the message with the specified
+        /// sequence number has been permanently removed from the mailbox. After
+        /// an EXPUNGE, all higher‑numbered messages are immediately decremented
+        /// by one, and this renumbering is reflected in subsequent server
+        /// responses.
+        ///
+        /// This method produces the exact string an IMAP server would send to
+        /// indicate the sequence number of the expunged message.
+        /// </remarks>
         public override string ToString()
         {
             // Example:    S: * 44 EXPUNGE
@@ -107,8 +207,18 @@ namespace LumiSoft.Net.IMAP
         #region Properties implementation
 
         /// <summary>
-        /// Gets message sequence number.
+        /// Gets the message sequence number of the message that was permanently
+        /// removed from the mailbox.
         /// </summary>
+        /// <remarks>
+        /// This value is taken directly from the IMAP EXPUNGE response
+        /// (RFC 3501, section 7.4.1). When a message is expunged, all messages
+        /// with higher sequence numbers are immediately decremented by one, and
+        /// this renumbering is reflected in subsequent server responses.
+        ///
+        /// The sequence number identifies the position of the expunged message
+        /// at the moment the EXPUNGE response was issued.
+        /// </remarks>
         public int SeqNo
         {
             get{ return m_SeqNo; }

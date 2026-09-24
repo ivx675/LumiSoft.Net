@@ -3774,7 +3774,7 @@ namespace LumiSoft.Net.IMAP.Server
 
                 else if(r.StartsWith("BODY",false)){
                     r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_BodyS());
+                    dataItems.Add(new IMAP_t_Fetch_i_BodyStructure());
                     msgDataNeeded = true;
                     if(fetchDataType != IMAP_Fetch_DataType.FullMessage){
                         fetchDataType = IMAP_Fetch_DataType.MessageStructure;
@@ -3918,22 +3918,24 @@ namespace LumiSoft.Net.IMAP.Server
                                        
                     #region BODY
 
+                    // Not used nowdays.
+                    /*
                     if(dataItem is IMAP_t_Fetch_i_BodyS){
                         ArgumentNullException.ThrowIfNull(message);
 
                         reponseBuffer.Append(ConstructBodyStructure(message,false));
-                    }
+                    }*/
 
                     #endregion
 
                     #region BODY[<section>]<<partial>> and BODY.PEEK[<section>]<<partial>>
 
-                    else if(dataItem is IMAP_t_Fetch_i_Body || dataItem is IMAP_t_Fetch_i_BodyPeek){
+                    if(dataItem is IMAP_t_Fetch_i_Body || dataItem is IMAP_t_Fetch_i_BodyPeek){
                         ArgumentNullException.ThrowIfNull(message);
 
                         string section  = "";
-                        int    offset   = -1;
-                        int    maxCount = -1;
+                        long?  offset   = null;
+                        long?  maxCount = null;
                         if(dataItem is IMAP_t_Fetch_i_Body){
                             section  = ((IMAP_t_Fetch_i_Body)dataItem).Section ?? string.Empty;
                             offset   = ((IMAP_t_Fetch_i_Body)dataItem).Offset;
@@ -4062,7 +4064,7 @@ namespace LumiSoft.Net.IMAP.Server
                             #region Send data
 
                             // All data wanted.
-                            if(offset < 0){
+                            if(offset == null){
                                 reponseBuffer.Append("BODY[" + section + "] {" + tmpFs.Length + "}\r\n");
                                 WriteLine(reponseBuffer.ToString());
                                 reponseBuffer = new StringBuilder();
@@ -4077,9 +4079,9 @@ namespace LumiSoft.Net.IMAP.Server
                                     reponseBuffer.Append("BODY[" + section + "]<" + offset + "> \"\"");
                                 }
                                 else{
-                                    tmpFs.Position = offset;
+                                    tmpFs.Position = (long)offset;
                                         
-                                    int count = maxCount > -1 ? (int)Math.Min(maxCount,tmpFs.Length - tmpFs.Position) : (int)(tmpFs.Length - tmpFs.Position);
+                                    int count = (maxCount != null ? (int)Math.Min((long)maxCount,tmpFs.Length - tmpFs.Position) : (int)(tmpFs.Length - tmpFs.Position));
                                     reponseBuffer.Append("BODY[" + section + "]<" + offset + "> {" + count + "}");
                                     WriteLine(reponseBuffer.ToString());
                                     reponseBuffer = new StringBuilder();
@@ -4466,20 +4468,20 @@ namespace LumiSoft.Net.IMAP.Server
             #endregion
 
             try{
-                IMAP_Search_Key_Group criteria = IMAP_Search_Key_Group.Parse(r);
+                IMAP_t_Search_Key_Group criteria = IMAP_t_Search_Key_Group.Parse(r);
 
                 UpdateSelectedFolderAndSendChanges();
                 
-                List<int> matchedValues = new List<int>();
+                List<long> matchedValues = new List<long>();
 
                 IMAP_e_Search searchArgs = new IMAP_e_Search(criteria,new IMAP_r_ServerStatus(cmdTag,"OK","SEARCH completed in %exectime seconds."));
                 searchArgs.Matched += new EventHandler<EventArgs<long>>(delegate(object? s,EventArgs<long> e){
                     if(uid){
-                        matchedValues.Add((int)e.Value);
+                        matchedValues.Add(e.Value);
                     }
                     else{
                         // Search sequence-number for that message.
-                        int seqNo = m_pSelectedFolder.GetSeqNo(e.Value);
+                        long seqNo = m_pSelectedFolder.GetSeqNo(e.Value);
                         if(seqNo != -1){
                             matchedValues.Add(seqNo);
                         }
@@ -4652,7 +4654,7 @@ namespace LumiSoft.Net.IMAP.Server
                             new IMAP_r_u_Fetch(
                                 m_pSelectedFolder.GetSeqNo(msgInfo),
                                 new IMAP_t_Fetch_r_i[]{
-                                    new IMAP_t_Fetch_r_i_Flags(IMAP_t_MsgFlags.Parse(msgInfo.FlagsToImapString())),
+                                    new IMAP_t_Fetch_r_i_Flags(msgInfo.Flags),
                                     new IMAP_t_Fetch_r_i_Uid(msgInfo.UID)
                                 }
                             )
@@ -4663,7 +4665,7 @@ namespace LumiSoft.Net.IMAP.Server
                             new IMAP_r_u_Fetch(
                                 m_pSelectedFolder.GetSeqNo(msgInfo),
                                 new IMAP_t_Fetch_r_i[]{
-                                    new IMAP_t_Fetch_r_i_Flags(new IMAP_t_MsgFlags(msgInfo.Flags))
+                                    new IMAP_t_Fetch_r_i_Flags(msgInfo.Flags)
                                 }
                             )
                         );
