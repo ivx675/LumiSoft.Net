@@ -692,7 +692,7 @@ namespace LumiSoft.Net.IO
                     throw new EndOfStreamException("Unexpected end of stream while reading fixed count.");
                 }
 
-                await storeStream.WriteAsync(readBlock,cancellationToken).ConfigureAwait(false);
+                await storeStream.WriteAsync(buffer.Slice(0,readCount),cancellationToken).ConfigureAwait(false);
                 remaining -= readCount;
             }
         }
@@ -1030,7 +1030,7 @@ namespace LumiSoft.Net.IO
                     int readCount = await sourceStream.ReadAsync(readBlock,cancellationToken).ConfigureAwait(false);
                     // End of stream reached.
                     if(readCount == 0) {
-                        return;
+                        throw new IOException($"Insufficient data in source stream: expected {count} bytes");
                     }
                     totalBytes += readCount;
 
