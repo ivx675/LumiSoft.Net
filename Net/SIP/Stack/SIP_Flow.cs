@@ -236,7 +236,7 @@ namespace LumiSoft.Net.SIP.Stack
                             ArgumentNullException.ThrowIfNull(m_pRemoteEP);
 
                             TCP_Client client = new TCP_Client();
-                            client.Connect(m_pLocalEP,m_pRemoteEP,m_Transport == SIP_Transport.TLS);
+                            client.Connect(m_pLocalEP,new []{m_pRemoteEP.Address},m_pRemoteEP.Port,m_Transport == SIP_Transport.TLS,null);
 
                             m_pTcpSession = client;
 
