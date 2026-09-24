@@ -7,15 +7,18 @@
     <GenerateDocumentationFile>True</GenerateDocumentationFile>
     <Title>LumiSoft Net</Title>
     <Authors>LumiSoft</Authors>
-    <Description>Freeware open source SMTP,POP3,IMAP client/server components. MIME,Mail,DNS,FTP components.</Description>
-    <AssemblyVersion>10.0</AssemblyVersion>
-    <FileVersion>10.0</FileVersion>
-    <InformationalVersion>10.0</InformationalVersion>
-    <VersionPrefix>10.0</VersionPrefix>
+    <Description>LumiSoft.Net is a cross‑platform .NET networking library providing full client and server implementations for SMTP, POP3, IMAP, and FTP, plus client‑only components for DNS, MIME, WebDav, STUN, and UPnP.</Description>
+    <AssemblyVersion></AssemblyVersion>
+    <FileVersion></FileVersion>
+    <InformationalVersion>10.1.0</InformationalVersion>
+    <VersionPrefix>10.1.0</VersionPrefix>
     <PackageLicenseFile>license.txt</PackageLicenseFile>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>LumiSoft.Net.dll</PackageId>
     <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/ivx675/LumiSoft.Net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ivx675/LumiSoft.Net</RepositoryUrl>
+    <PackageTags>smtp;pop3;imap;ftp;dns;dns;mime;webdav;stun;upnp;networking;async;email;mail</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

@@ -7,8 +7,8 @@ A cross‑platform .NET networking library providing **client and server compone
 ## Features
 
 ### Mail Protocols
-- **SMTP Client (STARTTLS, AUTH, SIZE, DSN, BINARYMIME, CHUNKING, ENHANCEDSTATUSCODES, Socks5, http-connect)**
-- **POP3 Client (STLS, UIDL, SASL, TOP, USER, RESP-CODES, Socks5, http-connect)**
+- **SMTP Client (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, SIZE, DSN, BINARYMIME, CHUNKING, ENHANCEDSTATUSCODES, Socks5, http-connect)**
+- **POP3 Client (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, APOP, TOP, USER, UIDL, RESP-CODES, UTF8,Socks5, http-connect)**
 - **IMAP Client**
 - **SMTP Server**
 - **POP3 Server**
@@ -42,6 +42,11 @@ A cross‑platform .NET networking library providing **client and server compone
 - Full MIME integration including partial MIME parsing 
 
 ---
+
+## Repository
+
+[https://github.com/ivx675/LumiSoft.Net](https://github.com/ivx675/LumiSoft.Net)
+
 
 ## Installation
 
