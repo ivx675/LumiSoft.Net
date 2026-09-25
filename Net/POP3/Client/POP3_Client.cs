@@ -3453,7 +3453,7 @@ namespace LumiSoft.Net.POP3.Client
         /// results in an <see cref="InvalidOperationException"/>.
         /// </para>
         /// </remarks>
-        public POP3_ClientMessageCollection? Messages
+        public POP3_ClientMessageCollection Messages
         {
             get{
                 if(this.IsDisposed){

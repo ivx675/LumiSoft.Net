@@ -204,13 +204,8 @@ namespace LumiSoft.Net.POP3.Client
         /// <summary>
         /// Retrieves the message header from the POP3 server and parses it into a
         /// <see cref="Mail_Message"/> instance.
+        /// This is the synchronous wrapper for <see cref="HeaderToMailMessageAsync(CancellationToken)"/>.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes to retrieve for the header. The value must be
-        /// large enough to include the complete header section and its terminating
-        /// <c>CRLFCRLF</c> separator; otherwise the MIME parser may treat the header
-        /// block as incomplete.
-        /// </param>
         /// <returns>
         /// A <see cref="Mail_Message"/> containing only the parsed header fields.
         /// The message body is not retrieved or parsed.
@@ -218,12 +213,28 @@ namespace LumiSoft.Net.POP3.Client
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
         /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the message is marked for deletion.
+        /// </exception>
+        /// <exception cref="POP3_ClientException">
+        /// Thrown if the POP3 server returns a negative (<c>-ERR</c>) response.
+        /// </exception>
         /// <remarks>
         /// <para>
-        /// This synchronous wrapper uses the POP3 client's configured timeout and blocks
-        /// the calling thread until the underlying asynchronous
-        /// <see cref="HeaderToMailMessageAsync(long, CancellationToken)"/> operation
-        /// completes.
+        /// This synchronous wrapper blocks the calling thread until the underlying
+        /// asynchronous <see cref="HeaderToMailMessageAsync(CancellationToken)"/>
+        /// operation completes.
+        /// </para>
+        /// <para>
+        /// A <see cref="CancellationTokenSource"/> is created using the POP3 client's
+        /// configured timeout, ensuring that the synchronous wrapper respects the same
+        /// timeout behavior as other synchronous POP3 operations.
+        /// </para>
+        /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
         /// </para>
         /// <para>
         /// Header‑only parsing is useful for lightweight message inspection, such as
@@ -231,16 +242,15 @@ namespace LumiSoft.Net.POP3.Client
         /// downloading the full message body.
         /// </para>
         /// <para>
-        /// The resulting <see cref="Mail_Message"/> will contain an empty body section.
-        /// If <paramref name="maxCount"/> truncates the header before the terminating
+        /// If the retrieved header data is truncated before the terminating
         /// <c>CRLFCRLF</c>, the MIME parser may interpret the header block as incomplete.
         /// </para>
         /// </remarks>
-        public Mail_Message HeaderToMailMessage(long maxCount)
+        public Mail_Message HeaderToMailMessage()
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            return HeaderToMailMessageAsync(maxCount,cts.Token).GetAwaiter().GetResult();
+            return HeaderToMailMessageAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -248,47 +258,48 @@ namespace LumiSoft.Net.POP3.Client
         #region method HeaderToMailMessageAsync
 
         /// <summary>
-        /// Retrieves the message header from the POP3 server and parses it into a
-        /// <see cref="Mail_Message"/> instance.
+        /// Retrieves the message header using the POP3 <c>TOP</c> command with a line
+        /// count of <c>0</c> and returns the result as a UTF‑8 string.
+        /// This is the synchronous wrapper for <see cref="HeaderToStringAsync(CancellationToken)"/>.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes to retrieve for the header. The value must be
-        /// large enough to include the complete header section and its terminating
-        /// <c>CRLFCRLF</c> separator; otherwise the MIME parser may treat the header
-        /// block as incomplete.
-        /// </param>
-        /// <param name="cancellationToken">
-        /// The cancellation token used to cancel the operation.
-        /// </param>
         /// <returns>
-        /// A <see cref="Mail_Message"/> containing only the parsed header fields.
-        /// The message body is not retrieved or parsed.
+        /// A UTF‑8 decoded string containing the POP3 header data.
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
         /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown if the message is marked for deletion.
+        /// </exception>
+        /// <exception cref="POP3_ClientException">
+        /// Thrown if the POP3 server returns a negative (<c>-ERR</c>) response.
+        /// </exception>
         /// <remarks>
         /// <para>
-        /// This method performs a header‑only retrieval using <see cref="HeaderToStreamAsync"/>
-        /// and parses the resulting data into a <see cref="Mail_Message"/>. Only the header
-        /// fields are available; the body is omitted.
+        /// This method blocks the calling thread until the underlying asynchronous
+        /// <see cref="HeaderToStringAsync(CancellationToken)"/> operation completes.
         /// </para>
         /// <para>
-        /// Header‑only parsing is useful for lightweight message inspection, such as
-        /// reading <c>Subject</c>, <c>From</c>, <c>Date</c>, or other metadata without
-        /// downloading the full message body.
+        /// A <see cref="CancellationTokenSource"/> is created using the POP3 client's
+        /// configured timeout, ensuring that the synchronous wrapper respects the same
+        /// timeout behavior as other synchronous POP3 operations.
         /// </para>
         /// <para>
-        /// The resulting <see cref="Mail_Message"/> will contain an empty body section.
-        /// If <paramref name="maxCount"/> truncates the header before the terminating
-        /// <c>CRLFCRLF</c>, the MIME parser may interpret the header block as incomplete.
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
+        /// The POP3 <c>TOP</c> command with a line count of <c>0</c> returns only the
+        /// message header followed by a blank line, as defined in RFC 1939.
         /// </para>
         /// </remarks>
-        public async ValueTask<Mail_Message> HeaderToMailMessageAsync(long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask<Mail_Message> HeaderToMailMessageAsync(CancellationToken cancellationToken = default)
         {
             using var stream = new MemoryStreamEx();
 
-            await HeaderToStreamAsync(stream,maxCount,cancellationToken);
+            await HeaderToStreamAsync(stream,cancellationToken);
             stream.Position = 0;
 
             return Mail_Message.ParseFromStream(stream);
@@ -301,21 +312,13 @@ namespace LumiSoft.Net.POP3.Client
         /// <summary>
         /// Retrieves the message header using the POP3 <c>TOP</c> command with a line
         /// count of <c>0</c> and returns the result as a UTF‑8 string.
-        /// This is the synchronous wrapper for <see cref="HeaderToStringAsync(long, CancellationToken)"/>.
+        /// This is the synchronous wrapper for <see cref="HeaderToStringAsync(CancellationToken)"/>.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
-        /// </param>
         /// <returns>
         /// A UTF‑8 decoded string containing the POP3 header data.
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="InvalidOperationException">
         /// Thrown if the message is marked for deletion.
@@ -326,7 +329,7 @@ namespace LumiSoft.Net.POP3.Client
         /// <remarks>
         /// <para>
         /// This method blocks the calling thread until the underlying asynchronous
-        /// <see cref="HeaderToStringAsync(long, CancellationToken)"/> operation completes.
+        /// <see cref="HeaderToStringAsync(CancellationToken)"/> operation completes.
         /// </para>
         /// <para>
         /// A <see cref="CancellationTokenSource"/> is created using the POP3 client's
@@ -334,15 +337,21 @@ namespace LumiSoft.Net.POP3.Client
         /// timeout behavior as other synchronous POP3 operations.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// The POP3 <c>TOP</c> command with a line count of <c>0</c> returns only the
         /// message header followed by a blank line, as defined in RFC 1939.
         /// </para>
         /// </remarks>
-        public string HeaderToString(long maxCount)
+        public string HeaderToString()
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            return HeaderToStringAsync(maxCount,cts.Token).GetAwaiter().GetResult();
+            return HeaderToStringAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -353,11 +362,6 @@ namespace LumiSoft.Net.POP3.Client
         /// Asynchronously retrieves the message header using the POP3 <c>TOP</c> command
         /// with a line count of <c>0</c> and returns the result as a UTF‑8 string.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
-        /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
         /// </param>
@@ -367,9 +371,6 @@ namespace LumiSoft.Net.POP3.Client
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="InvalidOperationException">
         /// Thrown if the message is marked for deletion.
@@ -387,13 +388,19 @@ namespace LumiSoft.Net.POP3.Client
         /// message header followed by a blank line, as defined in RFC 1939.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// For scenarios where memory usage is a concern or when streaming is preferred,
         /// use <see cref="HeaderToStreamAsync"/> instead.
         /// </para>
         /// </remarks>
-        public async ValueTask<string> HeaderToStringAsync(long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask<string> HeaderToStringAsync(CancellationToken cancellationToken = default)
         {
-            byte[] header = await HeaderToByteAsync(maxCount,cancellationToken);
+            byte[] header = await HeaderToByteAsync(cancellationToken);
             
             return Encoding.UTF8.GetString(header);
         }
@@ -405,21 +412,13 @@ namespace LumiSoft.Net.POP3.Client
         /// <summary>
         /// Retrieves the message header using the POP3 <c>TOP</c> command with a line
         /// count of <c>0</c> and returns the result as a byte array.
-        /// This is the synchronous wrapper for <see cref="HeaderToByteAsync(long, CancellationToken)"/>.
+        /// This is the synchronous wrapper for <see cref="HeaderToByteAsync(CancellationToken)"/>.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
-        /// </param>
         /// <returns>
         /// A byte array containing the POP3 header data.
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="InvalidOperationException">
         /// Thrown if the message is marked for deletion.
@@ -430,7 +429,7 @@ namespace LumiSoft.Net.POP3.Client
         /// <remarks>
         /// <para>
         /// This method blocks the calling thread until the underlying asynchronous
-        /// <see cref="HeaderToByteAsync(long, CancellationToken)"/> operation completes.
+        /// <see cref="HeaderToByteAsync(CancellationToken)"/> operation completes.
         /// </para>
         /// <para>
         /// A <see cref="CancellationTokenSource"/> is created using the POP3 client's
@@ -438,15 +437,21 @@ namespace LumiSoft.Net.POP3.Client
         /// timeout behavior as other synchronous POP3 operations.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// The POP3 <c>TOP</c> command with a line count of <c>0</c> returns only the
         /// message header followed by a blank line, as defined in RFC 1939.
         /// </para>
         /// </remarks>
-        public byte[] HeaderToByte(long maxCount)
+        public byte[] HeaderToByte()
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            return HeaderToByteAsync(maxCount,cts.Token).GetAwaiter().GetResult();
+            return HeaderToByteAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -457,11 +462,6 @@ namespace LumiSoft.Net.POP3.Client
         /// Asynchronously retrieves the message header using the POP3 <c>TOP</c> command
         /// with a line count of <c>0</c> and returns the result as a byte array.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
-        /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
         /// </param>
@@ -471,9 +471,6 @@ namespace LumiSoft.Net.POP3.Client
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="InvalidOperationException">
         /// Thrown if the message is marked for deletion.
@@ -492,16 +489,22 @@ namespace LumiSoft.Net.POP3.Client
         /// message header followed by a blank line, as defined in RFC 1939.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// For large messages or when memory usage is a concern, prefer
         /// <see cref="HeaderToStreamAsync"/> or <see cref="HeaderToStream"/> to stream
         /// the header directly to a file or processing pipeline.
         /// </para>
         /// </remarks>
-        public async ValueTask<byte[]> HeaderToByteAsync(long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask<byte[]> HeaderToByteAsync(CancellationToken cancellationToken = default)
         {
             using var stream = new MemoryStream();
 
-            await HeaderToStreamAsync(stream,maxCount,cancellationToken);
+            await HeaderToStreamAsync(stream,cancellationToken);
 
             return stream.ToArray();
         }
@@ -518,19 +521,11 @@ namespace LumiSoft.Net.POP3.Client
         /// <param name="stream">
         /// The destination <see cref="Stream"/> to which the POP3 header data will be written.
         /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to <paramref name="stream"/>.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
-        /// </param>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="stream"/> is <c>null</c>.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="InvalidOperationException">
         /// Thrown if the message is marked for deletion.
@@ -549,15 +544,21 @@ namespace LumiSoft.Net.POP3.Client
         /// timeout behavior as other synchronous POP3 operations.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// The POP3 <c>TOP</c> command with a line count of <c>0</c> returns only the
         /// message header followed by a blank line, as defined in RFC 1939.
         /// </para>
         /// </remarks>
-        public void HeaderToStream(Stream stream,long maxCount)
+        public void HeaderToStream(Stream stream)
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            HeaderToStreamAsync(stream,maxCount,cts.Token).GetAwaiter().GetResult();
+            HeaderToStreamAsync(stream,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -571,11 +572,6 @@ namespace LumiSoft.Net.POP3.Client
         /// <param name="stream">
         /// The destination <see cref="Stream"/> to which the POP3 header data will be written.
         /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to <paramref name="stream"/>.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient buffer space for typical
-        /// POP3 multi‑line responses.
-        /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
         /// </param>
@@ -587,9 +583,6 @@ namespace LumiSoft.Net.POP3.Client
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="stream"/> is <c>null</c>.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="InvalidOperationException">
         /// Thrown if the message is marked for deletion.
@@ -604,13 +597,19 @@ namespace LumiSoft.Net.POP3.Client
         /// message header followed by a blank line, as defined by RFC 1939.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// The header data is streamed directly to the provided <paramref name="stream"/>
         /// without caching or parsing.
         /// </para>
         /// </remarks>
-        public async ValueTask HeaderToStreamAsync(Stream stream,long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask HeaderToStreamAsync(Stream stream,CancellationToken cancellationToken = default)
         {
-            await TopLinesToStreamAsync(0,stream,maxCount,cancellationToken);
+            await TopLinesToStreamAsync(0,stream,cancellationToken);
         }
 
         #endregion
@@ -618,14 +617,10 @@ namespace LumiSoft.Net.POP3.Client
         #region method ToMailMessage
 
         /// <summary>
-        /// Retrieves up to <paramref name="maxCount"/> bytes of the message from the POP3
-        /// server and parses the retrieved data into a <see cref="Mail_Message"/> instance.
+        /// Retrieves a portion of the message using the POP3 <c>RETR</c> command and
+        /// parses the retrieved data into a <see cref="Mail_Message"/> instance.  
+        /// This is the synchronous wrapper for <see cref="ToMailMessageAsync(CancellationToken)"/>.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes to retrieve from the message. The value must be
-        /// large enough to include the complete header section; otherwise the MIME parser
-        /// may treat the message as incomplete.
-        /// </param>
         /// <returns>
         /// A <see cref="Mail_Message"/> representing the parsed message content.
         /// </returns>
@@ -634,22 +629,36 @@ namespace LumiSoft.Net.POP3.Client
         /// </exception>
         /// <remarks>
         /// <para>
-        /// This method performs a partial RETR operation and parses only the retrieved
-        /// portion of the message. If <paramref name="maxCount"/> does not include the
-        /// terminating header separator (<c>CRLFCRLF</c>), the MIME parser may interpret
-        /// the header block as incomplete.
+        /// This synchronous wrapper blocks the calling thread until the underlying
+        /// asynchronous <see cref="ToMailMessageAsync(CancellationToken)"/> operation
+        /// completes.
         /// </para>
         /// <para>
-        /// This synchronous wrapper uses the POP3 client's configured timeout and blocks
-        /// the calling thread until the operation completes. For non‑blocking usage,
-        /// prefer <see cref="ToMailMessageAsync(long, CancellationToken)"/>.
+        /// A <see cref="CancellationTokenSource"/> is created using the POP3 client's
+        /// configured timeout, ensuring that the synchronous wrapper respects the same
+        /// operation timeout as other synchronous POP3 methods.
+        /// </para>
+        /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
+        /// If the retrieved data does not include the complete header section
+        /// (terminated by <c>CRLFCRLF</c>), the MIME parser may interpret the header
+        /// block as incomplete.
+        /// </para>
+        /// <para>
+        /// Partial body retrieval is useful for header inspection or lightweight
+        /// message analysis without downloading the full message body.
         /// </para>
         /// </remarks>
-        public Mail_Message ToMailMessage(long maxCount)
+        public Mail_Message ToMailMessage()
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            return ToMailMessageAsync(maxCount,cts.Token).GetAwaiter().GetResult();
+            return ToMailMessageAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -657,14 +666,9 @@ namespace LumiSoft.Net.POP3.Client
         #region method ToMailMessageAsync
 
         /// <summary>
-        /// Retrieves up to <paramref name="maxCount"/> bytes of the message from the POP3
-        /// server and parses the retrieved data into a <see cref="Mail_Message"/> instance.
+        /// Retrieves a portion of the message using the POP3 <c>RETR</c> command and
+        /// parses the retrieved data into a <see cref="Mail_Message"/> instance.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes to retrieve from the message. The value must be
-        /// large enough to include the complete header section; otherwise the MIME parser
-        /// may treat the message as incomplete.
-        /// </param>
         /// <param name="cancellationToken">
         /// The cancellation token used to cancel the operation.
         /// </param>
@@ -676,21 +680,28 @@ namespace LumiSoft.Net.POP3.Client
         /// </exception>
         /// <remarks>
         /// <para>
-        /// This method performs a partial RETR operation and parses only the retrieved
-        /// portion of the message. If <paramref name="maxCount"/> does not include the
-        /// terminating header separator (<c>CRLFCRLF</c>), the MIME parser may interpret
-        /// the header block as incomplete.
+        /// This method performs a partial POP3 <c>RETR</c> operation by retrieving only
+        /// the portion of the message allowed by the internal read limit enforced by
+        /// <see cref="ToStreamAsync(Stream, CancellationToken)"/>.  
+        /// The limit is based on the message size reported by the POP3 <c>LIST</c>
+        /// command, plus an additional one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
         /// </para>
         /// <para>
-        /// Partial body retrieval is useful for header inspection or lightweight message
-        /// analysis without downloading the full message body.
+        /// If the retrieved data does not include the complete header section
+        /// (terminated by <c>CRLFCRLF</c>), the MIME parser may interpret the header
+        /// block as incomplete.
+        /// </para>
+        /// <para>
+        /// Partial body retrieval is useful for header inspection or lightweight
+        /// message analysis without downloading the full message body.
         /// </para>
         /// </remarks>
-        public async ValueTask<Mail_Message> ToMailMessageAsync(long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask<Mail_Message> ToMailMessageAsync(CancellationToken cancellationToken = default)
         {
             using var stream = new MemoryStreamEx();
 
-            await ToStreamAsync(stream,maxCount,cancellationToken);
+            await ToStreamAsync(stream,cancellationToken);
             stream.Position = 0;
 
             return Mail_Message.ParseFromStream(stream);
@@ -703,21 +714,13 @@ namespace LumiSoft.Net.POP3.Client
         /// <summary>
         /// Retrieves the full message using the POP3 <c>RETR</c> command and returns
         /// the result as a byte array.  
-        /// This is the synchronous wrapper for <see cref="ToByteAsync(long, CancellationToken)"/>.
+        /// This is the synchronous wrapper for <see cref="ToByteAsync(CancellationToken)"/>.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line message responses.
-        /// </param>
         /// <returns>
         /// A byte array containing the full POP3 <c>RETR</c> response.
         /// </returns>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="POP3_ClientException">
         /// Thrown if the POP3 server returns a negative (<c>-ERR</c>) response.
@@ -725,7 +728,7 @@ namespace LumiSoft.Net.POP3.Client
         /// <remarks>
         /// <para>
         /// This method blocks the calling thread until the underlying asynchronous
-        /// <see cref="ToByteAsync(long, CancellationToken)"/> operation completes.
+        /// <see cref="ToByteAsync(CancellationToken)"/> operation completes.
         /// </para>
         /// <para>
         /// A <see cref="CancellationTokenSource"/> is created using the POP3 client's
@@ -733,16 +736,25 @@ namespace LumiSoft.Net.POP3.Client
         /// same operation timeout as other synchronous POP3 methods.
         /// </para>
         /// <para>
-        /// For large messages or when memory usage is a concern, prefer
-        /// <see cref="ToStream"/> or <see cref="ToStreamAsync"/> to stream the message
-        /// directly to a file or processing pipeline.
+        /// <b>Warning:</b> This method buffers the entire POP3 <c>RETR</c> response
+        /// into memory.  
+        /// For large messages, this may result in significant memory usage.  
+        /// When working with large messages or when memory usage is a concern,
+        /// prefer <see cref="ToStream"/> or <see cref="ToStreamAsync"/> to stream the
+        /// message directly to a file or processing pipeline.
+        /// </para>
+        /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
         /// </para>
         /// </remarks>
-        public byte[] ToByte(long maxCount)
+        public byte[] ToByte()
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            return ToByteAsync(maxCount,cts.Token).GetAwaiter().GetResult();
+            return ToByteAsync(cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -753,11 +765,6 @@ namespace LumiSoft.Net.POP3.Client
         /// Retrieves the full message using the POP3 <c>RETR</c> command and returns
         /// the result as a byte array.
         /// </summary>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line message responses.
-        /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
         /// </param>
@@ -771,17 +778,14 @@ namespace LumiSoft.Net.POP3.Client
         /// <exception cref="ArgumentNullException">
         /// Thrown if the internal stream allocation fails.
         /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
-        /// </exception>
         /// <exception cref="POP3_ClientException">
         /// Thrown if the POP3 server returns a negative (<c>-ERR</c>) response.
         /// </exception>
         /// <remarks>
         /// <para>
         /// This method is a convenience wrapper around <see cref="ToStreamAsync"/> that
-        /// buffers the entire message into an in‑memory <see cref="MemoryStream"/> and
-        /// returns the resulting byte array.
+        /// buffers the entire POP3 <c>RETR</c> response into an in‑memory
+        /// <see cref="MemoryStream"/> and returns the resulting byte array.
         /// </para>
         /// <para>
         /// <b>Warning:</b> For large messages, using this method may result in
@@ -790,12 +794,18 @@ namespace LumiSoft.Net.POP3.Client
         /// prefer <see cref="ToStreamAsync"/> or <see cref="ToStream"/> to stream the
         /// message directly to a file or processing pipeline.
         /// </para>
+        /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
         /// </remarks>
-        public async ValueTask<byte[]> ToByteAsync(long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask<byte[]> ToByteAsync(CancellationToken cancellationToken = default)
         {
             using var stream = new MemoryStream();
 
-            await ToStreamAsync(stream,maxCount,cancellationToken);
+            await ToStreamAsync(stream,cancellationToken);
 
             return stream.ToArray();
         }
@@ -815,19 +825,11 @@ namespace LumiSoft.Net.POP3.Client
         /// The destination <see cref="Stream"/> to which the POP3 <c>RETR</c> response
         /// will be written.
         /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to <paramref name="stream"/>.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient buffer space for
-        /// typical POP3 multi‑line message responses.
-        /// </param>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="stream"/> is <c>null</c>.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
         /// </exception>
         /// <exception cref="POP3_ClientException">
         /// Thrown if the POP3 server returns a negative (<c>-ERR</c>) response.
@@ -846,14 +848,20 @@ namespace LumiSoft.Net.POP3.Client
         /// TCP client and controls how long the wrapper waits for network activity.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// For non‑blocking usage, call <see cref="ToStreamAsync"/> instead.
         /// </para>
         /// </remarks>
-        public void ToStream(Stream stream,long maxCount)
+        public void ToStream(Stream stream)
         {
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            ToStreamAsync(stream,maxCount,cts.Token).GetAwaiter().GetResult();
+            ToStreamAsync(stream,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -868,11 +876,6 @@ namespace LumiSoft.Net.POP3.Client
         /// The destination <see cref="Stream"/> to which the POP3 <c>RETR</c> response
         /// will be written.
         /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to <paramref name="stream"/>.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient buffer space for
-        /// typical POP3 multi‑line message responses.
-        /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
         /// </param>
@@ -886,9 +889,6 @@ namespace LumiSoft.Net.POP3.Client
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="stream"/> is <c>null</c>.
         /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>64000</c>.
-        /// </exception>
         /// <remarks>
         /// <para>
         /// The POP3 <c>RETR</c> command returns the entire message, including all
@@ -897,11 +897,17 @@ namespace LumiSoft.Net.POP3.Client
         /// single period (<c>.</c>) on a line by itself.
         /// </para>
         /// <para>
+        /// The method enforces an internal read limit based on the message size
+        /// reported by the POP3 <c>LIST</c> command, plus an additional one‑megabyte
+        /// safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// This method does not cache or parse the returned data; it streams the raw
         /// POP3 response directly into the provided <paramref name="stream"/>.
         /// </para>
         /// </remarks>
-        public async ValueTask ToStreamAsync(Stream stream,long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask ToStreamAsync(Stream stream,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -909,9 +915,8 @@ namespace LumiSoft.Net.POP3.Client
             if(stream == null){
                 throw new ArgumentNullException(nameof(stream));
             }
-            if(maxCount < 64000){
-                throw new ArgumentException("Argument 'maxCount' must be >= 64000.");
-            }
+
+            int maxCount = m_Size + (1000*1000);
 
             await m_Pop3Client.RetrAsync(this.MessageNumber,stream,maxCount,cancellationToken);
         }
@@ -923,15 +928,11 @@ namespace LumiSoft.Net.POP3.Client
         /// <summary>
         /// Retrieves the message headers and the specified number of body lines using
         /// the POP3 <c>TOP</c> command and returns the result as a byte array.
+        /// This is the synchronous wrapper for <see cref="TopLinesToByteAsync"/>.
         /// </summary>
         /// <param name="lineCount">
-        /// The number of body lines to retrieve.  
+        /// The number of body lines to retrieve.
         /// A value of <c>0</c> retrieves only the message header.
-        /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
         /// </param>
         /// <returns>
         /// A byte array containing the POP3 <c>TOP</c> response.
@@ -940,8 +941,7 @@ namespace LumiSoft.Net.POP3.Client
         /// Thrown if the message object has been disposed.
         /// </exception>
         /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="lineCount"/> is negative or if
-        /// <paramref name="maxCount"/> is less than <c>64000</c>.
+        /// Thrown if <paramref name="lineCount"/> is negative.
         /// </exception>
         /// <remarks>
         /// <para>
@@ -956,10 +956,16 @@ namespace LumiSoft.Net.POP3.Client
         /// <see cref="TopLinesToStream"/> or <see cref="TopLinesToStreamAsync"/> to
         /// stream the data directly to a file or processing pipeline.
         /// </para>
+        /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
         /// </remarks>
-        public byte[] TopLinesToByte(int lineCount,long maxCount)
+        public byte[] TopLinesToByte(int lineCount)
         {
-            return TopLinesToByteAsync(lineCount,maxCount).GetAwaiter().GetResult();
+            return TopLinesToByteAsync(lineCount).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -971,13 +977,8 @@ namespace LumiSoft.Net.POP3.Client
         /// the POP3 <c>TOP</c> command and returns the result as a byte array.
         /// </summary>
         /// <param name="lineCount">
-        /// The number of body lines to retrieve.  
+        /// The number of body lines to retrieve.
         /// A value of <c>0</c> retrieves only the message header.
-        /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to the internal buffer.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient space for typical
-        /// POP3 multi‑line responses.
         /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
@@ -990,8 +991,7 @@ namespace LumiSoft.Net.POP3.Client
         /// Thrown if the message object has been disposed.
         /// </exception>
         /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="lineCount"/> is negative or if
-        /// <paramref name="maxCount"/> is less than <c>64000</c>.
+        /// Thrown if <paramref name="lineCount"/> is negative.
         /// </exception>
         /// <remarks>
         /// <para>
@@ -1002,16 +1002,22 @@ namespace LumiSoft.Net.POP3.Client
         /// </para>
         /// <para>
         /// The POP3 <c>TOP</c> command returns the message header followed by the first
-        /// <paramref name="lineCount"/> lines of the message body.  
+        /// <paramref name="lineCount"/> lines of the message body.
         /// The response is transmitted using POP3 multi‑line format and terminated by a
         /// single period (<c>.</c>) on a line by itself.
         /// </para>
+        /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
         /// </remarks>
-        public async ValueTask<byte[]> TopLinesToByteAsync(int lineCount,long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask<byte[]> TopLinesToByteAsync(int lineCount,CancellationToken cancellationToken = default)
         {
             using var stream = new MemoryStream();
 
-            await TopLinesToStreamAsync(lineCount,stream,maxCount,cancellationToken);
+            await TopLinesToStreamAsync(lineCount,stream,cancellationToken);
 
             return stream.ToArray();
         }
@@ -1022,30 +1028,24 @@ namespace LumiSoft.Net.POP3.Client
 
         /// <summary>
         /// Retrieves the message headers and the specified number of body lines using
-        /// the POP3 <c>TOP</c> command and writes the result to the provided stream.  
+        /// the POP3 <c>TOP</c> command and writes the result to the provided stream.
         /// This is the synchronous wrapper for <see cref="TopLinesToStreamAsync"/> and
         /// uses the underlying TCP client's read/write timeout to limit the duration
         /// of the operation.
         /// </summary>
         /// <param name="lineCount">
-        /// The number of body lines to retrieve.  
+        /// The number of body lines to retrieve.
         /// A value of <c>0</c> retrieves only the message header.
         /// </param>
         /// <param name="stream">
         /// The destination <see cref="Stream"/> to which the POP3 <c>TOP</c> response
         /// will be written.
         /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to <paramref name="stream"/>.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient buffer space for
-        /// typical POP3 multi‑line responses.
-        /// </param>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the message object has been disposed.
         /// </exception>
         /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="lineCount"/> is negative or if
-        /// <paramref name="maxCount"/> is less than <c>64000</c>.
+        /// Thrown if <paramref name="lineCount"/> is negative.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="stream"/> is <c>null</c>.
@@ -1056,7 +1056,7 @@ namespace LumiSoft.Net.POP3.Client
         /// <remarks>
         /// <para>
         /// The POP3 <c>TOP</c> command returns the message header followed by the first
-        /// <paramref name="lineCount"/> lines of the message body.  
+        /// <paramref name="lineCount"/> lines of the message body.
         /// The response is transmitted using POP3 multi‑line format and terminated by a
         /// single period (<c>.</c>) on a line by itself.
         /// </para>
@@ -1067,10 +1067,16 @@ namespace LumiSoft.Net.POP3.Client
         /// TCP client and controls how long the wrapper waits for network activity.
         /// </para>
         /// <para>
+        /// The underlying asynchronous method enforces an internal read limit based on
+        /// the message size reported by the POP3 <c>LIST</c> command, plus an additional
+        /// one‑megabyte safety margin.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// For non‑blocking usage, call <see cref="TopLinesToStreamAsync"/> instead.
         /// </para>
         /// </remarks>
-        public void TopLinesToStream(int lineCount,Stream stream,long maxCount)
+        public void TopLinesToStream(int lineCount,Stream stream)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -1078,7 +1084,7 @@ namespace LumiSoft.Net.POP3.Client
 
             using var cts = new CancellationTokenSource(m_Pop3Client.Timeout);
 
-            TopLinesToStreamAsync(lineCount,stream,maxCount,cts.Token).GetAwaiter().GetResult();
+            TopLinesToStreamAsync(lineCount,stream,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -1090,17 +1096,12 @@ namespace LumiSoft.Net.POP3.Client
         /// the POP3 <c>TOP</c> command and writes the result to the provided stream.
         /// </summary>
         /// <param name="lineCount">
-        /// The number of body lines to retrieve.  
+        /// The number of body lines to retrieve.
         /// A value of <c>0</c> retrieves only the message header.
         /// </param>
         /// <param name="stream">
         /// The destination <see cref="Stream"/> to which the POP3 <c>TOP</c> response
         /// will be written.
-        /// </param>
-        /// <param name="maxCount">
-        /// The maximum number of bytes allowed to be written to <paramref name="stream"/>.  
-        /// Must be at least <c>64000</c> bytes to ensure sufficient buffer space for
-        /// typical POP3 multi‑line responses.
         /// </param>
         /// <param name="cancellationToken">
         /// A token that may be used to cancel the asynchronous operation.
@@ -1113,8 +1114,7 @@ namespace LumiSoft.Net.POP3.Client
         /// Thrown if the message object has been disposed.
         /// </exception>
         /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="lineCount"/> is negative or if
-        /// <paramref name="maxCount"/> is less than <c>64000</c>.
+        /// Thrown if <paramref name="lineCount"/> is negative.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="stream"/> is <c>null</c>.
@@ -1127,11 +1127,17 @@ namespace LumiSoft.Net.POP3.Client
         /// single period (<c>.</c>) on a line by itself.
         /// </para>
         /// <para>
+        /// The method enforces an internal read limit based on the message size
+        /// reported by the POP3 <c>LIST</c> command, plus an additional safety margin
+        /// of one megabyte.  
+        /// This limit is applied automatically and is not exposed to the caller.
+        /// </para>
+        /// <para>
         /// This method does not cache or parse the returned data; it simply streams the
         /// raw POP3 response into the provided <paramref name="stream"/>.
         /// </para>
         /// </remarks>
-        public async ValueTask TopLinesToStreamAsync(int lineCount,Stream stream,long maxCount,CancellationToken cancellationToken = default)
+        public async ValueTask TopLinesToStreamAsync(int lineCount,Stream stream,CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -1142,9 +1148,8 @@ namespace LumiSoft.Net.POP3.Client
             if(stream == null){
                 throw new ArgumentNullException(nameof(stream));
             }
-            if(maxCount < 64000){
-                throw new ArgumentException("Argument 'maxCount' must be >= 64000.");
-            }
+
+            int maxCount = m_Size + (1000*1000);
 
             await m_Pop3Client.TopAsync(this.MessageNumber,lineCount,stream,maxCount,cancellationToken);
         }
