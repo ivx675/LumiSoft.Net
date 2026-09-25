@@ -30,8 +30,8 @@ namespace IMAP_Console
                         AddressFamily.Unspecified, // AddressFamily.Unspecified = .NET dual-stack socket (IPv4 + IPv6)
                         ssl,
                         null // Ssl options: Remote certificate validation,client certificate, ...
-                     );
-                    Console.WriteLine("Connected:");
+                    );
+                    
                     // Get and store server supported capbailities.
                     await imapClient.CapabilityAsync();
 
