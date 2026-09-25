@@ -9,7 +9,7 @@ A cross‑platform .NET networking library providing **client and server compone
 ### Mail Protocols
 - **SMTP Client (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, SIZE, DSN, BINARYMIME, CHUNKING, ENHANCEDSTATUSCODES, Socks5, http-connect)**
 - **POP3 Client (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, APOP, TOP, USER, UIDL, RESP-CODES, UTF8,Socks5, http-connect)**
-- **IMAP Client**
+- **IMAP Client (STARTTLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, IDLE, LITERAL+, UIDPLUS, Gmail extensions, Socks5, http-connect)**
 - **SMTP Server**
 - **POP3 Server**
 - **IMAP Server**
@@ -20,11 +20,24 @@ A cross‑platform .NET networking library providing **client and server compone
 - **FTP Client & Server**
 - **WebDav Client**
 - **UPnP Client**
-- **STUN** support
+- **STUN Client**
 
 ---
 
 ## Version History
+
+### 10.2.0 (25.09.2026)
+
+#### IMAP Client
+- Complete rewrite with fully modern async/await implementation  
+- Added Socks5 and http-connect proxy support  
+- Added usage example, see Examples link below
+
+#### POP3 Client
+- Fix Connect and ConnectAsync ssl connect.
+- Remove maxCount from POP3_ClientMessage methods. Replaced by automatic server reported 
+  message size + 1MB safety limit. 
+- Added usage example, see Examples link below
 
 ### 10.1.0 (09.09.2026)
 
@@ -42,6 +55,10 @@ A cross‑platform .NET networking library providing **client and server compone
 - Full MIME integration including partial MIME parsing 
 
 ---
+
+## Examples
+
+[https://github.com/ivx675/LumiSoft.Net/tree/master/Examples](https://github.com/ivx675/LumiSoft.Net/tree/master/Examples)
 
 ## Repository
 
