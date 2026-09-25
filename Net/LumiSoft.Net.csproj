@@ -10,8 +10,8 @@
     <Description>LumiSoft.Net is a cross‑platform .NET networking library providing full client and server implementations for SMTP, POP3, IMAP, and FTP, plus client‑only components for DNS, MIME, WebDav, STUN, and UPnP.</Description>
     <AssemblyVersion></AssemblyVersion>
     <FileVersion></FileVersion>
-    <InformationalVersion>10.1.0</InformationalVersion>
-    <VersionPrefix>10.1.0</VersionPrefix>
+    <InformationalVersion>10.2.0</InformationalVersion>
+    <VersionPrefix>10.2.0</VersionPrefix>
     <PackageLicenseFile>license.txt</PackageLicenseFile>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>LumiSoft.Net.dll</PackageId>
