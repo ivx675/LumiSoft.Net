@@ -18,17 +18,16 @@ namespace LumiSoft.Net.TCP
     /// </summary>
     public class TCP_Client : TCP_Session
     {
-        private bool                                 m_IsDisposed           = false;
-        private bool                                 m_IsConnected          = false;
-        private string                               m_ID                   = "";
-        private DateTime                             m_ConnectTime;
-        private IPEndPoint?                          m_pLocalEP             = null;
-        private IPEndPoint?                          m_pRemoteEP            = null;
-        private bool                                 m_IsSecure             = false;
-        private SmartStream?                         m_pTcpStream           = null;
-        private Logger?                              m_pLogger              = null;
-        private RemoteCertificateValidationCallback? m_pCertificateCallback = null;
-        private int                                  m_Timeout              = 61000;
+        private bool         m_IsDisposed   = false;
+        private bool         m_IsConnected  = false;
+        private string       m_ID           = "";
+        private DateTime     m_ConnectTime;
+        private IPEndPoint?  m_pLocalEP     = null;
+        private IPEndPoint?  m_pRemoteEP    = null;
+        private bool         m_IsSecure     = false;
+        private SmartStream? m_pTcpStream   = null;
+        private Logger?      m_pLogger      = null;
+        private int          m_Timeout      = 61000;
 
         /// <summary>
         /// Default constructor.
@@ -352,11 +351,15 @@ namespace LumiSoft.Net.TCP
                 LogAddText("Connecting " + string.Join(" -> ",addresses.Select(a => a.ToString() + ":" + port)) + ".");
 
                 await socket.ConnectAsync(addresses,port,cancellationToken);
-                m_IsConnected = true;
-                m_pLocalEP  = (IPEndPoint)socket.LocalEndPoint!;
-                m_pRemoteEP = (IPEndPoint)socket.RemoteEndPoint!;
+
+                m_IsConnected = true;                
+                m_ID          = Guid.NewGuid().ToString();
+                m_ConnectTime = DateTime.Now;
+                m_pLocalEP    = (IPEndPoint)socket.LocalEndPoint!;
+                m_pRemoteEP   = (IPEndPoint)socket.RemoteEndPoint!;
 
                 m_pTcpStream = new SmartStream(new NetworkStream(socket,true),true);
+                m_pTcpStream.Encoding = Encoding.UTF8;
 
                 if(ssl){
                     LogAddText("Switching to secure connection (SSL).");
@@ -846,9 +849,11 @@ namespace LumiSoft.Net.TCP
                 await m_pTcpStream.ReadExactlyAsync(portBytes, 0, 2,cancellationToken);
 
                 // Now we are truly connected
-                m_IsConnected = true;
-                m_pLocalEP = (IPEndPoint)socket.LocalEndPoint!;
-                m_pRemoteEP = new IPEndPoint(IPAddress.None, targetPort); // SOCKS hides real remote EP
+                m_IsConnected = true;                
+                m_ID          = Guid.NewGuid().ToString();
+                m_ConnectTime = DateTime.Now;
+                m_pLocalEP    = (IPEndPoint)socket.LocalEndPoint!;
+                m_pRemoteEP   = (IPEndPoint)socket.RemoteEndPoint!;
 
                 await OnConnectedAsync(cancellationToken);
             }
@@ -1373,9 +1378,11 @@ namespace LumiSoft.Net.TCP
                 // Tunnel established — wrap SmartStream for SMTP/etc
                 m_pTcpStream = new SmartStream(proxyStream,true);
 
-                m_IsConnected = true;
-                m_pLocalEP = (IPEndPoint)socket.LocalEndPoint!;
-                m_pRemoteEP = new IPEndPoint(IPAddress.None, targetPort);
+                m_IsConnected = true;                
+                m_ID          = Guid.NewGuid().ToString();
+                m_ConnectTime = DateTime.Now;
+                m_pLocalEP    = (IPEndPoint)socket.LocalEndPoint!;
+                m_pRemoteEP   = (IPEndPoint)socket.RemoteEndPoint!;
 
                 await OnConnectedAsync(cancellationToken);
             }
