@@ -7,43 +7,36 @@ namespace LumiSoft.Net.SMTP
     /// <summary>
     /// Represents a single SMTP reply line as defined in RFC 5321 section 4.2.
     /// A reply line consists of a 3‑digit reply code, an optional enhanced status
-    /// code (RFC 3463 / RFC 5248), textual diagnostic information, and an indicator
-    /// specifying whether the line is the final line of a multi‑line reply.
+    /// code (RFC 3463 / RFC 5248) and textual diagnostic information.
     /// </summary>
     public class SMTP_t_ReplyLine
     {
         private int                        m_ReplyCode           = 0;
         private SMTP_t_EnhancedStatusCode? m_pEnhancedStatusCode = null;
         private string                     m_Text                = "";
-        private bool                       m_IsLastLine          = true;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SMTP_t_ReplyLine"/> class
-        /// using the specified reply code, text, and line‑termination indicator.
+        /// using the specified reply code and text.
         /// </summary>
         /// <param name="replyCode">The 3‑digit SMTP reply code.</param>
         /// <param name="text">The textual portion of the reply line.</param>
-        /// <param name="isLastLine">
-        /// <c>true</c> if this line is the final line of the reply; otherwise <c>false</c>.
-        /// </param>
-        public SMTP_t_ReplyLine(int replyCode,string text,bool isLastLine) : this(replyCode,null,text,isLastLine)
+        public SMTP_t_ReplyLine(int replyCode,string text) : this(replyCode,null,text)
         {
         }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SMTP_t_ReplyLine"/> class
-        /// using the specified reply code, enhanced status code, text, and line‑termination indicator.
+        /// using the specified reply code, enhanced status code and text.
         /// </summary>
         /// <param name="replyCode">The 3‑digit SMTP reply code.</param>
         /// <param name="enhancedStatusCode">
         /// Optional enhanced status code (RFC 3463 / RFC 5248). May be <c>null</c>.
         /// </param>
         /// <param name="text">The textual portion of the reply line.</param>
-        /// <param name="isLastLine">
-        /// <c>true</c> if this line is the final line of the reply; otherwise <c>false</c>.
         /// </param>
 
-        public SMTP_t_ReplyLine(int replyCode,SMTP_t_EnhancedStatusCode? enhancedStatusCode,string text,bool isLastLine)
+        public SMTP_t_ReplyLine(int replyCode,SMTP_t_EnhancedStatusCode? enhancedStatusCode,string text)
         {
             if(text == null){
                 text = "";
@@ -52,7 +45,6 @@ namespace LumiSoft.Net.SMTP
             m_ReplyCode           = replyCode;
             m_pEnhancedStatusCode = enhancedStatusCode;
             m_Text                = text;
-            m_IsLastLine          = isLastLine;
         }
 
 
@@ -105,11 +97,6 @@ namespace LumiSoft.Net.SMTP
                 throw new ParseException("Invalid SMTP server reply-line '" + line + "' reply-code.");
             }
             
-            bool isLastLine = true;            
-            if(line.Length > 3){
-                isLastLine = (line[3] == ' ');
-            }
-            
             SMTP_t_EnhancedStatusCode? enhachedStatusCode = null;
             string                     text               = "";
             if(line.Length > 4){
@@ -122,7 +109,7 @@ namespace LumiSoft.Net.SMTP
                 }
             }
 
-            return new SMTP_t_ReplyLine(replyCode,enhachedStatusCode,text,isLastLine);
+            return new SMTP_t_ReplyLine(replyCode,enhachedStatusCode,text);
         }
 
         #endregion
@@ -136,13 +123,7 @@ namespace LumiSoft.Net.SMTP
         /// <returns>The reply line formatted as SMTP text.</returns>
         public override string ToString()
         {
-            string sep = m_IsLastLine ? " " : "-";
-            if (m_pEnhancedStatusCode != null){
-                return $"{m_ReplyCode}{sep}{m_pEnhancedStatusCode.Raw} {m_Text}\r\n";
-            }
-            else{
-                return $"{m_ReplyCode}{sep}{m_Text}\r\n";
-            }
+            return $"{m_ReplyCode} {m_Text}\r\n";
         }
 
         #endregion
@@ -172,14 +153,6 @@ namespace LumiSoft.Net.SMTP
         public string Text
         {
             get{ return m_Text; }
-        }
-
-        /// <summary>
-        /// Gets whether this line is the final line of the reply.
-        /// </summary>
-        public bool IsLastLine
-        {
-            get{ return m_IsLastLine; }
         }
 
         /// <summary>

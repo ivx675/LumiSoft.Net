@@ -2036,7 +2036,8 @@ namespace LumiSoft.Net.SMTP.Client
                     SMTP_t_ReplyLine replyLine = SMTP_t_ReplyLine.Parse(line);
                     replyLines.Add(replyLine);                    
 
-                    if(replyLine.IsLastLine){
+                    // We have last line.
+                    if(line.Length > 3 && (line[3] == ' ')){
                         break;
                     }
                     if(replyLines.Count > 100){
