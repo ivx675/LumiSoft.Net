@@ -821,7 +821,7 @@ namespace LumiSoft.Net.SMTP.Client
 
             await SendCommandLineAsync(authCommand,false,cancellationToken);
             #if DEBUG
-                LogAddWrite(authCommand.Length,authCommand);
+                LogAddWrite(authCommand.Length,authCommand.TrimEnd());
             #else
                 LogAddWrite(authCommand.Length,"Client response sent.");
             #endif
