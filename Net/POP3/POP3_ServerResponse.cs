@@ -95,6 +95,35 @@ namespace LumiSoft.Net.POP3
         }
 
 
+        #region override method ToString
+
+        /// <summary>
+        /// Converts the POP3 server response into its wire-format textual
+        /// representation as defined in RFC 1939 section 3.
+        /// <para>
+        /// A POP3 response consists of a status indicator (<c>+OK</c> or <c>-ERR</c>)
+        /// followed by optional response text. Some servers also include extended
+        /// response codes in square brackets, which this implementation preserves
+        /// when present.
+        /// </para>
+        /// </summary>
+        /// <returns>
+        /// A string containing the complete POP3 reply terminated with CRLF,
+        /// suitable for transmission over the POP3 control connection.
+        /// </returns>
+        public override string ToString()
+        {
+            if(!string.IsNullOrEmpty(m_ResponseCode)){
+                return $"{m_Status} [{m_ResponseCode}] {m_Text}\r\n";
+            }
+            else{
+                return $"{m_Status} {m_Text}\r\n";
+            }            
+        }
+
+        #endregion
+
+
         #region Properties implementation
 
         /// <summary>

@@ -21,6 +21,10 @@ namespace LumiSoft.Net.SMTP
         /// </summary>
         /// <param name="replyCode">The 3‑digit SMTP reply code.</param>
         /// <param name="text">The textual portion of the reply line.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="replyCode"/> is outside the valid range
+        /// of 200–599.
+        /// </exception>
         public SMTP_t_ReplyLine(int replyCode,string text) : this(replyCode,null,text)
         {
         }
@@ -33,11 +37,16 @@ namespace LumiSoft.Net.SMTP
         /// <param name="enhancedStatusCode">
         /// Optional enhanced status code (RFC 3463 / RFC 5248). May be <c>null</c>.
         /// </param>
-        /// <param name="text">The textual portion of the reply line.</param>
-        /// </param>
-
+        /// <param name="text">The textual portion of the reply line.</param>        
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="replyCode"/> is outside the valid range
+        /// of 200–599.
+        /// </exception>
         public SMTP_t_ReplyLine(int replyCode,SMTP_t_EnhancedStatusCode? enhancedStatusCode,string text)
         {
+            if(replyCode < 200 || replyCode > 599){
+                throw new ArgumentOutOfRangeException(nameof(replyCode),"Reply code must be between 200 and 599.");
+            }
             if(text == null){
                 text = "";
             }

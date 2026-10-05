@@ -5,35 +5,35 @@ using System.Text;
 namespace LumiSoft.Net.SMTP.Server
 {
     /// <summary>
-    /// Provides event data for the <c>EhloAsync</c> event raised when the
-    /// session processes an <c>EHLO</c> command.  
-    /// Contains the client-supplied domain string and the server’s initial
+    /// Provides event data for the <c>HeloAsync</c> event raised when the
+    /// session processes a <c>HELO</c> command.  
+    /// Contains the client‑supplied domain string and the server’s initial
     /// <see cref="SMTP_ServerResponse"/> that the event handler may inspect
     /// or replace.
     /// </summary>
-    public class SMTP_e_Ehlo : EventArgs
+    public class SMTP_e_Helo : EventArgs
     {
         private SMTP_Session        m_pSession;
         private string              m_Domain   = "";
         private SMTP_ServerResponse m_pResponse;
 
         /// <summary>
-        /// Provides data for the <c>EhloAsync</c> event raised when the session
-        /// processes an <c>EHLO</c> command.  
+        /// Provides data for the <c>HeloAsync</c> event raised when the session
+        /// processes a <c>HELO</c> command.  
         /// Contains the client-supplied domain string and the server’s initial
         /// <see cref="SMTP_ServerResponse"/> that the event handler may inspect
         /// or replace.
         /// </summary>
         /// <param name="session">
-        /// The active SMTP session that received the <c>EHLO</c> command.
+        /// The active SMTP session that received the <c>HELO</c> command.
         /// </param>
         /// <param name="domain">
         /// The domain or address-literal supplied by the client in the
-        /// <c>EHLO</c> command.
+        /// <c>HELO</c> command.
         /// </param>
         /// <param name="response">
-        /// The server-generated <c>250</c> reply lines advertising supported
-        /// SMTP service extensions. Event handlers may modify this response
+        /// The server-generated <c>250</c> reply line acknowledging the
+        /// <c>HELO</c> command. Event handlers may modify this response
         /// before it is sent to the client.
         /// </param>
         /// <exception cref="ArgumentNullException">
@@ -42,7 +42,7 @@ namespace LumiSoft.Net.SMTP.Server
         /// <exception cref="ArgumentException">
         /// Thrown if <paramref name="domain"/> is <c>null</c> or empty.
         /// </exception>
-        public SMTP_e_Ehlo(SMTP_Session session,string domain,SMTP_ServerResponse response)
+        public SMTP_e_Helo(SMTP_Session session,string domain,SMTP_ServerResponse response)
         {
             if(session == null){
                 throw new ArgumentNullException(nameof(session));
@@ -79,7 +79,7 @@ namespace LumiSoft.Net.SMTP.Server
 
         /// <summary>
         /// Gets the domain or address-literal supplied by the client in the
-        /// <c>EHLO</c> command.  
+        ///  <c>HELO</c> command.  
         /// This value represents the client’s self‑reported identity and may not
         /// correspond to a verified DNS hostname.
         /// </summary>

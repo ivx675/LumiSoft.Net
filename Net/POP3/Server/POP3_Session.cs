@@ -1,13 +1,14 @@
-﻿using System;
+﻿using LumiSoft.Net.AUTH;
+using LumiSoft.Net.IO;
+using LumiSoft.Net.SMTP;
+using LumiSoft.Net.SMTP.Server;
+using LumiSoft.Net.TCP;
+using System;
 using System.Collections.Generic;
-using System.Text;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Principal;
-
-using LumiSoft.Net.IO;
-using LumiSoft.Net.TCP;
-using LumiSoft.Net.AUTH;
+using System.Text;
 
 namespace LumiSoft.Net.POP3.Server
 {
@@ -21,15 +22,15 @@ namespace LumiSoft.Net.POP3.Server
         private int                                           m_BadCommands      = 0;
         private string?                                       m_UserName         = null;
         private GenericIdentity?                              m_pUser            = null;
-        private KeyValueCollection<string,POP3_ServerMessage> m_pMessages;
+        private List<POP3_ServerMessage>                      m_pMessages;
 
         /// <summary>
         /// Default constructor.
         /// </summary>
         public POP3_Session()
         {
-            m_pAuthentications = new Dictionary<string,AUTH_SASL_ServerMechanism>(StringComparer.CurrentCultureIgnoreCase);
-            m_pMessages = new KeyValueCollection<string,POP3_ServerMessage>();
+            m_pAuthentications = new Dictionary<string,AUTH_SASL_ServerMechanism>(StringComparer.OrdinalIgnoreCase);
+            m_pMessages = new List<POP3_ServerMessage>();
         }
 
 
@@ -40,53 +41,18 @@ namespace LumiSoft.Net.POP3.Server
         /// </summary>
         protected override void Start()
         {
-            base.Start();
-
-            /* RFC 1939 4.
-                Once the TCP connection has been opened by a POP3 client, the POP3
-                server issues a one line greeting.  This can be any positive
-                response.  An example might be:
-
-                    S:  +OK POP3 server ready
-
-            */
-            
-            try{
-                string reply;
-                if(string.IsNullOrEmpty(this.Server.GreetingText)){
-                    reply = "+OK [" + Net_Utils.GetLocalHostName(this.LocalHostName) + "] POP3 Service Ready.";
-                }
-                else{
-                    reply = "+OK " + this.Server.GreetingText;
-                }
-
-                POP3_e_Started e = OnStarted(reply);
-
-                if(!string.IsNullOrEmpty(e.Response)){
-                    WriteLine(reply.ToString());
-                }
-
-                // Setup rejected flag, so we respond "-ERR Session rejected." any command except QUIT.
-                if(string.IsNullOrEmpty(e.Response) || e.Response.ToUpper().StartsWith("-ERR")){
-                    m_SessionRejected = true;
-                }
-                               
-                BeginReadCmd();
-            }
-            catch(Exception x){
-                OnError(x);
-            }
+            RunAsync();
         }
 
         #endregion
 
-        #region override method OnError
+        #region override method OnErrorAsync
 
         /// <summary>
         /// Is called when session has processing error.
         /// </summary>
         /// <param name="x">Exception happened.</param>
-        protected override void OnError(Exception x)
+        protected override async Task OnErrorAsync(Exception x)
         {
             if(this.IsDisposed){
                 return;
@@ -95,10 +61,6 @@ namespace LumiSoft.Net.POP3.Server
                 return;
             }
 
-            /* Error handling:
-                IO and Socket exceptions are permanent, so we must end session.
-            */
-
             try{
                 LogAddText("Exception: " + x.Message);
 
@@ -106,19 +68,20 @@ namespace LumiSoft.Net.POP3.Server
                 if(x is IOException || x is SocketException){
                     Dispose();
                 }
-                // xxx error, may be temporary.
+                // Unknown error.
                 else{
                     // Raise POP3_Server.Error event.
-                    base.OnError(x);
+                    await base.OnErrorAsync(x);
 
-                    // Try to send "-ERR Internal server error."
+                    // Try to send "500 Internal server error."
                     try{
-                        WriteLine("-ERR Internal server error.");
+                        string text = "Internal server error.";
+                        await SendResponseAsync(new POP3_ServerResponse("-ERR",null,text));
                     }
-                    catch{
-                        // Error is permanent.
-                        Dispose();
+                    catch{                        
                     }
+
+                    Disconnect();
                 }
             }
             catch{
@@ -127,7 +90,7 @@ namespace LumiSoft.Net.POP3.Server
 
         #endregion
 
-        #region override method OnTimeout
+        #region override method OnTimeoutAsync
 
         /// <summary>
         /// This method is called when specified session times out.
@@ -136,46 +99,137 @@ namespace LumiSoft.Net.POP3.Server
         /// This method allows inhereted classes to report error message to connected client.
         /// Session will be disconnected after this method completes.
         /// </remarks>
-        protected override void OnTimeout()
+        protected override async Task OnTimeoutAsync()
         {
             try{
-                // TODO: ? We should close active message stream.
-
-                WriteLine("-ERR Idle timeout, closing connection.");
+                string text = "Idle timeout, closing connection.";
+                var sendTask =  SendResponseAsync(new POP3_ServerResponse("-ERR",null,text));
+                await sendTask.WaitAsync(TimeSpan.FromSeconds(5));
             }
             catch{
                 // Skip errors.
             }
+
+            _= base.OnTimeoutAsync();
         }
 
         #endregion
 
 
-        #region method BeginReadCmd
+        #region method RunAsync
 
-        /// <summary>
-        /// Starts reading incoming command from the connected client.
-        /// </summary>
-        private void BeginReadCmd()
+        internal async void RunAsync()
         {
-            if(this.IsDisposed){
-                return;
-            }
+            /* RFC 1939 4.
+                Once the TCP connection has been opened by a POP3 client, the POP3
+                server issues a one line greeting.  This can be any positive
+                response.  An example might be:
+
+                    S:  +OK POP3 server ready
+            */
 
             try{
-                ArgumentNullException.ThrowIfNull(this.TcpStream);
+                var response = new POP3_ServerResponse("+OK",null,Net_Utils.GetLocalHostName(this.LocalHostName) + " POP3 server ready.");
+                if(!string.IsNullOrEmpty(this.Server.GreetingText)){
+                    response = new POP3_ServerResponse("+OK",null,this.Server.GreetingText);
+                }
 
-                SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                // This event is raised only when read next coomand completes asynchronously.
-                readLineOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadLineAsyncOP>>(delegate(object? sender,EventArgs<SmartStream.ReadLineAsyncOP> e){                
-                    if(ProcessCmd(readLineOP)){
-                        BeginReadCmd();
-                    }
-                });
-                // Process incoming commands while, command reading completes synchronously.
-                while(this.TcpStream.ReadLine(readLineOP,true)){
-                    if(!ProcessCmd(readLineOP)){
+                // Raise event StartedAsync.
+                if(this.StartedAsync != null){
+                    POP3_e_Started eArgs = new POP3_e_Started(this,response);
+                    await this.StartedAsync(eArgs);
+
+                    response = eArgs.Response;
+                }
+
+                await SendResponseAsync(response);
+
+                // Session rejected flag, so we respond "-ERR Session rejected." any command except QUIT.
+                if(!response.IsSuccess){
+                    m_SessionRejected = true;
+                }
+
+                // Command loop, while QUIT or fatal error happens.
+                while(!this.IsDisposed){
+                    // Read command line.
+                    ReadLineResult responseline = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    // Server closed connection.
+                    if(responseline.BytesInBuffer == 0){
+                        LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' closed connection.");
+                        Dispose();
+
                         break;
+                    }                    
+                    string line = responseline.LineUtf8 ?? "";
+
+                    string[] cmd_args = line.Split(new char[]{' '},2);
+                    string   cmd      = cmd_args[0].ToUpperInvariant();
+                    string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
+
+                    // Hide password from log.
+                    if(cmd == "PASS"){
+                        LogAddRead(responseline.BytesInBuffer,"PASS <***REMOVED***>");
+                    }
+                    else{
+                        LogAddRead(responseline.BytesInBuffer,line);
+                    }
+
+                    if(cmd == "STLS"){
+                        await StlsAsync(args);
+                    }
+                    else if(cmd == "USER"){
+                        await UserAsync(args);
+                    }
+                    else if(cmd == "PASS"){
+                        await PassAsync(args);
+                    }
+                    else if(cmd == "AUTH"){
+                        await AuthAsync(args);
+                    }
+                    else if(cmd == "STAT"){
+                        await StatAsync(args);
+                    }
+                    else if(cmd == "LIST"){
+                        await ListAsync(args);
+                    }
+                    else if(cmd == "UIDL"){
+                        await UidlAsync(args);
+                    }
+                    else if(cmd == "TOP"){
+                        await TopAsync(args);
+                    }
+                    else if(cmd == "RETR"){
+                        await RetrAsync(args);
+                    }
+                    else if(cmd == "DELE"){
+                        await DeleAsync(args);
+                    }
+                    else if(cmd == "RSET"){
+                        await ResetAsync(args);
+                    }
+                    else if(cmd == "NOOP"){
+                        await NoopAsync(args);
+                    }
+                    else if(cmd == "CAPA"){
+                        await CapaAsync(args);
+                    }
+                    else if(cmd == "QUIT"){
+                        await QuitAsync(args);
+                    }
+                    else{
+                         m_BadCommands++;
+
+                         // Maximum allowed bad commands exceeded.
+                         if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
+                             response = new POP3_ServerResponse("-ERR",null,"Too many bad commands, closing connection.");
+                             await SendResponseAsync(response);
+                             Disconnect();
+
+                             return;
+                         }
+                            
+                         response = new POP3_ServerResponse("-ERR",null,"Error: command '" + cmd + "' not recognized.");
+                         await SendResponseAsync(response);
                     }
                 }
             }
@@ -186,117 +240,10 @@ namespace LumiSoft.Net.POP3.Server
 
         #endregion
 
-        #region method ProcessCmd
 
-        /// <summary>
-        /// Completes command reading operation.
-        /// </summary>
-        /// <param name="op">Operation.</param>
-        /// <returns>Returns true if server should start reading next command.</returns>
-        private bool ProcessCmd(SmartStream.ReadLineAsyncOP op)
-        {
-            bool readNextCommand = true;
-                        
-            try{
-                // We are already disposed.
-                if(this.IsDisposed){
-                    return false;
-                }
-                // Check errors.
-                if(op.Error != null){
-                    OnError(op.Error);
-                }
-                // Remote host shut-down(Socket.ShutDown) socket.
-                if(op.BytesInBuffer == 0){
-                    LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' shut down socket.");
-                    Dispose();
-                
-                    return false;
-                }
-                                
-                string[] cmd_args = Encoding.UTF8.GetString(op.Buffer,0,op.LineBytesInBuffer).Split(new char[]{' '},2);
-                string   cmd      = cmd_args[0].ToUpperInvariant();
-                string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
+        #region method StlsAsync
 
-                // Log.
-                if(this.Server.Logger != null){
-                    // Hide password from log.
-                    if(cmd == "PASS"){
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,"PASS <***REMOVED***>",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-                    else{
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,op.LineUtf8 ?? "",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-                }
-
-                if(cmd == "STLS"){
-                    STLS(args);
-                }
-                else if(cmd == "USER"){
-                    USER(args);
-                }
-                else if(cmd == "PASS"){
-                    PASS(args);
-                }
-                else if(cmd == "AUTH"){
-                    AUTH(args);
-                }
-                else if(cmd == "STAT"){
-                    STAT(args);
-                }
-                else if(cmd == "LIST"){
-                    LIST(args);
-                }
-                else if(cmd == "UIDL"){
-                    UIDL(args);
-                }
-                else if(cmd == "TOP"){
-                    TOP(args);
-                }
-                else if(cmd == "RETR"){
-                    RETR(args);
-                }
-                else if(cmd == "DELE"){
-                    DELE(args);
-                }
-                else if(cmd == "NOOP"){
-                    NOOP(args);
-                }
-                else if(cmd == "RSET"){
-                    RSET(args);
-                }
-                else if(cmd == "CAPA"){
-                    CAPA(args);
-                }
-                else if(cmd == "QUIT"){
-                    QUIT(args);
-                }
-                else{
-                     m_BadCommands++;
-
-                     // Maximum allowed bad commands exceeded.
-                     if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
-                         WriteLine("-ERR Too many bad commands, closing transmission channel.");
-                         Disconnect();
-                         return false;
-                     }
-                            
-                     WriteLine("-ERR Error: command '" + cmd + "' not recognized.");
-                 }
-             }
-             catch(Exception x){
-                 OnError(x);
-             }
-
-             return readNextCommand;
-        }
-
-        #endregion
-
-
-        #region method STLS
-
-        private void STLS(string cmdText)
+        private async Task StlsAsync(string cmdText)
         {
             /* RFC 2595 4. POP3 STARTTLS extension.
                  Arguments: none
@@ -341,30 +288,34 @@ namespace LumiSoft.Net.POP3.Server
             */
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(this.IsAuthenticated){
-                WriteLine("-ERR This ommand is only valid in AUTHORIZATION state (RFC 2595 4).");
+                var response = new POP3_ServerResponse("-ERR",null,"This command is only valid in AUTHORIZATION state (RFC 2595 4).");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(this.IsSecureConnection){
-                WriteLine("-ERR Bad sequence of commands: Connection is already secure.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Connection is already secure.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(this.Certificate == null){
-                WriteLine("-ERR TLS not available: Server has no SSL certificate.");
+                var response = new POP3_ServerResponse("-ERR",null,"TLS not available: Server has no SSL certificate.");
+                await SendResponseAsync(response);
 
                 return;
             }
 
-            WriteLine("+OK Ready to start TLS.");
+            await SendResponseAsync(new POP3_ServerResponse("+OK",null,"Ready to start TLS."));
 
             try{
-                SwitchToSecure();
+                await SwitchToSecureAsync();
 
                 // Log
                 LogAddText("TLS negotiation completed successfully.");
@@ -379,9 +330,9 @@ namespace LumiSoft.Net.POP3.Server
 
         #endregion
 
-        #region method USER
+        #region method UserAsync
 
-        private void USER(string cmdText)
+        private async Task UserAsync(string cmdText)
         {
             /* RFC 1939 7. USER
 			    Arguments:
@@ -396,31 +347,37 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(this.IsAuthenticated){
-                WriteLine("-ERR Re-authentication error.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Already authenticated."));
 
                 return;
             }
             if(m_UserName != null){
-                WriteLine("-ERR User name already specified.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"User name already specified."));
+
+                return;
+            }
+            if(string.IsNullOrEmpty(cmdText)){
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"-ERR Error in arguments."));
 
                 return;
             }
 
             m_UserName = cmdText;
 
-            WriteLine("+OK User name OK.");
+            await SendResponseAsync(new POP3_ServerResponse("+OK",null,"User name OK."));
         }
 
         #endregion
 
-        #region method PASS
+        #region method PassAsync
 
-        private void PASS(string cmdText)
+        private async Task PassAsync(string cmdText)
         {
             /* RFC 1939 7. PASS
 			Arguments:
@@ -444,181 +401,144 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected."));
 
                 return;
             }
             if(this.IsAuthenticated){
-                WriteLine("-ERR Re-authentication error.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Already authenticated."));
 
                 return;
             }
-            if(m_UserName == null){
-                WriteLine("-ERR Specify user name first.");
+            if(m_UserName == null){                
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Specify user name first."));
 
                 return;
             }
             if(string.IsNullOrEmpty(cmdText)){
-                WriteLine("-ERR Error in arguments.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Error in arguments."));
 
                 return;
             }
-                        
-            POP3_e_Authenticate e = OnAuthenticate(m_UserName,cmdText);
-            if(e.IsAuthenticated){
+
+            var response = new POP3_ServerResponse("-ERR",null,"Authentication failed.");
+            POP3_e_AuthUserPass eArgsAuth = new POP3_e_AuthUserPass(this,m_UserName,cmdText,response);
+            // Raise event AuthUserPassAsync, if no event handler specified, we can't authenticate user.
+            if (this.AuthUserPassAsync != null){
+                await this.AuthUserPassAsync(eArgsAuth);
+                response = eArgsAuth.Response;
+            }                        
+            if(response.IsSuccess){
                 m_pUser = new GenericIdentity(m_UserName,"POP3-USER/PASS");
 
-                // Get mailbox messages.
-                POP3_e_GetMessagesInfo eMessages = OnGetMessagesInfo();
-                int seqNo = 1;
-                foreach(POP3_ServerMessage message in eMessages.Messages){
-                    message.SequenceNumber = seqNo++;
-                    m_pMessages.Add(message.UID,message);
+                // Get mailbox messages info.
+                var eArgsLoad = new POP3_e_LoadMessagesInfo(this);
+                // Raise event LoadMessagesInfoAsync.
+                if (this.LoadMessagesInfoAsync != null){                    
+                    await this.LoadMessagesInfoAsync(eArgsLoad);
                 }
+                int seqNo = 1;
+                foreach(POP3_ServerMessage message in eArgsLoad.Messages){
+                    message.SequenceNumber = seqNo++;
+                    m_pMessages.Add(message);
+                }
+            }
 
-                WriteLine("+OK Authenticated successfully.");                
-            }
-            else{
-                WriteLine("-ERR Authentication failed.");
-            }
+            await SendResponseAsync(response);
+
+            m_UserName = null;
         }
 
         #endregion
 
-        #region method AUTH
+        #region method AuthAsync
 
-        private void AUTH(string cmdText)
+        private async Task AuthAsync(string cmdText)
         {
-            /* RFC 1734
-				
-				AUTH mechanism
+            /*
+             POP3 AUTH command — RFC 5034 (SASL Authentication for POP3).
 
-					Arguments:
-						a string identifying an IMAP4 authentication mechanism,
-						such as defined by [IMAP4-AUTH].  Any use of the string
-						"imap" used in a server authentication identity in the
-						definition of an authentication mechanism is replaced with
-						the string "pop".
-						
-					Possible Responses:
-						+OK maildrop locked and ready
-						-ERR authentication exchange failed
+             AUTH with no parameters:
+               - Client requests the list of SASL mechanisms supported by the server.
+               - Server replies with a multi-line response:
+                   <mechanism>
+                   <mechanism>
+                   .
+               - No authentication attempt is made in this form.
 
-					Restrictions:
-						may only be given in the AUTHORIZATION state
+             AUTH <mechanism>:
+               - Begins SASL authentication using the specified mechanism.
+               - Server may send an initial challenge depending on the mechanism.
+               - Client and server exchange SASL data until authentication succeeds or fails.
 
-					Discussion:
-						The AUTH command indicates an authentication mechanism to
-						the server.  If the server supports the requested
-						authentication mechanism, it performs an authentication
-						protocol exchange to authenticate and identify the user.
-						Optionally, it also negotiates a protection mechanism for
-						subsequent protocol interactions.  If the requested
-						authentication mechanism is not supported, the server						
-						should reject the AUTH command by sending a negative
-						response.
+             State rules:
+               - AUTH is valid only in the AUTHORIZATION state.
+               - On successful SASL authentication, the session transitions to TRANSACTION.
+               - On failure, the session remains in AUTHORIZATION.
 
-						The authentication protocol exchange consists of a series
-						of server challenges and client answers that are specific
-						to the authentication mechanism.  A server challenge,
-						otherwise known as a ready response, is a line consisting
-						of a "+" character followed by a single space and a BASE64
-						encoded string.  The client answer consists of a line
-						containing a BASE64 encoded string.  If the client wishes
-						to cancel an authentication exchange, it should issue a
-						line with a single "*".  If the server receives such an
-						answer, it must reject the AUTH command by sending a
-						negative response.
+             Interaction with USER/PASS:
+               - AUTH replaces USER/PASS when SASL is used.
+               - If the client issues AUTH, it must complete SASL authentication before
+                 attempting USER/PASS.
+               - Supported SASL mechanisms may be advertised via CAPA (e.g., "SASL PLAIN").
 
-						A protection mechanism provides integrity and privacy
-						protection to the protocol session.  If a protection
-						mechanism is negotiated, it is applied to all subsequent
-						data sent over the connection.  The protection mechanism
-						takes effect immediately following the CRLF that concludes
-						the authentication exchange for the client, and the CRLF of
-						the positive response for the server.  Once the protection
-						mechanism is in effect, the stream of command and response
-						octets is processed into buffers of ciphertext.  Each
-						buffer is transferred over the connection as a stream of
-						octets prepended with a four octet field in network byte
-						order that represents the length of the following data.
-						The maximum ciphertext buffer length is defined by the
-						protection mechanism.
+             Error handling:
+               - If the mechanism is unsupported, the server must return an error.
+               - If SASL negotiation fails, the server must return an error and remain
+                 in AUTHORIZATION.
 
-						The server is not required to support any particular
-						authentication mechanism, nor are authentication mechanisms
-						required to support any protection mechanisms.  If an AUTH
-						command fails with a negative response, the session remains
-						in the AUTHORIZATION state and client may try another
-						authentication mechanism by issuing another AUTH command,
-						or may attempt to authenticate by using the USER/PASS or
-						APOP commands.  In other words, the client may request
-						authentication types in decreasing order of preference,
-						with the USER/PASS or APOP command as a last resort.
-
-						Should the client successfully complete the authentication
-						exchange, the POP3 server issues a positive response and
-						the POP3 session enters the TRANSACTION state.
-						
-				Examples:
-							S: +OK POP3 server ready
-							C: AUTH KERBEROS_V4
-							S: + AmFYig==
-							C: BAcAQU5EUkVXLkNNVS5FRFUAOCAsho84kLN3/IJmrMG+25a4DT
-								+nZImJjnTNHJUtxAA+o0KPKfHEcAFs9a3CL5Oebe/ydHJUwYFd
-								WwuQ1MWiy6IesKvjL5rL9WjXUb9MwT9bpObYLGOKi1Qh
-							S: + or//EoAADZI=
-							C: DiAF5A4gA+oOIALuBkAAmw==
-							S: +OK Kerberos V4 authentication successful
-								...
-							C: AUTH FOOBAR
-							S: -ERR Unrecognized authentication type
-			 
-			*/
+             Notes:
+               - AUTH is an extension defined in RFC 5034, not part of RFC 1939.
+               - Mechanism names are case-insensitive.
+               - Server must not send message data during SASL negotiation.
+            */
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(this.IsAuthenticated){
-               WriteLine("-ERR Re-authentication error.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Already authenticated."));
 
                 return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             string mechanism = cmdText;
-
-            /* MS specific or someone knows where in RFC let me know about this.
-                Empty AUTH commands causes authentication mechanisms listing. 
-             
-                C: AUTH
-                S: PLAIN
-                S: .
-                
-                http://msdn.microsoft.com/en-us/library/cc239199.aspx
-            */
             if(string.IsNullOrEmpty(mechanism)){
                 StringBuilder resp = new StringBuilder();
                 resp.Append("+OK\r\n");
-                foreach(AUTH_SASL_ServerMechanism m in m_pAuthentications.Values){
-                    resp.Append(m.Name + "\r\n");
+                foreach(AUTH_SASL_ServerMechanism authMechanism in m_pAuthentications.Values){
+                    if(!authMechanism.RequireSSL || (authMechanism.RequireSSL && this.IsSecureConnection)){
+                        resp.Append(authMechanism.Name + "\r\n");
+                    }                    
                 }
                 resp.Append(".\r\n");
 
-                WriteLine(resp.ToString());
+                string responseString = resp.ToString();            
+                LogAddWrite(Encoding.UTF8.GetByteCount(responseString),responseString.TrimEnd());
+                await this.TcpStream.WriteLineAsync(responseString);
 
                 return;
             }
 
-            if(!this.Authentications.ContainsKey(mechanism)){
-                WriteLine("-ERR Not supported authentication mechanism.");
+            AUTH_SASL_ServerMechanism? auth = null;
+            if(!m_pAuthentications.TryGetValue(mechanism,out auth)){
+                string text = "Unrecognized authentication type.";
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,text));
+
                 return;
             }
 
-            byte[] clientResponse = new byte[0];
-            AUTH_SASL_ServerMechanism auth = this.Authentications[mechanism];
+            if(auth.RequireSSL && !this.IsSecureConnection){
+                string text = "Encryption required for requested authentication mechanism.";
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,text));
+
+                return;
+            }
+
+            byte[] clientResponse = [];
             auth.Reset();
             while(true){
                 byte[]? serverResponse = auth.Continue(clientResponse);
@@ -627,18 +547,22 @@ namespace LumiSoft.Net.POP3.Server
                     if(auth.IsAuthenticated){
                         m_pUser = new GenericIdentity(auth.UserName,"SASL-" + auth.Name);
 
-                        // Get mailbox messages.
-                        POP3_e_GetMessagesInfo eMessages = OnGetMessagesInfo();
+                        // Get mailbox messages info.
+                        var eArgsLoad = new POP3_e_LoadMessagesInfo(this);
+                        // Raise event LoadMessagesInfoAsync.
+                        if (this.LoadMessagesInfoAsync != null){                    
+                            await this.LoadMessagesInfoAsync(eArgsLoad);
+                        }
                         int seqNo = 1;
-                        foreach(POP3_ServerMessage message in eMessages.Messages){
+                        foreach(POP3_ServerMessage message in eArgsLoad.Messages){
                             message.SequenceNumber = seqNo++;
-                            m_pMessages.Add(message.UID,message);
+                            m_pMessages.Add(message);
                         }
 
-                        WriteLine("+OK Authentication succeeded.");
+                        await SendResponseAsync(new POP3_ServerResponse("+OK",null,"Authentication succeeded."));
                     }
                     else{
-                        WriteLine("-ERR Authentication credentials invalid.");
+                        await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Authentication credentials invalid."));
                     }
                     break;
                 }
@@ -648,35 +572,42 @@ namespace LumiSoft.Net.POP3.Server
 
                     // Send server challenge.
                     if (serverResponse.Length == 0){
-                        WriteLine("+ ");
+                        await SendResponseAsync(new POP3_ServerResponse("+",null,""));
                     }
                     else{
-                        WriteLine("+ " + Convert.ToBase64String(serverResponse));
+                        await SendResponseAsync(new POP3_ServerResponse("+",null,Convert.ToBase64String(serverResponse)));
                     }
 
                     // Read client response. 
-                    SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                    this.TcpStream.ReadLine(readLineOP,false);
-                    if(readLineOP.Error != null){
-                        throw readLineOP.Error;
+                    var readLineResult = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    string? clientResponseStr = readLineResult.LineUtf8;
+                    if(clientResponseStr == null){
+                        LogAddText("Client closed connection.");
+
+                        throw new IOException("Client closed connection.");
                     }
+                    
                     // Log
-                    if(this.Server.Logger != null){
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineOP.BytesInBuffer,"base64 auth-data",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
+                    #if DEBUG
+                        LogAddRead(readLineResult.BytesInBuffer,clientResponseStr);
+                    #else
+                        LogAddRead(readLineResult.BytesInBuffer,"Client response recieved.");
+                    #endif
 
                     // Client canceled authentication.
-                    if(readLineOP.LineUtf8 == "*"){
-                        WriteLine("-ERR Authentication canceled.");
+                    if(clientResponseStr == "*"){
+                        await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Authentication canceled."));
+
                         return;
                     }
                     // We have base64 client response, decode it.
                     else{
                         try{
-                            clientResponse = Convert.FromBase64String(readLineOP.LineUtf8 ?? "");
+                            clientResponse = Convert.FromBase64String(clientResponseStr);
                         }
                         catch{
-                            WriteLine("-ERR Invalid client response '" + clientResponse + "'.");
+                            await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Invalid client response."));
+
                             return;
                         }
                     }
@@ -687,9 +618,9 @@ namespace LumiSoft.Net.POP3.Server
         #endregion
 
 
-        #region method STAT
+        #region method StatAsync
 
-        private void STAT(string cmdText)
+        private async Task StatAsync(string cmdText)
         {
             /* RFC 1939 5. STAT
 			NOTE:
@@ -706,12 +637,14 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                var response = new POP3_ServerResponse("-ERR",null,"Authentication required.");
+                await SendResponseAsync(response);
 
                 return;
             }
@@ -726,14 +659,14 @@ namespace LumiSoft.Net.POP3.Server
                 }
             }
 
-            WriteLine("+OK " + count + " " + size);
+            await SendResponseAsync(new POP3_ServerResponse("+OK", null,count + " " + size));
         }
 
         #endregion
 
-        #region method LIST
+        #region method ListAsync
 
-        private void LIST(string cmdText)
+        private async Task ListAsync(string cmdText)
         {
             /* RFC 1939 5. LIST
 			Arguments:
@@ -766,12 +699,12 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected."));
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Authentication required."));
 
                 return;
             }
@@ -790,46 +723,50 @@ namespace LumiSoft.Net.POP3.Server
                     }
                 }
 
-                StringBuilder response = new StringBuilder();
-                response.Append("+OK " + count + " messages (" + size + " bytes).\r\n");
-                foreach(POP3_ServerMessage msg in m_pMessages){
-                    response.Append(msg.SequenceNumber + " " + msg.Size + "\r\n");
-                }
-                response.Append(".");
+                await SendResponseAsync(new POP3_ServerResponse("+OK",null,count + " messages (" + size + " bytes)."));
 
-                 WriteLine(response.ToString());
+                StringBuilder listResponse = new StringBuilder();
+                foreach(POP3_ServerMessage msg in m_pMessages){
+                    listResponse.Append(msg.SequenceNumber + " " + msg.Size + "\r\n");
+                }
+                listResponse.Append(".");
+
+                await this.TcpStream.WriteLineAsync(listResponse.ToString());
             }
             // Single message info listing.
             else{
-                if(args.Length > 1 || !Net_Utils.IsInteger(args[0])){
-                    WriteLine("-ERR Error in arguments.");
+                if(args.Length > 1 || !int.TryParse(args[0], out int messageNumber)){
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Error in arguments."));
 
                     return;
                 }
+                if(messageNumber < 1){
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR", null, "Error in arguments."));
+                    return;
+                }
 
-                POP3_ServerMessage? msg = null;
-                m_pMessages.TryGetValueAt(Convert.ToInt32(args[0]) - 1,out msg);
+                POP3_ServerMessage? msg = messageNumber <= m_pMessages.Count ? m_pMessages[messageNumber - 1] : null;
                 if(msg != null){
                     // Block messages marked for deletion.
                     if(msg.IsMarkedForDeletion){
-                        WriteLine("-ERR Invalid operation: Message marked for deletion.");
+                        await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Invalid operation: Message marked for deletion."));
 
                         return;
                     }
 
-                    WriteLine("+OK " + msg.SequenceNumber + " " + msg.Size);
+                    await SendResponseAsync(new POP3_ServerResponse("+OK",null, msg.SequenceNumber + " " + msg.Size));
                 }
                 else{
-                    WriteLine("-ERR no such message or message marked for deletion.");
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"no such message."));
                 }
             }
         }
 
         #endregion
 
-        #region method UIDL
+        #region method UidlAsync
 
-        private void UIDL(string cmdText)
+        private async Task UidlAsync(string cmdText)
         {
             /* RFC 1939 UIDL [msg]
 			Arguments:
@@ -860,12 +797,12 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected."));
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Authentication required."));
 
                 return;
             }
@@ -876,54 +813,57 @@ namespace LumiSoft.Net.POP3.Server
             if(string.IsNullOrEmpty(cmdText)){
                 // Calculate count and total size in bytes, exclude marked for deletion messages.
                 int count = 0;
-                int size  = 0;
                 foreach(POP3_ServerMessage msg in m_pMessages){
                     if(!msg.IsMarkedForDeletion){
                         count++;
-                        size += msg.Size;
                     }
                 }
 
-                StringBuilder response = new StringBuilder();
-                response.Append("+OK " + count + " messages (" + size + " bytes).\r\n");
-                foreach(POP3_ServerMessage msg in m_pMessages){
-                    response.Append(msg.SequenceNumber + " " + msg.UID + "\r\n");
-                }
-                response.Append(".");
+                await SendResponseAsync(new POP3_ServerResponse("+OK",null,count + " messages."));
 
-                 WriteLine(response.ToString());
+                StringBuilder uidlLresponse = new StringBuilder();
+                foreach(POP3_ServerMessage msg in m_pMessages){
+                    uidlLresponse.Append(msg.SequenceNumber + " " + msg.UID + "\r\n");
+                }
+                uidlLresponse.Append(".");
+
+                await this.TcpStream.WriteLineAsync(uidlLresponse.ToString());
             }
             // Single message info listing.
             else{
-                if(args.Length > 1){
-                    WriteLine("-ERR Error in arguments.");
+                if(args.Length > 1 || !int.TryParse(args[0], out int messageNumber)){
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Error in arguments."));
+
+                    return;
+                }
+                if(messageNumber < 1){
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR", null, "Error in arguments."));
 
                     return;
                 }
 
-                POP3_ServerMessage? msg = null;
-                m_pMessages.TryGetValueAt(Convert.ToInt32(args[0]) - 1,out msg);
+                POP3_ServerMessage? msg = messageNumber <= m_pMessages.Count ? m_pMessages[messageNumber - 1] : null;
                 if(msg != null){
                     // Block messages marked for deletion.
                     if(msg.IsMarkedForDeletion){
-                        WriteLine("-ERR Invalid operation: Message marked for deletion.");
+                        await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Invalid operation: Message marked for deletion."));
 
                         return;
                     }
 
-                    WriteLine("+OK " + msg.SequenceNumber + " " + msg.UID);
+                    await SendResponseAsync(new POP3_ServerResponse("+OK",null,msg.SequenceNumber + " " + msg.UID));
                 }
                 else{
-                    WriteLine("-ERR no such message or message marked for deletion.");
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"no such message."));
                 }
             }
         }
 
         #endregion
 
-        #region method TOP
+        #region method TopAsync
 
-        private void TOP(string cmdText)
+        private async Task TopAsync(string cmdText)
         {
             /* RFC 1939 7. TOP
 			    Arguments:
@@ -954,62 +894,123 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected."));
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Authentication required."));
 
                 return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             string[] args = cmdText.Split(' ');
 
-            if(args.Length != 2 || !Net_Utils.IsInteger(args[0]) || !Net_Utils.IsInteger(args[1])){
-                WriteLine("-ERR Error in arguments.");
+            if(args.Length != 2 || !int.TryParse(args[0], out int messageNumber) || !int.TryParse(args[1], out int lineCount)){
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Error in arguments."));
 
                 return;
             }
+            if(messageNumber < 1) {
+                await SendResponseAsync(new POP3_ServerResponse("-ERR", null, "Error in arguments."));
 
-            POP3_ServerMessage? msg = null;
-            m_pMessages.TryGetValueAt(Convert.ToInt32(args[0]) - 1,out msg);
+                return;
+            }
+            if(lineCount < 0) {
+                await SendResponseAsync(new POP3_ServerResponse("-ERR", null, "Error in arguments."));
+
+                return;
+            }
+            
+            POP3_ServerMessage? msg = messageNumber <= m_pMessages.Count ? m_pMessages[messageNumber - 1] : null;
             if(msg != null){
                 // Block messages marked for deletion.
                 if(msg.IsMarkedForDeletion){
-                    WriteLine("-ERR Invalid operation: Message marked for deletion.");
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Invalid operation: Message marked for deletion."));
 
                     return;
                 }
 
-                POP3_e_GetTopOfMessage e = OnGetTopOfMessage(msg,Convert.ToInt32(args[1]));
+                POP3_e_GetMessageStream e = new POP3_e_GetMessageStream(this,msg);
+                // Raise event GetMessageStreamAsync.
+                if (this.GetMessageStreamAsync != null) {
+                    await this.GetMessageStreamAsync(e);
+                }
 
                 // User didn't provide us message stream, assume that message deleted(for example by IMAP during this POP3 session).
-                if(e.Data == null){
-                    WriteLine("-ERR no such message.");
+                if(e.MessageStream == null){
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"No such message."));
                 }
                 else{
-                    WriteLine("+OK Start sending top of message.");
+                    await SendResponseAsync(new POP3_ServerResponse("+OK",null,"Top of message follows."));
 
-                    long countWritten = this.TcpStream.WritePeriodTerminated(new MemoryStream(e.Data));
+                    using var sourceStream = new SmartStream(e.MessageStream,true);
 
-                    // Log.
-                    if(this.Server.Logger != null){
-                        this.Server.Logger.AddWrite(this.ID,this.AuthenticatedUserIdentity,countWritten,"Wrote top of message(" + countWritten + " bytes).",this.LocalEndPoint,this.RemoteEndPoint);
+                    // Send message header to client.
+                    long bytesStored = await sourceStream.ReadHeaderAsync(this.TcpStream,int.MaxValue,32000,SizeExceededAction.JunkAndThrowException);
+                    // Send header terminator line.
+                    await this.TcpStream.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'}).ConfigureAwait(false);
+                    bytesStored += 2;
+
+                    Memory<byte> buffer         = new Memory<byte>(new byte[32000]);
+                    buffer.Span[0] = (byte)'.'; 
+                    Memory<byte> readBuffer     = buffer.Slice(1); // Reserve first byte for additional '.'.
+                    bool         lastLineCRLF   = true;
+                    for(int i = 0; i < lineCount; i++){
+                        ReadLineResult result = await sourceStream.ReadLineAsync(readBuffer,SizeExceededAction.ThrowException).ConfigureAwait(false);
+
+                        // We reached end of stream, no more data.
+                        if(result.BytesInBuffer == 0){  
+                            break;
+                        }
+
+                        Memory<byte> lineBuffer;
+                        // Period handled line. If line starts with period '.', additional period is added.
+                        if(result.LineBytesInBuffer > 0 && buffer.Span[1] == (byte)'.'){
+                            // buffer[0] already contains '.'
+                            lineBuffer = buffer.Slice(0,result.BytesInBuffer + 1);
+                    
+                        }
+                        // Normal line.
+                        else{
+                            lineBuffer = buffer.Slice(1,result.BytesInBuffer);
+                        }
+
+                        await this.TcpStream.WriteAsync(lineBuffer).ConfigureAwait(false);
+                        bytesStored += lineBuffer.Length;
+
+                        lastLineCRLF = false;
+                        if(lineBuffer.Length >= 2 && lineBuffer.Span[lineBuffer.Length - 2] == (byte)'\r' && lineBuffer.Span[lineBuffer.Length - 1] == (byte)'\n'){
+                            lastLineCRLF = true;
+                        }
                     }
+
+                    // Add .CRLF termintqor.
+                    if(lastLineCRLF){
+                        Memory<byte> crlfDotTerminator = new byte[]{(byte)'.',(byte)'\r',(byte)'\n'};
+                        await this.TcpStream.WriteAsync(crlfDotTerminator).ConfigureAwait(false);
+                        bytesStored += crlfDotTerminator.Length;
+                    }
+                    // Last line not including CRLF, add CRLF.CRLF terminator.
+                    else{
+                        Memory<byte> crlfDotTerminator = new byte[]{(byte)'\r',(byte)'\n',(byte)'.',(byte)'\r',(byte)'\n'};
+                        await this.TcpStream.WriteAsync(crlfDotTerminator).ConfigureAwait(false);
+                        bytesStored += crlfDotTerminator.Length;
+                    }
+                    
+                    LogAddWrite(bytesStored, "Wrote top of message(" + bytesStored + " bytes).");
                 }
             }
             else{
-                WriteLine("-ERR no such message.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"No such message."));
             }
         }
 
         #endregion
 
-        #region method RETR
+        #region method RetrAsync
 
-        private void RETR(string cmdText)
+        private async Task RetrAsync(string cmdText)
         {
             /* RFC 1939 5. RETR
 			    Arguments:
@@ -1032,70 +1033,70 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected."));
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Authentication required."));
 
                 return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             string[] args = cmdText.Split(' ');
 
-            if(args.Length != 1 || !Net_Utils.IsInteger(args[0])){
-                WriteLine("-ERR Error in arguments.");
+            if(args.Length != 1 || !int.TryParse(args[0],out int messageNumber)){
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Error in arguments."));
+
+                return;
+            }
+            if(messageNumber < 1) {
+                await SendResponseAsync(new POP3_ServerResponse("-ERR", null, "Error in arguments."));
 
                 return;
             }
 
-            POP3_ServerMessage? msg = null;
-            m_pMessages.TryGetValueAt(Convert.ToInt32(args[0]) - 1,out msg);
+            POP3_ServerMessage? msg = messageNumber <= m_pMessages.Count ? m_pMessages[messageNumber - 1] : null;
             if(msg != null){
                 // Block messages marked for deletion.
                 if(msg.IsMarkedForDeletion){
-                    WriteLine("-ERR Invalid operation: Message marked for deletion.");
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Invalid operation: Message marked for deletion."));
 
                     return;
                 }
 
-                POP3_e_GetMessageStream e = OnGetMessageStream(msg);
+                POP3_e_GetMessageStream e = new POP3_e_GetMessageStream(this,msg);
+                // Raise event GetMessageStreamAsync.
+                if (this.GetMessageStreamAsync != null) {
+                    await this.GetMessageStreamAsync(e);
+                }
 
                 // User didn't provide us message stream, assume that message deleted(for example by IMAP during this POP3 session).
-                if(e.MessageStream == null){
-                    WriteLine("-ERR no such message.");
+                if (e.MessageStream == null){
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"No such message."));
                 }
                 else{
                     try{
-                        WriteLine("+OK Start sending message.");
+                        await SendResponseAsync(new POP3_ServerResponse("+OK",null,"Message follows."));
 
-                        long countWritten = this.TcpStream.WritePeriodTerminated(e.MessageStream);
-
-                        // Log.
-                        if(this.Server.Logger != null){
-                            this.Server.Logger.AddWrite(this.ID,this.AuthenticatedUserIdentity,countWritten,"Wrote message(" + countWritten + " bytes).",this.LocalEndPoint,this.RemoteEndPoint);
-                        }
+                        long countWritten = await this.TcpStream.WritePeriodTerminatedAsync(e.MessageStream,int.MaxValue,32000,SizeExceededAction.JunkAndThrowException);
+                        LogAddWrite(countWritten,"Wrote message(" + countWritten + " bytes).");                        
                     }
                     finally{
-                        // Close message stream if CloseStream = true.
-                        if(e.CloseMessageStream){
-                            e.MessageStream.Dispose();
-                        }
-                    }                    
+                        e.MessageStream.Dispose();
+                    }                   
                 }
             }
             else{
-                WriteLine("-ERR no such message.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"No such message."));
             }
         }
 
         #endregion
 
-        #region method DELE
+        #region method DeleAsync
 
-        private void DELE(string cmdText)
+        private async Task DeleAsync(string cmdText)
         {
             /* RFC 1939 5. DELE
 			    Arguments:
@@ -1111,72 +1112,52 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                var response = new POP3_ServerResponse("-ERR",null,"Authentication required.");
+                await SendResponseAsync(response);
 
                 return;
             }
 
             string[] args = cmdText.Split(' ');
 
-            if(args.Length != 1 || !Net_Utils.IsInteger(args[0])){
-                WriteLine("-ERR Error in arguments.");
+            if(args.Length != 1 || !int.TryParse(args[0], out int messageNumber)){
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Error in arguments."));
+
+                return;
+            }
+            if(messageNumber < 1){
+                await SendResponseAsync(new POP3_ServerResponse("-ERR", null, "Error in arguments."));
 
                 return;
             }
 
-            POP3_ServerMessage? msg = null;
-            m_pMessages.TryGetValueAt(Convert.ToInt32(args[0]) - 1,out msg);
+            POP3_ServerMessage? msg = messageNumber <= m_pMessages.Count ? m_pMessages[messageNumber - 1] : null;
             if(msg != null){  
                 if(!msg.IsMarkedForDeletion){
                     msg.SetIsMarkedForDeletion(true);
 
-                    WriteLine("+OK Message marked for deletion.");
+                    await SendResponseAsync(new POP3_ServerResponse("+OK",null,"Message marked for deletion."));
                 }
                 else{
-                    WriteLine("-ERR Message already marked for deletion.");
+                    await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"Message already marked for deletion."));
                 }
             }
             else{
-                WriteLine("-ERR no such message.");
+                await SendResponseAsync(new POP3_ServerResponse("-ERR",null,"No such message."));
             }
         }
 
         #endregion
 
-        #region method NOOP
+        #region method ResetAsync
 
-        private void NOOP(string cmdText)
-        {
-            /* RFC 1939 5. NOOP
-			    NOTE:
-				    The POP3 server does nothing, it merely replies with a
-				    positive response.
-			*/
-
-            if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
-
-                return;
-            }
-            if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
-
-                return;
-            }
-
-            WriteLine("+OK");
-        }
-
-        #endregion
-
-        #region method RSET
-
-        private void RSET(string cmdText)
+        private async Task ResetAsync(string cmdText)
         {
             /* RFC 1939 5. RSET
 			Discussion:
@@ -1186,12 +1167,14 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                WriteLine("-ERR Authentication required.");
+                var response = new POP3_ServerResponse("-ERR",null,"Authentication required.");
+                await SendResponseAsync(response);
 
                 return;
             }
@@ -1201,17 +1184,37 @@ namespace LumiSoft.Net.POP3.Server
                 msg.SetIsMarkedForDeletion(false);
             }
 
-            WriteLine("+OK");
+            await SendResponseAsync(new POP3_ServerResponse("+OK",null,""));
+        }
 
-            OnReset();
+        #endregion
+        
+
+        #region method NoopAsync
+
+        private async Task NoopAsync(string cmdText)
+        {
+            /* RFC 1939 5. NOOP
+			    NOTE:
+				    The POP3 server does nothing, it merely replies with a
+				    positive response.
+			*/
+
+            if(m_SessionRejected){
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
+
+                return;
+            }
+
+            await SendResponseAsync(new POP3_ServerResponse("+OK",null,""));
         }
 
         #endregion
 
+        #region method CapaAsync
 
-        #region method CAPA
-
-        private void CAPA(string cmdText)
+        private async Task CapaAsync(string cmdText)
         {
             /* RFC 2449 5.  The CAPA Command
 			
@@ -1286,7 +1289,8 @@ namespace LumiSoft.Net.POP3.Server
 			*/
 
             if(m_SessionRejected){
-                WriteLine("-ERR Bad sequence of commands: Session rejected.");
+                var response = new POP3_ServerResponse("-ERR",null,"Bad sequence of commands: Session rejected.");
+                await SendResponseAsync(response);
 
                 return;
             }
@@ -1310,17 +1314,18 @@ namespace LumiSoft.Net.POP3.Server
             if(!this.IsSecureConnection && this.Certificate != null){
                 capaResponse.Append("STLS\r\n");
             }
+			capaResponse.Append(".\r\n");
 
-			capaResponse.Append(".");
-
-            WriteLine(capaResponse.ToString());
+            string capaResponseString = capaResponse.ToString();            
+            LogAddWrite(Encoding.UTF8.GetByteCount(capaResponseString),capaResponseString.TrimEnd());
+            await this.TcpStream.WriteLineAsync(capaResponseString);
         }
 
         #endregion
 
-        #region method QUIT
+        #region method QuitAsync
 
-        private void QUIT(string cmdText)
+        private async Task QuitAsync(string cmdText)
         {
             /* RFC 1939 6. QUIT
 			   NOTE:
@@ -1349,14 +1354,20 @@ namespace LumiSoft.Net.POP3.Server
             try{                
                 if(this.IsAuthenticated){
                     // Delete messages marked for deletion.
-                    foreach(POP3_ServerMessage msg in m_pMessages){
+                    List<POP3_ServerMessage> messagesToDelete = new List<POP3_ServerMessage>();
+                    foreach (POP3_ServerMessage msg in m_pMessages){
                         if(msg.IsMarkedForDeletion){
-                            OnDeleteMessage(msg);
+                            messagesToDelete.Add(msg);
                         }
+                    }
+
+                    // Raise event DeleteMessagesAsync.
+                    if (messagesToDelete.Count > 0 && this.DeleteMessagesAsync != null){
+                        await this.DeleteMessagesAsync(new POP3_e_DeleteMessages(this,messagesToDelete.ToArray()));
                     }
                 }
 
-                WriteLine("+OK <" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> Service closing transmission channel.");                
+                await SendResponseAsync(new POP3_ServerResponse("+OK",null,"POP3 server signing off."));                
             }
             catch{
             }
@@ -1366,25 +1377,86 @@ namespace LumiSoft.Net.POP3.Server
 
         #endregion
 
+        
 
-        #region method WriteLine
+        #region method SendResponseAsync
 
         /// <summary>
-        /// Sends and logs specified line to connected host.
+        /// Sends the specified POP3 server response to the remote endpoint and recording the
+        /// outgoing data in the session log.
         /// </summary>
-        /// <param name="line">Line to send.</param>
-        private void WriteLine(string line)
+        /// <param name="response">
+        /// The <see cref="POP3_ServerResponse"/> instance containing the response
+        /// to transmit to the peer.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="response"/> is <c>null</c>.
+        /// </exception>
+        internal async Task SendResponseAsync(POP3_ServerResponse response)
         {
-            if(line == null){
-                throw new ArgumentNullException("line");
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
-            int countWritten = this.TcpStream.WriteLine(line);
+            string cmdLine = response.ToString();            
+            LogAddWrite(Encoding.UTF8.GetByteCount(cmdLine),cmdLine.TrimEnd());
+            await this.TcpStream.WriteLineAsync(cmdLine);
+        }
 
-            // Log.
-            if(this.Server.Logger != null){
-                this.Server.Logger.AddWrite(this.ID,this.AuthenticatedUserIdentity,countWritten,line,this.LocalEndPoint,this.RemoteEndPoint);
+        #endregion
+
+        
+        #region mehtod LogAddRead
+
+        /// <summary>
+        /// Logs read operation.
+        /// </summary>
+        /// <param name="size">Number of bytes readed.</param>
+        /// <param name="text">Log text.</param>
+        public void LogAddRead(long size,string text)
+        {
+            try{
+                if(this.Server.Logger != null){
+                    this.Server.Logger.AddRead(
+                        this.ID,
+                        this.AuthenticatedUserIdentity,
+                        size,
+                        text,                        
+                        this.LocalEndPoint,
+                        this.RemoteEndPoint
+                    );
+                }
+            }
+            catch{
+                // We skip all logging errors, normally there shouldn't be any.
+            }
+        }
+
+        #endregion
+
+        #region method LogAddWrite
+
+        /// <summary>
+        /// Logs write operation.
+        /// </summary>
+        /// <param name="size">Number of bytes written.</param>
+        /// <param name="text">Log text.</param>
+        public void LogAddWrite(long size,string text)
+        {
+            try{
+                if(this.Server.Logger != null){
+                    this.Server.Logger.AddWrite(
+                        this.ID,
+                        this.AuthenticatedUserIdentity,
+                        size,
+                        text,                        
+                        this.LocalEndPoint,
+                        this.RemoteEndPoint
+                    );
+                }
+            }
+            catch{
+                // We skip all logging errors, normally there shouldn't be any.
             }
         }
 
@@ -1415,9 +1487,11 @@ namespace LumiSoft.Net.POP3.Server
         #region Properties implementation
 
         /// <summary>
-        /// Gets session owner POP3 server.
+        /// Gets the POP3 server instance that owns this session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public new POP3_Server Server
         {
             get{
@@ -1430,9 +1504,15 @@ namespace LumiSoft.Net.POP3.Server
         }
 
         /// <summary>
-        /// Gets supported SASL authentication methods collection.
+        /// Gets the collection of supported SASL authentication mechanisms for
+        /// this POP3 server. The returned dictionary maps mechanism names to
+        /// their corresponding <see cref="AUTH_SASL_ServerMechanism"/> instances.
+        /// Applications may add or remove mechanisms from this collection to
+        /// customize the server's available authentication methods.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public Dictionary<string,AUTH_SASL_ServerMechanism> Authentications
         {
             get{
@@ -1445,9 +1525,14 @@ namespace LumiSoft.Net.POP3.Server
         }
 
         /// <summary>
-        /// Gets number of bad commands happened on POP3 session.
+        /// Gets the number of invalid or unrecognized POP3 commands received
+        /// during this session. This counter is incremented whenever the client
+        /// issues a syntactically incorrect command or a command that is not
+        /// permitted in the current session state.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public int BadCommands
         {
             get{ 
@@ -1460,9 +1545,12 @@ namespace LumiSoft.Net.POP3.Server
         }
 
         /// <summary>
-        /// Gets authenticated user identity or null if user has not authenticated.
+        /// Gets the identity of the user authenticated for this POP3 session,
+        /// or <c>null</c> if no authentication has been performed.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public override GenericIdentity? AuthenticatedUserIdentity
         {
 	        get{
@@ -1477,172 +1565,74 @@ namespace LumiSoft.Net.POP3.Server
         #endregion
 
         #region Events implementation
+        
+        /// <summary>
+        /// Raised when a new POP3 session is created, before the server sends its initial
+        /// greeting banner. Event handlers may customize the greeting or reject the
+        /// connection by modifying the provided <see cref="POP3_ServerResponse"/>.
+        /// </summary>
+        public event Func<POP3_e_Started,Task>? StartedAsync = null;
 
         /// <summary>
-        /// Is raised when session has started processing and needs to send +OK greeting or -ERR error resposne to the connected client.
+        /// Raised when the server requires USER/PASS authentication for the current POP3 session.
+        /// This event is triggered after receiving the USER and PASS commands and before entering
+        /// the TRANSACTION state.
         /// </summary>
-        public event EventHandler<POP3_e_Started>? Started = null;
-
-        #region method OnStarted
+        public event Func<POP3_e_AuthUserPass,Task>? AuthUserPassAsync = null;
 
         /// <summary>
-        /// Raises <b>Started</b> event.
+        /// Raised after successful USER/PASS or AUTH authentication when the server needs
+        /// to retrieve message metadata (sizes and UIDLs) for the authenticated POP3 session.
+        /// Handlers must populate the message list so the server can enter the TRANSACTION
+        /// state and serve STAT,LIST, UIDL, RETR, TOP and DELE commands.
         /// </summary>
-        /// <param name="reply">Default POP3 server reply.</param>
-        /// <returns>Returns event args.</returns>
-        private POP3_e_Started OnStarted(string reply)
-        {
-            POP3_e_Started eArgs = new POP3_e_Started(reply);
-
-            if(this.Started != null){                
-                this.Started(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<POP3_e_LoadMessagesInfo,Task>? LoadMessagesInfoAsync = null;
 
         /// <summary>
-        /// This event is raised when session needs to authenticate session using USER/PASS POP3 authentication.
+        /// Event that is raised when the POP3 server needs to obtain a readable
+        /// message stream for a specific message. This event is used by both the
+        /// <c>RETR</c> and <c>TOP</c> commands, allowing the server to expose a
+        /// single retrieval mechanism regardless of how much of the message the
+        /// client intends to read.
+        /// 
+        /// The event handler must provide a stream containing the full RFC‑822
+        /// message (headers followed by body). The POP3 server will read from the
+        /// returned stream according to the command semantics:
+        /// <list type="bullet">
+        /// <item>
+        /// <description>
+        /// <c>RETR</c> — the server reads the entire stream and sends the complete
+        /// message to the client.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>TOP</c> — the server reads headers and the requested number of body
+        /// lines, then stops reading.
+        /// </description>
+        /// </item>
+        /// </list>
+        /// 
+        /// The handler is responsible for opening the stream and ensuring it
+        /// remains readable for the duration of the operation. The server will
+        /// dispose the stream when message transmission is complete.
         /// </summary>
-        public event EventHandler<POP3_e_Authenticate>? Authenticate = null;
-
-        #region method OnAuthenticate
+        /// <remarks>
+        /// Implementations may return any readable <see cref="Stream"/> including
+        /// file streams, memory streams, or custom streaming sources. The stream
+        /// must contain the message in canonical CRLF format and must not perform
+        /// dot‑stuffing; the POP3 server applies dot‑stuffing when sending data to
+        /// the client.
+        /// </remarks>
+        public event Func<POP3_e_GetMessageStream,Task>? GetMessageStreamAsync = null;
 
         /// <summary>
-        /// Raises <b>Authenticate</b> event.
+        /// Raised when the POP3 session ends with a successful <c>QUIT</c> command
+        /// and the server requires the host application to delete all messages that
+        /// were marked for deletion during the TRANSACTION state.
         /// </summary>
-        /// <param name="user">User name.</param>
-        /// <param name="password">Password.</param>
-        /// <returns>Returns event args.</returns>
-        private POP3_e_Authenticate OnAuthenticate(string user,string password)
-        {
-            POP3_e_Authenticate eArgs = new POP3_e_Authenticate(user,password);
-
-            if(this.Authenticate != null){
-                this.Authenticate(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when session needs to get mailbox messsages info.
-        /// </summary>
-        public event EventHandler<POP3_e_GetMessagesInfo>? GetMessagesInfo = null;
-
-        #region method OnGetMessagesInfo
-
-        /// <summary>
-        /// Raises <b>GetMessagesInfo</b> event.
-        /// </summary>
-        /// <returns>Returns event args.</returns>
-        private POP3_e_GetMessagesInfo OnGetMessagesInfo()
-        {
-            POP3_e_GetMessagesInfo eArgs = new POP3_e_GetMessagesInfo();
-
-            if(this.GetMessagesInfo != null){
-                this.GetMessagesInfo(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when session needs to get top of the specified message data.
-        /// </summary>
-        public event EventHandler<POP3_e_GetTopOfMessage>? GetTopOfMessage = null;
-
-        #region method OnGetTopOfMessage
-
-        /// <summary>
-        /// Raises <b>GetTopOfMessage</b> event.
-        /// </summary>
-        /// <param name="message">Message which top data to get.</param>
-        /// <param name="lines">Number of message-body lines to get.</param>
-        /// <returns>Returns event args.</returns>
-        private POP3_e_GetTopOfMessage OnGetTopOfMessage(POP3_ServerMessage message,int lines)
-        {
-            POP3_e_GetTopOfMessage eArgs = new POP3_e_GetTopOfMessage(message,lines);
-
-            if(this.GetTopOfMessage != null){
-                this.GetTopOfMessage(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when session needs to get specified message stream.
-        /// </summary>
-        public event EventHandler<POP3_e_GetMessageStream>? GetMessageStream = null;
-
-        #region method OnGetMessageStream
-
-        /// <summary>
-        /// Raises <b>GetMessageStream</b> event.
-        /// </summary>
-        /// <param name="message">Message stream to get.</param>
-        /// <returns>Returns event arguments.</returns>
-        private POP3_e_GetMessageStream OnGetMessageStream(POP3_ServerMessage message)
-        {
-            POP3_e_GetMessageStream eArgs = new POP3_e_GetMessageStream(message);
-
-            if(this.GetMessageStream != null){
-                this.GetMessageStream(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when session needs to delete specified message.
-        /// </summary>
-        public event EventHandler<POP3_e_DeleteMessage>? DeleteMessage = null;
-
-        #region method OnDeleteMessage
-
-        /// <summary>
-        /// Raises <b>DeleteMessage</b> event.
-        /// </summary>
-        /// <param name="message">Message to delete.</param>
-        private void OnDeleteMessage(POP3_ServerMessage message)
-        {
-            if(this.DeleteMessage != null){
-                this.DeleteMessage(this,new POP3_e_DeleteMessage(message));
-            }
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when session is reset by remote user.
-        /// </summary>
-        public event EventHandler? Reset = null;
-
-        #region method OnReset
-
-        /// <summary>
-        /// Raises <b>Reset</b> event.
-        /// </summary>
-        private void OnReset()
-        {
-            if(this.Reset != null){
-                this.Reset(this,new EventArgs());
-            }
-        }
-
-        #endregion
-
+        public event Func<POP3_e_DeleteMessages,Task>? DeleteMessagesAsync = null;
+        
         #endregion
     }
 }

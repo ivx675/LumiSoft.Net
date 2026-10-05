@@ -69,12 +69,30 @@ namespace LumiSoft.Net.SMTP
         /// <param name="detail">
         /// The detail component providing fine‑grained diagnostic information.
         /// </param>
-        SMTP_t_EnhancedStatusCode(int errorClass,int subject,int detail)
+        public SMTP_t_EnhancedStatusCode(int errorClass,int subject,int detail)
         {
-            m_Class = errorClass;
+            m_Class   = errorClass;
             m_Subject = subject;
-            m_Detail = detail;
+            m_Detail  = detail;
         }
+
+
+        #region override method ToString
+
+        /// <summary>
+        /// Converts the enhanced status code into its standardized textual form
+        /// (<c>class.subject.detail</c>) as defined in RFC 3463 and RFC 5248.
+        /// </summary>
+        /// <returns>
+        /// A string containing the enhanced status code in <c>class.subject.detail</c>
+        /// format, suitable for inclusion in SMTP reply lines.
+        /// </returns>
+        public override string ToString()
+        {
+            return $"{m_Class}.{m_Subject}.{m_Detail}";
+        }
+
+        #endregion
 
 
         #region static method TryParse
@@ -114,7 +132,6 @@ namespace LumiSoft.Net.SMTP
         }
 
         #endregion
-
 
         #region static method Parse
 

@@ -1,13 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using LumiSoft.Net.AUTH;
+using LumiSoft.Net.IO;
+using LumiSoft.Net.TCP;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Principal;
-
-using LumiSoft.Net.IO;
-using LumiSoft.Net.TCP;
-using LumiSoft.Net.AUTH;
+using System.Text;
 
 namespace LumiSoft.Net.SMTP.Server
 {
@@ -20,10 +17,10 @@ namespace LumiSoft.Net.SMTP.Server
         private int                                          m_BadCommands      = 0;
         private int                                          m_Transactions     = 0;
         private bool                                         m_SessionRejected  = false;
-        private string                                       m_EhloHost         = "";
+        private string?                                      m_EhloHost         = null;
         private GenericIdentity?                             m_pUser            = null;
-        private SMTP_MailFrom?                               m_pFrom            = null;
-        private Dictionary<string,SMTP_RcptTo>               m_pTo;
+        private SMTP_t_MailFrom?                             m_pFrom            = null;
+        private Dictionary<string,SMTP_t_RcptTo>             m_pTo;
         private Stream?                                      m_pMessageStream   = null;
         private int                                          m_BDatReadedCount  = 0;
 
@@ -32,8 +29,8 @@ namespace LumiSoft.Net.SMTP.Server
         /// </summary>
         public SMTP_Session()
         {
-            m_pAuthentications = new Dictionary<string,AUTH_SASL_ServerMechanism>(StringComparer.CurrentCultureIgnoreCase);
-            m_pTo = new Dictionary<string,SMTP_RcptTo>();
+            m_pAuthentications = new Dictionary<string,AUTH_SASL_ServerMechanism>(StringComparer.OrdinalIgnoreCase);
+            m_pTo = new Dictionary<string,SMTP_t_RcptTo>(StringComparer.OrdinalIgnoreCase);
         }
 
         #region method Dispose
@@ -55,6 +52,15 @@ namespace LumiSoft.Net.SMTP.Server
                 m_pMessageStream.Dispose();
                 m_pMessageStream = null;
             }
+
+            this.StartedAsync = null;
+            this.EhloAsync = null;
+            this.HeloAsync = null;
+            this.MailFromAsync = null;
+            this.RcptToAsync = null;
+            this.MessageStoringBeginAsync = null;
+            this.MessageStoringCancelAsync = null;
+            this.MessageStoringCompleteAsync = null;            
         }
 
         #endregion
@@ -69,6 +75,89 @@ namespace LumiSoft.Net.SMTP.Server
         {
             base.Start();
 
+            RunAsync();
+        }
+
+        #endregion
+
+        #region override method OnErrorAsync
+
+        /// <summary>
+        /// Is called when session has processing error.
+        /// </summary>
+        /// <param name="x">Exception happened.</param>
+        protected override async Task OnErrorAsync(Exception x)
+        {
+            if(this.IsDisposed){
+                return;
+            }
+            if(x == null){
+                return;
+            }
+
+            try{
+                LogAddText("Exception: " + x.Message);
+
+                // IO Error.
+                if(x is IOException || x is SocketException){
+                    Disconnect();
+                }
+                // Unknown error.
+                else{
+                    // Raise SMTP_Server.Error event.
+                    await base.OnErrorAsync(x);
+
+                    // Try to send "500 Internal server error."
+                    try{
+                        string text = "Internal server error.";
+                        await SendResponseAsync(new SMTP_ServerResponse(500,null,text));
+                    }
+                    catch{                        
+                    }
+
+                    Disconnect();
+                }
+            }
+            catch{
+            }
+        }
+
+        #endregion
+
+        #region override method OnTimeoutAsync
+
+        /// <summary>
+        /// Is called wen session idle timeout happens.
+        /// </summary>
+        protected override async Task OnTimeoutAsync()
+        {
+            try{
+                if(m_pMessageStream != null){
+                    // Raise MessageStoringCancelAsync event.
+                    if(this.MessageStoringCancelAsync != null){
+                        var eArgs = new SMTP_e_MessageStoringCancel(this,m_pMessageStream);
+                        await this.MessageStoringCancelAsync(eArgs);
+                    }
+                }
+
+                string text = "Idle timeout, closing connection.";
+                var sendTask =  SendResponseAsync(new SMTP_ServerResponse(421,null,text));
+                await sendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch{
+                // Skip errors.
+            }
+
+            _= base.OnTimeoutAsync();
+        }
+
+        #endregion
+
+
+        #region method RunAsync
+
+        internal async void RunAsync()
+        {
             /* RFC 5321 3.1.
                 The SMTP protocol allows a server to formally reject a mail session
                 while still allowing the initial connection as follows: a 554
@@ -82,980 +171,117 @@ namespace LumiSoft.Net.SMTP.Server
                 information in the reply text to facilitate debugging of the sending
                 system.
             */
-            
+
             try{
-                SMTP_Reply reply;
-                if(string.IsNullOrEmpty(this.Server.GreetingText)){
-                    reply = new SMTP_Reply(220,"<" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> Simple Mail Transfer Service Ready.");
-                }
-                else{
-                    reply = new SMTP_Reply(220,this.Server.GreetingText);
+                string greetingText = this.Server.GreetingText;
+                if(string.IsNullOrEmpty(greetingText)){
+                    greetingText = Net_Utils.GetLocalHostName(this.LocalHostName) + " ESMTP Service ready.";
                 }
 
-                reply = OnStarted(reply);
+                // Create default server response, user can override it in event.
+                var response = new SMTP_ServerResponse(220,null,greetingText);
 
-                WriteLine(reply.ToString());
+                // Raise event StartedAsync.
+                if(this.StartedAsync != null){
+                    SMTP_e_Started eArgs = new SMTP_e_Started(this,response);
+                    await this.StartedAsync(eArgs);
 
-                // Setup rejected flag, so we respond "503 bad sequence of commands" any command except QUIT.
-                if(reply.ReplyCode >= 300){
+                    response = eArgs.Response;
+                }
+
+                // Session rejected flag, so we respond "503 bad sequence of commands" any command except QUIT.
+                if(!response.IsSuccess){
                     m_SessionRejected = true;
                 }
-                               
-                BeginReadCmd();
-            }
-            catch(Exception x){
-                OnError(x);
-            }
-        }
 
-        #endregion
-
-        #region override method OnError
-
-        /// <summary>
-        /// Is called when session has processing error.
-        /// </summary>
-        /// <param name="x">Exception happened.</param>
-        protected override void OnError(Exception x)
-        {
-            if(this.IsDisposed){
-                return;
-            }
-            if(x == null){
-                return;
-            }
-
-            /* Error handling:
-                IO and Socket exceptions are permanent, so we must end session.
-            */
-
-            try{
-                LogAddText("Exception: " + x.Message);
-
-                // Permanent error.
-                if(x is IOException || x is SocketException){
-                    Dispose();
-                }
-                // xx error, may be temporary.
-                else{
-                    // Raise SMTP_Server.Error event.
-                    base.OnError(x);
-
-                    // Try to send "500 Internal server error."
-                    try{
-                        WriteLine("500 Internal server error.");
-                    }
-                    catch{
-                        // Error is permanent.
+                await SendResponseAsync(response);
+                
+                // Command loop, while QUIT or fatal error happens.
+                while(!this.IsDisposed){
+                    // Read command line.
+                    ReadLineResult responseline = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    // Server closed connection.
+                    if(responseline.BytesInBuffer == 0){
+                        LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' closed connection.");
                         Dispose();
-                    }
-                }
-            }
-            catch{
-            }
-        }
 
-        #endregion
-
-        #region override method OnTimeout
-
-        /// <summary>
-        /// This method is called when specified session times out.
-        /// </summary>
-        /// <remarks>
-        /// This method allows inhereted classes to report error message to connected client.
-        /// Session will be disconnected after this method completes.
-        /// </remarks>
-        protected override void OnTimeout()
-        {
-            try{
-                if(m_pMessageStream != null){
-                    OnMessageStoringCanceled();
-                }
-
-                WriteLine("421 Idle timeout, closing connection.");
-            }
-            catch{
-                // Skip errors.
-            }
-        }
-
-        #endregion
-
-                
-        #region method BeginReadCmd
-
-        /// <summary>
-        /// Starts reading incoming command from the connected client.
-        /// </summary>
-        private void BeginReadCmd()
-        {
-            if(this.IsDisposed){
-                return;
-            }
-
-            try{
-                ArgumentNullException.ThrowIfNull(this.TcpStream);
-
-                SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                // This event is raised only if read period-terminated opeartion completes asynchronously.
-                readLineOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadLineAsyncOP>>(delegate(object? sender,EventArgs<SmartStream.ReadLineAsyncOP> e){                
-                    if(ProcessCmd(readLineOP)){
-                        BeginReadCmd();
-                    }
-                });
-                // Process incoming commands while, command reading completes synchronously.
-                while(this.TcpStream.ReadLine(readLineOP,true)){                    
-                    if(!ProcessCmd(readLineOP)){
                         break;
+                    }                    
+                    string line = responseline.LineUtf8 ?? "";
+
+                    LogAddRead(responseline.BytesInBuffer,line);
+                                        
+                    string[] cmd_args = line.Split(new char[]{' '},2);
+                    string   cmd      = cmd_args[0].ToUpperInvariant();
+                    string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
+
+                    // RFC 5321 3.1.
+                    if(m_SessionRejected && cmd != "QUIT"){
+                        await SendResponseAsync(new SMTP_ServerResponse(554,null,"Session rejected."));
+                
+                        continue;
+                    }
+
+                    if(cmd == "EHLO"){
+                        await _EhloAsync(args);
+                    }
+                    else if(cmd == "HELO"){
+                        await _HeloAsync(args);
+                    }
+                    else if(cmd == "STARTTLS"){
+                        await StartTlsAsync(args);
+                    }
+                    else if(cmd == "AUTH"){
+                        await AuthAsync(args);
+                    }
+                    else if(cmd == "MAIL"){
+                        await _MailAsync(args);
+                    }
+                    else if(cmd == "RCPT"){
+                        await _RcptAsync(args);
+                    }
+                    else if(cmd == "DATA"){  
+                        await DataAsync(args);
+                    }
+                    else if(cmd == "BDAT"){
+                        await BdatAsync(args);
+                    }
+                    else if(cmd == "RSET"){
+                        await RsetAsync(args);
+                    }
+                    else if(cmd == "NOOP"){
+                        await NoopAsync(args);
+                    }
+                    else if(cmd == "QUIT"){
+                        await QuitAsync(args);
+                    }
+                    else{
+                        m_BadCommands++;
+
+                        // Maximum allowed bad commands exceeded.
+                        if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
+                            await SendResponseAsync(new SMTP_ServerResponse(421,null,$"Too many bad commands, closing connection."));
+                            await DisconnectAsync();
+                            
+                            break;
+                        }
+                        
+                        await SendResponseAsync(new SMTP_ServerResponse(502,null,$"Error: command '{cmd}' not recognized."));
                     }
                 }
             }
             catch(Exception x){
-                OnError(x);
+                await OnErrorAsync(x);
             }
         }
 
         #endregion
+        
 
-        #region method ProcessCmd
+        #region method EhloAsync
 
-        /// <summary>
-        /// Completes command reading operation.
-        /// </summary>
-        /// <param name="op">Operation.</param>
-        /// <returns>Returns true if server should start reading next command.</returns>
-        private bool ProcessCmd(SmartStream.ReadLineAsyncOP op)
+        private async Task _EhloAsync(string cmdText)
         {
-            bool readNextCommand = true;
-                        
-            try{
-                // We are already disposed.
-                if(this.IsDisposed){
-                    return false;
-                }
-                // Check errors.
-                if(op.Error != null){
-                    OnError(op.Error);
-                }
-                // Remote host shut-down(Socket.ShutDown) socket.
-                if(op.BytesInBuffer == 0){
-                    LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' shut down socket.");
-                    Dispose();
-                
-                    return false;
-                }
-
-                // Log.
-                if(this.Server.Logger != null){
-                    this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,op.LineUtf8 ?? "",this.LocalEndPoint,this.RemoteEndPoint);
-                }
-
-                string[] cmd_args = Encoding.UTF8.GetString(op.Buffer,0,op.LineBytesInBuffer).Split(new char[]{' '},2);
-                string   cmd      = cmd_args[0].ToUpperInvariant();
-                string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
-
-                if(cmd == "EHLO"){
-                    EHLO(args);
-                }
-                else if(cmd == "HELO"){
-                    HELO(args);
-                }
-                else if(cmd == "STARTTLS"){
-                    STARTTLS(args);
-                }
-                else if(cmd == "AUTH"){
-                    AUTH(args);
-                }
-                else if(cmd == "MAIL"){
-                    MAIL(args);
-                }
-                else if(cmd == "RCPT"){
-                    RCPT(args);
-                }
-                else if(cmd == "DATA"){    
-                    Cmd_DATA cmdData = new Cmd_DATA();                    
-                    cmdData.CompletedAsync += delegate(object? sender,EventArgs<SMTP_Session.Cmd_DATA> e){
-                        if(cmdData.Error != null){
-                            if(cmdData.Error is IncompleteDataException){
-                                LogAddText("Disposing SMTP session, remote endpoint closed socket.");
-                            }
-                            else{
-                                LogAddText("Disposing SMTP session, fatal error:" + cmdData.Error.Message);
-                                OnError(cmdData.Error);
-                            }
-                            Dispose();
-                        }
-                        else{
-                            BeginReadCmd();
-                        }
-
-                        cmdData.Dispose();
-                    };
-                    if(!cmdData.Start(this,args)){
-                        if(cmdData.Error != null){
-                            if(cmdData.Error is IncompleteDataException){
-                                LogAddText("Disposing SMTP session, remote endpoint closed socket.");
-                            }
-                            else{
-                                LogAddText("Disposing SMTP session, fatal error:" + cmdData.Error.Message);
-                                OnError(cmdData.Error);
-                            }
-                            Dispose();
-                            readNextCommand = false;
-                        }
-
-                        cmdData.Dispose();
-                    }
-                    else{
-                        readNextCommand = false;
-                    }
-                }
-                else if(cmd == "BDAT"){
-                    readNextCommand = BDAT(args);
-                }
-                else if(cmd == "RSET"){
-                    RSET(args);
-                }
-                else if(cmd == "NOOP"){
-                     NOOP(args);
-                }
-                else if(cmd == "QUIT"){
-                     QUIT(args);
-                     readNextCommand = false;
-                }
-                else{
-                     m_BadCommands++;
-
-                     // Maximum allowed bad commands exceeded.
-                     if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
-                         WriteLine("421 Too many bad commands, closing transmission channel.");
-                         Disconnect();
-                         return false;
-                     }
-                            
-                     WriteLine("502 Error: command '" + cmd + "' not recognized.");
-                 }
-             }
-             catch(Exception x){
-                 OnError(x);
-             }
-
-             return readNextCommand;
-        }
-
-        #endregion
-//
-        #region method ReadCommandAsync
-
-        #region class ReadCommandAsyncOP
-
-        /// <summary>
-        /// 
-        /// </summary>
-        private class ReadCommandAsyncOP
-        {
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            public ReadCommandAsyncOP()
-            {
-            }
-
-
-            #region Properties implementation
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Reads next SMTP command.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        private void ReadCommandAsync(ReadCommandAsyncOP op)
-        {
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-
-            // ReadCommandCompleted
-        }
-
-        #endregion
-//
-        #region method ReadCommandCompleted
-
-        /// <summary>
-        /// Is called when SMTP command reading has completed.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        private void ReadCommandCompleted(ReadCommandAsyncOP op)
-        {
-            if(this.IsDisposed){
-                return;
-            }
-            if(op == null){
-                // TODO: Log somewhere, don't raise exception.
-            }
-
-            // TODO:
-        }
-
-        #endregion
-
-        #region method SendResponseAsync
-
-        #region class SendResponseAsyncOP
-
-        /// <summary>
-        /// This class represents <see cref="SMTP_Session.SendResponseAsync"/> asynchronous operation.
-        /// </summary>
-        private class SendResponseAsyncOP : IDisposable,IAsyncOP
-        {
-            private object             m_pLock         = new object();
-            private AsyncOP_State      m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?         m_pException    = null;
-            private SMTP_t_ReplyLine[] m_pReplyLines;
-            private SMTP_Session?      m_pSession      = null;
-            private bool               m_RiseCompleted = false;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="reply">SMTP server reply line.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>reply</b> is null reference.</exception>
-            public SendResponseAsyncOP(SMTP_t_ReplyLine reply)
-            {
-                if(reply == null){
-                    throw new ArgumentNullException("reply");
-                }
-
-                m_pReplyLines = new SMTP_t_ReplyLine[]{reply};
-            }
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="replyLines">SMTP server reply lines.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>replyLines</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid values.</exception>
-            public SendResponseAsyncOP(SMTP_t_ReplyLine[] replyLines)
-            {
-                if(replyLines == null){
-                    throw new ArgumentNullException("replyLines");
-                }
-                if(replyLines.Length < 1){
-                    throw new ArgumentException("Argument 'replyLines' must contain at least 1 item.","replyLines");
-                }
-
-                m_pReplyLines = replyLines;
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-                
-                m_pException = null;
-                m_pSession   = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner SMTP session.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            public bool Start(SMTP_Session owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
-                m_pSession = owner;
-
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pSession.TcpStream);
-
-                    // Build SMTP response.
-                    StringBuilder response = new StringBuilder();
-                    foreach(SMTP_t_ReplyLine replyLine in m_pReplyLines){
-                        response.Append(replyLine.ToString());
-                    }
-                                        
-                    byte[] buffer = Encoding.UTF8.GetBytes(response.ToString());
-
-                    // Log
-                    m_pSession.LogAddWrite(buffer.Length,response.ToString());
-
-                    // Start response sending.
-                    m_pSession.TcpStream.BeginWrite(buffer,0,buffer.Length,this.ResponseSendingCompleted,null);
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pSession.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method ResponseSendingCompleted
-
-            /// <summary>
-            /// Is called when response sending has finished.
-            /// </summary>
-            /// <param name="ar">Asynchronous result.</param>
-            private void ResponseSendingCompleted(IAsyncResult ar)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pSession);
-                    ArgumentNullException.ThrowIfNull(m_pSession.TcpStream);
-
-                    m_pSession.TcpStream.EndWrite(ar);
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pSession?.LogAddException("Exception: " + m_pException.Message,m_pException);                    
-                }
-
-                SetState(AsyncOP_State.Completed);
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<SendResponseAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<SendResponseAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Sends SMTP server response.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="SendResponseAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        private bool SendResponseAsync(SendResponseAsyncOP op)
-        {
-            if(this.IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-
-        #region class Cmd_DATA
-
-        /// <summary>
-        /// Implements SMTP DATA command. Defined in RFC 5321 4.1.1.4.
-        /// </summary>
-        private class Cmd_DATA : IDisposable,IAsyncOP
-        {
-            private object         m_pLock         = new object();
-            private AsyncOP_State  m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?     m_pException    = null;
-            private SMTP_Session?  m_pSession      = null;
-            private DateTime       m_StartTime;
-            private bool           m_RiseCompleted = false;
-            
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            public Cmd_DATA()
-            {
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-                
-                m_pException = null;
-                m_pSession   = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-             /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner SMTP session.</param>
-            /// <param name="cmdText">SMTP client command text.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            public bool Start(SMTP_Session owner,string cmdText)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
-                m_pSession  = owner;
-                m_StartTime = DateTime.Now;
-
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    /* RFC 5321 4.1.1.4.
-                        The receiver normally sends a 354 response to DATA, and then treats
-                        the lines (strings ending in <CRLF> sequences, as described in
-                        Section 2.3.7) following the command as mail data from the sender.
-                        This command causes the mail data to be appended to the mail data
-                        buffer.  The mail data may contain any of the 128 ASCII character
-                        codes, although experience has indicated that use of control
-                        characters other than SP, HT, CR, and LF may cause problems and
-                        SHOULD be avoided when possible.
-             
-                        The custom of accepting lines ending only in <LF>, as a concession to
-                        non-conforming behavior on the part of some UNIX systems, has proven
-                        to cause more interoperability problems than it solves, and SMTP
-                        server systems MUST NOT do this, even in the name of improved
-                        robustness.  In particular, the sequence "<LF>.<LF>" (bare line
-                        feeds, without carriage returns) MUST NOT be treated as equivalent to
-                        <CRLF>.<CRLF> as the end of mail data indication.
-             
-                        Receipt of the end of mail data indication requires the server to
-                        process the stored mail transaction information.  This processing
-                        consumes the information in the reverse-path buffer, the forward-path
-                        buffer, and the mail data buffer, and on the completion of this
-                        command these buffers are cleared.  If the processing is successful,
-                        the receiver MUST send an OK reply.  If the processing fails, the
-                        receiver MUST send a failure reply.  The SMTP model does not allow
-                        for partial failures at this point: either the message is accepted by
-                        the server for delivery and a positive response is returned or it is
-                        not accepted and a failure reply is returned.  In sending a positive
-                        "250 OK" completion reply to the end of data indication, the receiver
-                        takes full responsibility for the message (see Section 6.1).  Errors
-                        that are diagnosed subsequently MUST be reported in a mail message,
-                        as discussed in Section 4.4.
-
-                        When the SMTP server accepts a message either for relaying or for
-                        final delivery, it inserts a trace record (also referred to
-                        interchangeably as a "time stamp line" or "Received" line) at the top
-                        of the mail data.  This trace record indicates the identity of the
-                        host that sent the message, the identity of the host that received
-                        the message (and is inserting this time stamp), and the date and time
-                        the message was received.  Relayed messages will have multiple time
-                        stamp lines.  Details for formation of these lines, including their
-                        syntax, is specified in Section 4.4.
-                    */
-                                        
-                    // RFC 5321 3.1.
-                    if(m_pSession.m_SessionRejected){
-                        SendFinalResponse(new SMTP_t_ReplyLine(503,"Bad sequence of commands: Session rejected.",true));
-                    }
-                    // RFC 5321 4.1.4.
-                    else if(string.IsNullOrEmpty(m_pSession.m_EhloHost)){
-                        SendFinalResponse(new SMTP_t_ReplyLine(503,"Bad sequence of commands: Send EHLO/HELO first.",true));
-                    }
-                    // RFC 5321 4.1.4.
-                    else if(m_pSession.m_pFrom == null){
-                        SendFinalResponse(new SMTP_t_ReplyLine(503,"Bad sequence of commands: Send 'MAIL FROM:' first.",true));
-                    }
-                    // RFC 5321 4.1.4.
-                    else if(m_pSession.m_pTo.Count == 0){
-                        SendFinalResponse(new SMTP_t_ReplyLine(503,"Bad sequence of commands: Send 'RCPT TO:' first.",true));
-                    }
-                    else if(!string.IsNullOrEmpty(cmdText)){
-                        SendFinalResponse(new SMTP_t_ReplyLine(500,"Command line syntax error.",true));
-                    }
-                    else{
-                        // Get message store stream.
-                        m_pSession.m_pMessageStream = m_pSession.OnGetMessageStream();
-                        if(m_pSession.m_pMessageStream == null){
-                            m_pSession.m_pMessageStream = new MemoryStreamEx(32000);
-                        }                   
-                        
-                        // Send "354 Start mail input; end with <CRLF>.<CRLF>".
-                        SMTP_Session.SendResponseAsyncOP sendResponseOP = new SendResponseAsyncOP(new SMTP_t_ReplyLine(354,"Start mail input; end with <CRLF>.<CRLF>",true));
-                        sendResponseOP.CompletedAsync += delegate(object? sender,EventArgs<SendResponseAsyncOP> e){
-                            Send354ResponseCompleted(sendResponseOP);
-                        };
-                        if(!m_pSession.SendResponseAsync(sendResponseOP)){
-                            Send354ResponseCompleted(sendResponseOP);
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pSession.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed){
-                        m_pSession?.Reset();
-                    }
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method SendFinalResponse
-
-            /// <summary>
-            /// Sends specified final response to client.
-            /// </summary>
-            /// <param name="reply">SMTP reply.</param>
-            private void SendFinalResponse(SMTP_t_ReplyLine reply)
-            {
-                try{
-                    if(reply == null){
-                        throw new ArgumentNullException("reply");
-                    }
-                    ArgumentNullException.ThrowIfNull(m_pSession);
-
-                    SMTP_Session.SendResponseAsyncOP sendResponseOP = new SendResponseAsyncOP(reply);
-                    sendResponseOP.CompletedAsync += delegate(object? sender,EventArgs<SendResponseAsyncOP> e){
-                        SendFinalResponseCompleted(sendResponseOP);
-                    };
-                    if(!m_pSession.SendResponseAsync(sendResponseOP)){
-                        SendFinalResponseCompleted(sendResponseOP);
-                    }                    
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pSession?.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-            #region method SendFinalResponseCompleted
-
-            /// <summary>
-            /// Is called when SMTP server "final" response sending has completed.
-            /// </summary>
-            private void SendFinalResponseCompleted(SMTP_Session.SendResponseAsyncOP op)
-            {                 
-                if(op.Error != null){
-                    m_pException = op.Error;
-                }
-
-                SetState(AsyncOP_State.Completed);
-                
-                op.Dispose();
-            }
-
-            #endregion
-
-            #region method Send354ResponseCompleted
-
-            /// <summary>
-            /// Is called when SMTP server 354 response sending has completed.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void Send354ResponseCompleted(SMTP_Session.SendResponseAsyncOP op)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pSession);
-                    ArgumentNullException.ThrowIfNull(m_pSession.TcpStream);
-                    ArgumentNullException.ThrowIfNull(m_pSession.m_pMessageStream);
-
-                    // RFC 5321.4.4 trace info.
-                    byte[] recevived = m_pSession.CreateReceivedHeader();
-                    m_pSession.m_pMessageStream.Write(recevived,0,recevived.Length);
-                    
-                    // Create asynchronous read period-terminated opeartion.
-                    SmartStream.ReadPeriodTerminatedAsyncOP readPeriodTermOP = new SmartStream.ReadPeriodTerminatedAsyncOP(
-                        m_pSession.m_pMessageStream,
-                        m_pSession.Server.MaxMessageSize,
-                        SizeExceededAction.JunkAndThrowException
-                    );
-                    // This event is raised only if read period-terminated opeartion completes asynchronously.
-                    readPeriodTermOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadPeriodTerminatedAsyncOP>>(delegate(object? sender,EventArgs<SmartStream.ReadPeriodTerminatedAsyncOP> e){                
-                        MessageReadingCompleted(readPeriodTermOP);
-                    });
-                    // Read period-terminated completed synchronously.
-                    if(m_pSession.TcpStream.ReadPeriodTerminated(readPeriodTermOP,true)){
-                        MessageReadingCompleted(readPeriodTermOP);
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    m_pSession?.LogAddException("Exception: " + m_pException.Message,m_pException);
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                op.Dispose();
-            }
-
-            #endregion
-
-            #region method MessageReadingCompleted
-
-            /// <summary>
-            /// Is called when incoming SMTP message reading has completed.
-            /// </summary>
-            /// <param name="op">Asynchronous operation.</param>
-            private void MessageReadingCompleted(SmartStream.ReadPeriodTerminatedAsyncOP op)
-            {      
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pSession);
-
-                    if (op.Error != null){
-                        if(op.Error is LineSizeExceededException){
-                            SendFinalResponse(new SMTP_t_ReplyLine(500,"Line too long.",true));
-                        }
-                        else if(op.Error is DataSizeExceededException){
-                            SendFinalResponse(new SMTP_t_ReplyLine(552,"Too much mail data.",true));
-                        }
-                        else{
-                            m_pException = op.Error;
-                        }
-
-                        m_pSession.OnMessageStoringCanceled();
-                    }
-                    else{
-                        // Log.
-                        m_pSession.LogAddRead(op.BytesStored,"Readed " + op.BytesStored + " message bytes.");
-
-                        SMTP_Reply reply = new SMTP_Reply(250,"DATA completed in " + (DateTime.Now - m_StartTime).TotalSeconds.ToString("f2") + " seconds.");
-
-                        reply = m_pSession.OnMessageStoringCompleted(reply);
-
-                        SendFinalResponse(SMTP_t_ReplyLine.Parse(reply.ReplyCode + " " + reply.ReplyLines[0]));
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;       
-                }
-
-                // We got some unknown error, we are done.
-                if(m_pException != null){
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                op.Dispose();
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<Cmd_DATA>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<Cmd_DATA>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-
-        #region method EHLO
-
-        private void EHLO(string cmdText)
-        {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
-                return;
-            }
-
             /* RFC 5321 4.1.1.1.
                 ehlo           = "EHLO" SP ( Domain / address-literal ) CRLF
 
@@ -1076,50 +302,65 @@ namespace LumiSoft.Net.SMTP.Server
                                 ; any CHAR excluding <SP> and all control characters (US-ASCII 0-31 and 127 inclusive)
             */
             if(string.IsNullOrEmpty(cmdText) || cmdText.Split(' ').Length != 1){
-                WriteLine("501 Syntax error, syntax: \"EHLO\" SP hostname CRLF");
+                string text = "Syntax error, syntax: \"EHLO\" SP hostname CRLF";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
+            if(m_pFrom != null){
+                string text = "Bad sequence of commands: EHLO not allowed during a mail transaction.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
 
-            List<string> ehloLines = new List<string>();
-            ehloLines.Add(Net_Utils.GetLocalHostName(this.LocalHostName));
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.PIPELINING)){
-                ehloLines.Add(SMTP_ServiceExtensions.PIPELINING);
+                return;
             }
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.SIZE)){
-                ehloLines.Add(SMTP_ServiceExtensions.SIZE + " " + this.Server.MaxMessageSize);
+             
+            List<SMTP_t_ReplyLine> ehloLines = new List<SMTP_t_ReplyLine>();
+            ehloLines.Add(new SMTP_t_ReplyLine(250,Net_Utils.GetLocalHostName(this.LocalHostName)));
+            if(Supports(SMTP_ServiceExtensions.PIPELINING)){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.PIPELINING));
             }
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.STARTTLS) && !this.IsSecureConnection && this.Certificate != null){
-                ehloLines.Add(SMTP_ServiceExtensions.STARTTLS);
+            if(Supports(SMTP_ServiceExtensions.SIZE)){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.SIZE + " " + this.Server.MaxMessageSize));
             }
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions._8BITMIME)){
-                ehloLines.Add(SMTP_ServiceExtensions._8BITMIME);
+            if(Supports(SMTP_ServiceExtensions.STARTTLS) && !this.IsSecureConnection && this.Certificate != null){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.STARTTLS));
             }
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.BINARYMIME)){
-                ehloLines.Add(SMTP_ServiceExtensions.BINARYMIME);
+            if(Supports(SMTP_ServiceExtensions._8BITMIME)){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions._8BITMIME));
             }
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.CHUNKING)){
-                ehloLines.Add(SMTP_ServiceExtensions.CHUNKING);
+            if(Supports(SMTP_ServiceExtensions.BINARYMIME)){                
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.BINARYMIME));
             }
-            if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.DSN)){
-                ehloLines.Add(SMTP_ServiceExtensions.DSN);
+            if(Supports(SMTP_ServiceExtensions.CHUNKING)){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.CHUNKING));
+            }
+            if(Supports(SMTP_ServiceExtensions.DSN)){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.DSN));
             }
             
-            StringBuilder sasl = new StringBuilder();
+            List<string> sasl = new List<string>();
             foreach(AUTH_SASL_ServerMechanism authMechanism in this.Authentications.Values){
                 if(!authMechanism.RequireSSL || (authMechanism.RequireSSL && this.IsSecureConnection)){
-                    sasl.Append(authMechanism.Name + " ");
+                    sasl.Add(authMechanism.Name);
                 }
             }
-            if(sasl.Length > 0){
-                ehloLines.Add(SMTP_ServiceExtensions.AUTH + " " + sasl.ToString().Trim());
+            if(sasl.Count > 0){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.AUTH + " " + string.Join(' ',sasl)));
             }
             
-            SMTP_Reply reply = new SMTP_Reply(250,ehloLines.ToArray());
+            // Create default server response, user can override it in event.
+            var response = new SMTP_ServerResponse(ehloLines.ToArray());
 
-            reply = OnEhlo(cmdText,reply);
+            // Raise event EhloAsync.
+            if(this.EhloAsync != null){
+                SMTP_e_Ehlo eArgs = new SMTP_e_Ehlo(this,cmdText,response);
+                await this.EhloAsync(eArgs);
+
+                response = eArgs.Response;
+            }
 
             // EHLO accepted.
-            if(reply.ReplyCode < 300){
+            if(response.IsSuccess){
                 m_EhloHost = cmdText;
 
                 /* RFC 5321 4.1.4.
@@ -1134,37 +375,46 @@ namespace LumiSoft.Net.SMTP.Server
                 Reset();
             }
 
-            WriteLine(reply.ToString());
+            await SendResponseAsync(response);
         }
 
         #endregion
 
-        #region method HELO
+        #region method HeloAsync
 
-        private void HELO(string cmdText)
+        private async Task _HeloAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
-                return;
-            }
-            
             /* RFC 5321 4.1.1.1.
                 helo     = "HELO" SP Domain CRLF
             
                 response = "250" SP Domain [ SP ehlo-greet ] CRLF
             */
             if(string.IsNullOrEmpty(cmdText) || cmdText.Split(' ').Length != 1){
-                WriteLine("501 Syntax error, syntax: \"HELO\" SP hostname CRLF");
+                string text = "Syntax error, syntax: \"HELO\" SP hostname CRLF";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                return;
+            }
+            if(m_pFrom != null){
+                string text = "Bad sequence of commands: HELO not allowed during a mail transaction.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
 
-            SMTP_Reply reply = new SMTP_Reply(250,Net_Utils.GetLocalHostName(this.LocalHostName));
+            // Create default server response, user can override it in event.
+            var response = new SMTP_ServerResponse(220,null,Net_Utils.GetLocalHostName(this.LocalHostName));
 
-            reply = OnEhlo(cmdText,reply);
+            // Raise event EhloAsync.
+            if(this.HeloAsync != null){
+                SMTP_e_Helo eArgs = new SMTP_e_Helo(this,cmdText,response);
+                await this.HeloAsync(eArgs);
+
+                response = eArgs.Response;
+            }
 
             // HELO accepted.
-            if(reply.ReplyCode < 300){
+            if(response.IsSuccess){
                 m_EhloHost = cmdText;
 
                 /* RFC 5321 4.1.4.
@@ -1179,77 +429,65 @@ namespace LumiSoft.Net.SMTP.Server
                 Reset();
             }
 
-            WriteLine(reply.ToString());
+            await SendResponseAsync(response);
         }
 
         #endregion
 
-        #region method STARTTLS
+        #region method StartTlsAsync
 
-        private void STARTTLS(string cmdText)
+        private async Task StartTlsAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 Bad sequence of commands: Session rejected.");
-                return;
-            }
+            /* RFC 3207 section 4.2 — STARTTLS Command
 
-            /* RFC 3207 STARTTLS 4.
-                The format for the STARTTLS command is:
+               The STARTTLS command requests that the SMTP session be upgraded
+               from a cleartext connection to a TLS-protected connection.  The
+               server MUST advertise the STARTTLS extension in response to EHLO
+               before the client may issue this command.
 
-                STARTTLS
+               STARTTLS is valid only before any mail transaction commands
+               (MAIL, RCPT, DATA) and only while the connection is not already
+               protected by TLS.  Once a TLS layer is active, servers MUST NOT
+               advertise STARTTLS and clients MUST NOT issue it.
 
-                with no parameters.
+               Upon receiving STARTTLS, the server MUST respond with:
+                   "220 Ready to start TLS"
+               after which the TLS handshake begins immediately.  No further
+               SMTP commands may be sent until TLS negotiation completes.
 
-                After the client gives the STARTTLS command, the server responds with
-                one of the following reply codes:
+               After TLS is successfully established, the client MUST send EHLO
+               again.  All SMTP state prior to STARTTLS is discarded.
 
-                220 Ready to start TLS
-                501 Syntax error (no parameters allowed)
-                454 TLS not available due to temporary reason
-             
-               4.2 Result of the STARTTLS Command
-                Upon completion of the TLS handshake, the SMTP protocol is reset to
-                the initial state (the state in SMTP after a server issues a 220
-                service ready greeting).  The server MUST discard any knowledge
-                obtained from the client, such as the argument to the EHLO command,
-                which was not obtained from the TLS negotiation itself.  The client
-                MUST discard any knowledge obtained from the server, such as the list
-                of SMTP service extensions, which was not obtained from the TLS
-                negotiation itself.  The client SHOULD send an EHLO command as the
-                first command after a successful TLS negotiation.
-            
-                Both the client and the server MUST know if there is a TLS session
-                active.  A client MUST NOT attempt to start a TLS session if a TLS
-                session is already active.  A server MUST NOT return the STARTTLS
-                extension in response to an EHLO command received after a TLS
-                handshake has completed.
-              
-             
-               RFC 2246 7.2.2. Error alerts.
-                Error handling in the TLS Handshake protocol is very simple. When an
-                error is detected, the detecting party sends a message to the other
-                party. Upon transmission or receipt of an fatal alert message, both
-                parties immediately close the connection.  <...>
+               Syntax:
+                   starttls = "STARTTLS" CRLF
             */
+
             
             if(!string.IsNullOrEmpty(cmdText)){
-                WriteLine("501 Syntax error: No parameters allowed.");
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),"Syntax error: No parameters allowed."));
+
                 return;
             }
             if(this.IsSecureConnection){
-                WriteLine("503 Bad sequence of commands: Connection is already secure.");
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,1),"STARTTLS not allowed after TLS negotiation."));
+
+                return;
+            }            
+            if(this.AuthenticatedUserIdentity != null || this.m_pFrom != null){
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,1),"Bad sequence of commands: STARTTLS not permitted in current state."));
+
                 return;
             }
             if(this.Certificate == null){
-                WriteLine("454 TLS not available: Server has no SSL certificate.");
+                await SendResponseAsync(new SMTP_ServerResponse(550,new SMTP_t_EnhancedStatusCode(5,5,3),"TLS not available: Server has no SSL certificate."));
+
                 return;
             }
 
-            WriteLine("220 Ready to start TLS.");
+            await SendResponseAsync(new SMTP_ServerResponse(220,null,"Ready to start TLS."));
 
             try{
-                SwitchToSecure();
+                await SwitchToSecureAsync();
 
                 // Log
                 LogAddText("TLS negotiation completed successfully.");
@@ -1261,22 +499,16 @@ namespace LumiSoft.Net.SMTP.Server
                 // Log
                 LogAddText("TLS negotiation failed: " + x.Message + ".");
 
-                Disconnect();
+                await DisconnectAsync();
             }
         }
 
         #endregion
 
-        #region method AUTH
+        #region method AuthAsync
 
-        private void AUTH(string cmdText)
+        private async Task AuthAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 Bad sequence of commands: Session rejected.");
-                return;
-            }
-
             /* RFC 4954 
 			    AUTH mechanism [initial-response]
 
@@ -1311,12 +543,22 @@ namespace LumiSoft.Net.SMTP.Server
                 such a response, it MUST reject the AUTH command by sending a 501 reply.
 			*/
             
-			if(this.IsAuthenticated){
-				WriteLine("503 Bad sequence of commands: you are already authenticated.");
+            if(this.Authentications.Count == 0){
+                string text = "AUTH not supported.";
+                await SendResponseAsync(new SMTP_ServerResponse(502,new SMTP_t_EnhancedStatusCode(5,5,1),text));
+
 				return;
 			}
-            if(m_pFrom != null){
-                WriteLine("503 Bad sequence of commands: The AUTH command is not permitted during a mail transaction.");
+			if(this.IsAuthenticated){
+                string text = "Already authenticated.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,0),text));
+
+				return;
+			}
+            if(m_pFrom != null){                
+                string text = "Authentication not permitted during mail transaction.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,1),text));
+
 				return;
             }
 
@@ -1324,10 +566,12 @@ namespace LumiSoft.Net.SMTP.Server
 
             string[] arguments = cmdText.Split(' ');
             if(arguments.Length > 2){
-                WriteLine("501 Syntax error, syntax: AUTH SP mechanism [SP initial-response] CRLF");
+                string text = "Syntax error.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
-            byte[] initialClientResponse = new byte[0];
+            byte[] initialClientResponse = [];
             if(arguments.Length == 2){
                 if(arguments[1] == "="){
                     // Skip.
@@ -1337,7 +581,9 @@ namespace LumiSoft.Net.SMTP.Server
                         initialClientResponse = Convert.FromBase64String(arguments[1]);
                     }
                     catch{
-                        WriteLine("501 Syntax error: Parameter 'initial-response' value must be BASE64 or contain a single character '='.");
+                        string text = "Syntax error: Parameter 'initial-response' value must be BASE64 or contain a single character '='.\".";
+                        await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                         return;
                     }
                 }
@@ -1346,14 +592,23 @@ namespace LumiSoft.Net.SMTP.Server
 
             #endregion
 
-            if(!this.Authentications.ContainsKey(mechanism)){
-                WriteLine("501 Not supported authentication mechanism.");
+            
+            AUTH_SASL_ServerMechanism? auth = null;
+            if(!m_pAuthentications.TryGetValue(mechanism,out auth)){
+                string text = "Unrecognized authentication type.";
+                await SendResponseAsync(new SMTP_ServerResponse(504,new SMTP_t_EnhancedStatusCode(5,5,4),text));
+
                 return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
-            byte[] clientResponse = initialClientResponse;
-            AUTH_SASL_ServerMechanism auth = this.Authentications[mechanism];
+            if(auth.RequireSSL && !this.IsSecureConnection){
+                string text = "Encryption required for requested authentication mechanism.";
+                await SendResponseAsync(new SMTP_ServerResponse(538,new SMTP_t_EnhancedStatusCode(5,7,11),text));
+
+                return;
+            }
+
+            byte[] clientResponse = initialClientResponse;            
             auth.Reset();
             while(true){
                 byte[]? serverResponse = auth.Continue(clientResponse);
@@ -1362,10 +617,12 @@ namespace LumiSoft.Net.SMTP.Server
                     if(auth.IsAuthenticated){
                         m_pUser = new GenericIdentity(auth.UserName,"SASL-" + auth.Name);
 
-                        WriteLine("235 2.7.0 Authentication succeeded.");
+                        string text = "Authentication succeeded.";
+                        await SendResponseAsync(new SMTP_ServerResponse(235,new SMTP_t_EnhancedStatusCode(2,7,0),text));
                     }
                     else{
-                        WriteLine("535 5.7.8 Authentication credentials invalid.");
+                        string text = "Authentication credentials invalid.";
+                        await SendResponseAsync(new SMTP_ServerResponse(535,new SMTP_t_EnhancedStatusCode(5,7,8),text));
                     }
                     break;
                 }
@@ -1374,35 +631,34 @@ namespace LumiSoft.Net.SMTP.Server
                     ArgumentNullException.ThrowIfNull(serverResponse);
 
                     // Send server challenge.
-                    if (serverResponse.Length == 0){
-                        WriteLine("334 ");
+                    if(serverResponse.Length == 0){
+                        await SendResponseAsync(new SMTP_ServerResponse(334,null,""));
                     }
                     else{
-                        WriteLine("334 " + Convert.ToBase64String(serverResponse));
+                        await SendResponseAsync(new SMTP_ServerResponse(334,null,Convert.ToBase64String(serverResponse)));
                     }
 
                     // Read client response. 
-                    SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                    this.TcpStream.ReadLine(readLineOP,false);
-                    if(readLineOP.Error != null){
-                        throw readLineOP.Error;
-                    }                    
-                    // Log
-                    if(this.Server.Logger != null){
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineOP.BytesInBuffer,"base64 auth-data",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-
-                    string? clientResponseStr = readLineOP.LineUtf8;
+                    var readLineResult = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    string? clientResponseStr = readLineResult.LineUtf8;
                     if(clientResponseStr == null){
-                        if(this.Server.Logger != null){
-                            this.Server.Logger.AddText("Client closed connection.");
-                        }
+                        LogAddText("Client closed connection.");
 
                         throw new IOException("Client closed connection.");
                     }
+                    
+                    // Log
+                    #if DEBUG
+                        LogAddRead(readLineResult.BytesInBuffer,clientResponseStr);
+                    #else
+                        LogAddRead(readLineResult.BytesInBuffer,"Client response recieved.");
+                    #endif                    
+                   
                     // Client canceled authentication.
-                    if (readLineOP.LineUtf8 == "*"){
-                        WriteLine("501 Authentication canceled.");
+                    if(clientResponseStr == "*"){
+                        string text = "Authentication canceled.";
+                        await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,7,0),text));
+
                         return;
                     }
                     // We have base64 client response, decode it.
@@ -1411,7 +667,9 @@ namespace LumiSoft.Net.SMTP.Server
                             clientResponse = Convert.FromBase64String(clientResponseStr);
                         }
                         catch{
-                            WriteLine("501 Invalid client response '" + clientResponseStr + "'.");
+                            string text = "Invalid client response.";
+                            await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                             return;
                         }
                     }
@@ -1421,76 +679,97 @@ namespace LumiSoft.Net.SMTP.Server
 
         #endregion
 
-        #region method MAIL
+        #region method MailAsync
 
-        private void MAIL(string cmdText)
+        private async Task _MailAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
-                return;
-            }
+            /*
+                MAIL FROM command syntax (RFC 5321 + RFC 3461 DSN extensions):
+                  MAIL FROM:<reverse-path> [SP mail-parameters] CRLF
+
+                reverse-path:
+                  - Must be enclosed in angle brackets.
+                  - May be empty (<>) for the null sender.
+                  - Contains the sender mailbox or address-literal.
+
+                mail-parameters (optional):
+                  - SIZE=<number>        // RFC 1870
+                  - BODY=<type>          // 7BIT, 8BITMIME, BINARYMIME
+                  - AUTH=<address>       // RFC 2554
+                  - RET=<type>           // FULL or HDRS (RFC 3461)
+                  - ENVID=<string>       // DSN envelope identifier (RFC 3461)
+                  - Additional parameters may appear depending on supported extensions.
+
+                parameter rules:
+                  - Must follow a space after the closing '>'.
+                  - Each parameter is keyword=value with no spaces around '='.
+                  - RET must be FULL or HDRS.
+                  - ENVID must not contain spaces.
+                  - If a parameter is syntactically valid but not recognized or not
+                    implemented by the server → reply with 555 (RFC 5321).
+
+                error handling:
+                  - Malformed or missing reverse-path → 501 Syntax error.
+                  - Unsupported or unimplemented mail-parameters → 555 parameters not recognized.
+                  - Wrong command sequence (MAIL already active) → 503 Bad sequence.
+
+                examples:
+                  OK:  MAIL FROM:<user@example.com>
+                  OK:  MAIL FROM:<>                     // null sender
+                  OK:  MAIL FROM:<user@example.com> SIZE=12345 RET=FULL ENVID=abc123
+            */
+
             // RFC 5321 4.1.4.
             if(string.IsNullOrEmpty(m_EhloHost)){
-                WriteLine("503 Bad sequence of commands: send EHLO/HELO first.");
+                string text = "Bad sequence of commands: send EHLO/HELO first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
             // RFC 5321 4.1.4.
             if(m_pFrom != null){
-                WriteLine("503 Bad sequence of commands: nested MAIL command.");
+                string text = "Bad sequence of commands: MAIL FROM already issued.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
             // RFC 3030 BDAT.
             if(m_pMessageStream != null){
-                WriteLine("503 Bad sequence of commands: BDAT command is pending.");
+                string text = "Bad sequence of commands: BDAT command is pending.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
             if(this.Server.MaxTransactions != 0 && m_Transactions >= this.Server.MaxTransactions){
-                WriteLine("503 Bad sequence of commands: Maximum allowed mail transactions exceeded.");
+                string text = "Too many mail transactions in this session";
+                await SendResponseAsync(new SMTP_ServerResponse(452,new SMTP_t_EnhancedStatusCode(4,5,3),text));
+
                 return;
             }
 
-            /* RFC 5321 4.1.1.2.
-                mail            = "MAIL FROM:" Reverse-path [SP Mail-parameters] CRLF
-              
-                Mail-parameters = esmtp-param *(SP esmtp-param)
-
-                esmtp-param     = esmtp-keyword ["=" esmtp-value]
-
-                esmtp-keyword   = (ALPHA / DIGIT) *(ALPHA / DIGIT / "-")
-
-                esmtp-value     = 1*(%d33-60 / %d62-126)
-                                  ; any CHAR excluding "=", SP, and control
-                                  ; characters.  If this string is an email address,
-                                  ; i.e., a Mailbox, then the "xtext" syntax [32] SHOULD be used.
-              
-                Reverse-path   = Path / "<>"
-                Path           = "<" [ A-d-l ":" ] Mailbox ">"
-              
-               4.1.1.11.
-                If the server SMTP does not recognize or cannot implement one or more
-                of the parameters associated with a particular MAIL FROM or RCPT TO
-                command, it will return code 555.
-            */
-
+            
             if(cmdText.ToUpper().StartsWith("FROM:")){
                 // Remove FROM: from command text.
                 cmdText = cmdText.Substring(5).Trim();
             }
             else{
-                WriteLine("501 Syntax error, syntax: \"MAIL FROM:\" \"<\" address \">\" / \"<>\" [SP Mail-parameters] CRLF");
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
 
             string         address = "";
-            int            size    = -1;
+            int?           size    = null;
             string?        body    = null;
             SMTP_t_DSN_Ret ret     = SMTP_t_DSN_Ret.NotSpecified;
             string?        envID   = null;
 
             // Mailbox not between <>.
             if(!cmdText.StartsWith("<") || cmdText.IndexOf('>') == -1){
-                WriteLine("501 Syntax error, syntax: \"MAIL FROM:\" \"<\" address \">\" / \"<>\" [SP Mail-parameters] CRLF");
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
             // Parse mailbox.
@@ -1501,160 +780,187 @@ namespace LumiSoft.Net.SMTP.Server
 
             #region Parse parameters
                                     
-            string[] parameters = string.IsNullOrEmpty(cmdText) ? new string[0] : cmdText.Split(' ');
+            string[] parameters = string.IsNullOrEmpty(cmdText) ? new string[0] : cmdText.Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
             foreach(string parameter in parameters){
                 string[] name_value = parameter.Split(new char[]{'='},2);
+                if(name_value.Length != 2){
+                    string text = "Syntax error in parameters or arguments.";
+                    await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                    return;
+                }
+                string name  = name_value[0].ToUpper();
+                string value = name_value[1];
 
                 // SIZE
-                if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.SIZE) && name_value[0].ToUpper() == "SIZE"){
+                if(name == "SIZE" && Supports(SMTP_ServiceExtensions.SIZE)){
                     // RFC 1870.
                     //  size-value ::= 1*20DIGIT
-                    if(name_value.Length == 1){
-                        WriteLine("501 Syntax error: SIZE parameter value must be specified.");
-                        return;
+                    if(int.TryParse(value,out int sizeParsed)){
+                        size = sizeParsed;
                     }
-                    if(!int.TryParse(name_value[1],out size)){
-                        WriteLine("501 Syntax error: SIZE parameter value must be integer.");
+                    else{                        
+                        string text = "Syntax error in parameters or arguments.";
+                        await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                         return;
                     }
 
                     // Message size exceeds maximum allowed message size.
                     if(size > this.Server.MaxMessageSize){
-                        WriteLine("552 Message exceeds fixed maximum message size.");
+                        string text = "Message size exceeds the server’s configured maximum.";
+                        await SendResponseAsync(new SMTP_ServerResponse(552,new SMTP_t_EnhancedStatusCode(5,3,4),text));
+                        
                         return;
                     }
                 }
                 // BODY
-                else if(this.Server.Extentions.Contains(SMTP_ServiceExtensions._8BITMIME) && name_value[0].ToUpper() == "BODY"){
+                else if(name == "BODY"){
                     // RFC 1652.
                     //  body-value ::= "7BIT" / "8BITMIME" / "BINARYMIME"
                     //
                     // BINARYMIME - defined in RFC 3030.
-                    if(name_value.Length == 1){
-                        WriteLine("501 Syntax error: BODY parameter value must be specified.");
-                        return;
-                    }
-                    if(name_value[1].ToUpper() != "7BIT" && name_value[1].ToUpper() != "8BITMIME" && name_value[1].ToUpper() != "BINARYMIME"){
-                        WriteLine("501 Syntax error: BODY parameter value must be \"7BIT\",\"8BITMIME\" or \"BINARYMIME\".");
+                    if(value.ToUpper() != "7BIT" && value.ToUpper() != "8BITMIME" && value.ToUpper() != "BINARYMIME"){
+                        string text = "Syntax error in parameters or arguments.";
+                        await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                         return;
                     }
                     body = name_value[1].ToUpper();
                 }
                 // RET
-                else if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.DSN) && name_value[0].ToUpper() == "RET"){
+                else if(name == "RET" && Supports(SMTP_ServiceExtensions.DSN)){
                     // RFC 3461 4.3.
                     //  ret-value = "FULL" / "HDRS"
-                    if(name_value.Length == 1){
-                        WriteLine("501 Syntax error: RET parameter value must be specified.");
-                        return;
-                    }
-                    else if(name_value[1].ToUpper() != "FULL"){
+                    if(value.ToUpper() == "FULL"){
                         ret = SMTP_t_DSN_Ret.FullMessage;
                     }
-                    else if(name_value[1].ToUpper() != "HDRS"){
+                    else if(value.ToUpper() == "HDRS"){
                         ret = SMTP_t_DSN_Ret.Headers;
                     }
                     else{
-                        WriteLine("501 Syntax error: RET parameter value must be \"FULL\" or \"HDRS\".");
+                        string text = "Syntax error in parameters or arguments.";
+                        await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                         return;
                     }
                 }
                 // ENVID
-                else if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.DSN) && name_value[0].ToUpper() == "ENVID"){
+                else if(name == "ENVID" && Supports(SMTP_ServiceExtensions.DSN)){
                     // RFC 3461 4.4.
                     //  envid-parameter = "ENVID=" xtext
-                    if(name_value.Length == 1){
-                        WriteLine("501 Syntax error: ENVID parameter value must be specified.");
-                        return;
-                    }
 
-                    envID = name_value[1].ToUpper();
+                    envID = value;
                 }
                 // AUTH
-                else if(name_value[0].ToUpper() == "AUTH"){
+                else if(name == "AUTH"){
                 }
                 // Unsupported parameter.
                 else{
-                    WriteLine("555 Unsupported parameter: " + parameter);
+                    string text = "Parameter not recognized or not supported.";
+                    await SendResponseAsync(new SMTP_ServerResponse(555,new SMTP_t_EnhancedStatusCode(5,5,4),text));
+
                     return;
                 }
             }
 
             #endregion
 
-            SMTP_MailFrom from  = new SMTP_MailFrom(address,size,body,ret,envID);
-            SMTP_Reply    reply = new SMTP_Reply(250,"OK.");
+            var from     = new SMTP_t_MailFrom(address,size,body,ret,envID);
+            var response = new SMTP_ServerResponse(250,null,"OK.");
 
-            reply = OnMailFrom(from,reply);
+            // Raise event MailFromAsync.
+            if(this.MailFromAsync != null){
+                SMTP_e_MailFrom eArgs = new SMTP_e_MailFrom(this,from,response);
+                await this.MailFromAsync(eArgs);
+
+                response = eArgs.Response;
+            }
 
             // MAIL accepted.
-            if(reply.ReplyCode < 300){
+            if(response.IsSuccess){
                 m_pFrom = from;
                 m_Transactions++;
             }
 
-            WriteLine(reply.ToString());
+            await SendResponseAsync(response);
         }
 
         #endregion
 
-        #region method RCPT
+        #region method RcptAsync
 
-        private void RCPT(string cmdText)
+        private async Task _RcptAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
+            /*
+                RCPT TO command syntax (RFC 5321 + RFC 3461 DSN extensions):
+                  RCPT TO:<forward-path> [SP rcpt-parameters] CRLF
+
+                forward-path:
+                  - Must be enclosed in angle brackets.
+                  - Contains the recipient mailbox or address-literal.
+                  - May include source routes (deprecated; MUST be rejected or ignored).
+
+                rcpt-parameters (optional):
+                  - NOTIFY=<dsn-notify>      // RFC 3461
+                  - ORCPT=<dsn-orcpt>        // RFC 3461
+                  - Additional parameters may appear depending on supported extensions.
+
+                parameter rules:
+                  - Must follow a space after the closing '>'.
+                  - Each parameter is keyword=value with no spaces around '='.
+                  - NOTIFY may contain: NEVER / SUCCESS / FAILURE / DELAY
+                    * Multiple values separated by commas.
+                    * NEVER cannot be combined with other values.
+                  - ORCPT must be of the form: <type>;<address>
+                    * Example: ORCPT=rfc822;user@example.com
+                  - If a parameter is syntactically valid but not recognized or not
+                    implemented by the server → reply with 555 (RFC 5321).
+
+                error handling:
+                  - Malformed or missing forward-path → 501 Syntax error.
+                  - Unsupported or unimplemented rcpt-parameters → 555 parameters not recognized.
+                  - Wrong command sequence (MAIL not yet issued) → 503 Bad sequence.
+                  - Recipient rejected by policy or local rules → 550 Requested action not taken.
+                  - Temporary failure (e.g., mailbox unavailable) → 450 Requested action not taken.
+
+                examples:
+                  OK:  RCPT TO:<user@example.com>
+                  OK:  RCPT TO:<user@example.com> NOTIFY=SUCCESS,FAILURE
+                  OK:  RCPT TO:<user@example.com> ORCPT=rfc822;alias@example.net
+            */
+
+            // RFC 5321 4.1.4.
+            if(string.IsNullOrEmpty(m_EhloHost)){                
+                string text = "Bad sequence of commands: send EHLO/HELO first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
             // RFC 5321 4.1.4.
-            if(string.IsNullOrEmpty(m_EhloHost)){
-                WriteLine("503 Bad sequence of commands: send EHLO/HELO first.");
-                return;
-            }
-            // RFC 5321 4.1.4.
-            if(m_pFrom == null){
-                WriteLine("503 Bad sequence of commands: send 'MAIL FROM:' first.");
+            if(m_pFrom == null){     
+                string text = "Bad sequence of commands: send 'MAIL FROM:' first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
             // RFC 3030 BDAT.
-            if(m_pMessageStream != null){
-                WriteLine("503 Bad sequence of commands: BDAT command is pending.");
+            if(m_pMessageStream != null){     
+                string text = "Bad sequence of commands: BDAT command is pending.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
                 return;
             }
 
-            /* RFC 5321 4.1.1.3.
-                rcpt = "RCPT TO:" ( "<Postmaster@" Domain ">" / "<Postmaster>" /  Forward-path ) [SP Rcpt-parameters] CRLF
-              
-                Rcpt-parameters = esmtp-param *(SP esmtp-param)
-
-                esmtp-param     = esmtp-keyword ["=" esmtp-value]
-
-                esmtp-keyword   = (ALPHA / DIGIT) *(ALPHA / DIGIT / "-")
-
-                esmtp-value     = 1*(%d33-60 / %d62-126)
-                                  ; any CHAR excluding "=", SP, and control
-                                  ; characters.  If this string is an email address,
-                                  ; i.e., a Mailbox, then the "xtext" syntax [32] SHOULD be used.
-
-                    Note that, in a departure from the usual rules for local-parts, the "Postmaster" string shown above is
-                    treated as case-insensitive.
-             
-                Forward-path   = Path
-                Path           = "<" [ A-d-l ":" ] Mailbox ">"
-              
-               4.1.1.11.
-                If the server SMTP does not recognize or cannot implement one or more
-                of the parameters associated with a particular MAIL FROM or RCPT TO
-                command, it will return code 555.
-            */
 
             if(cmdText.ToUpper().StartsWith("TO:")){
                 // Remove TO: from command text.
                 cmdText = cmdText.Substring(3).Trim();
             }
             else{
-                WriteLine("501 Syntax error, syntax: \"RCPT TO:\" \"<\" address \">\" [SP Rcpt-parameters] CRLF");
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
 
@@ -1664,7 +970,9 @@ namespace LumiSoft.Net.SMTP.Server
 
             // Mailbox not between <>.
             if(!cmdText.StartsWith("<") || cmdText.IndexOf('>') == -1){
-                WriteLine("501 Syntax error, syntax: \"RCPT TO:\" \"<\" address \">\" [SP Rcpt-parameters] CRLF");
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
             // Parse mailbox.
@@ -1673,18 +981,28 @@ namespace LumiSoft.Net.SMTP.Server
                 cmdText = cmdText.Substring(cmdText.IndexOf('>') + 1).Trim();
             }
             if(address == string.Empty){
-                WriteLine("501 Syntax error('address' value must be specified), syntax: \"RCPT TO:\" \"<\" address \">\" [SP Rcpt-parameters] CRLF");
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                 return;
             }
 
             #region Parse parameters
 
-            string[] parameters = string.IsNullOrEmpty(cmdText) ? new string[0] : cmdText.Split(' ');
+            string[] parameters = string.IsNullOrEmpty(cmdText) ? new string[0] : cmdText.Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
             foreach(string parameter in parameters){
                 string[] name_value = parameter.Split(new char[]{'='},2);
+                if(name_value.Length != 2){
+                    string text = "Syntax error in parameters or arguments.";
+                    await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                    return;
+                }
+                string name  = name_value[0].ToUpper();
+                string value = name_value[1];
 
                 // NOTIFY
-                if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.DSN) && name_value[0].ToUpper() == "NOTIFY"){
+                if(name == "NOTIFY" && Supports(SMTP_ServiceExtensions.DSN)){
                     /* RFC 1891 5.1.
                         notify-esmtp-value  = "NEVER" / 1#notify-list-element
                         notify-list-element = "SUCCESS" / "FAILURE" / "DELAY"
@@ -1692,11 +1010,7 @@ namespace LumiSoft.Net.SMTP.Server
                         a. Multiple notify-list-elements, separated by commas, MAY appear in a
                            NOTIFY parameter; however, the NEVER keyword MUST appear by itself.
                     */
-                    if(name_value.Length == 1){
-                        WriteLine("501 Syntax error: NOTIFY parameter value must be specified.");
-                        return;
-                    }
-                    string[] notifyItems = name_value[1].ToUpper().Split(',');
+                    string[] notifyItems = value.ToUpper().Split(',');
                     foreach(string notifyItem in notifyItems){
                         if(notifyItem.Trim().ToUpper() == "NEVER"){
                             notify |= SMTP_t_DSN_Notify.Never;
@@ -1712,22 +1026,38 @@ namespace LumiSoft.Net.SMTP.Server
                         }
                         // Invalid or not supported notify item.
                         else{
-                            WriteLine("501 Syntax error: Not supported NOTIFY parameter value '" + notifyItem + "'.");
+                            string text = "Syntax error in parameters or arguments.";
+                            await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                            return;
+                        }
+
+                        if(notify.HasFlag(SMTP_t_DSN_Notify.Never) && notify != SMTP_t_DSN_Notify.Never){
+                            string text = "Syntax error in parameters or arguments.";
+                            await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                             return;
                         }
                     }
                 }
                 // ORCPT
-                else if(this.Server.Extentions.Contains(SMTP_ServiceExtensions.DSN) && name_value[0].ToUpper() == "ORCPT"){
-                    if(name_value.Length == 1){
-                        WriteLine("501 Syntax error: ORCPT parameter value must be specified.");
+                else if(name == "ORCPT" && Supports(SMTP_ServiceExtensions.DSN)){
+                    orcpt = value;
+
+                    int sepIndex = value.IndexOf(';');
+                    if(sepIndex <= 0 || sepIndex == value.Length - 1){
+                        string text = "Syntax error in parameters or arguments.";
+                        await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
                         return;
                     }
-                    orcpt = name_value[1].ToUpper();
                 }
                 // Unsupported parameter.
                 else{
-                    WriteLine("555 Unsupported parameter: " + parameter);
+                    string text = "Parameter not recognized.";
+                    await SendResponseAsync(new SMTP_ServerResponse(555,new SMTP_t_EnhancedStatusCode(5,5,4),text));
+
+                    return;
                 }
             }
 
@@ -1735,172 +1065,338 @@ namespace LumiSoft.Net.SMTP.Server
 
             // Maximum allowed recipients exceeded.
             if(m_pTo.Count >= this.Server.MaxRecipients){
-                WriteLine("452 Too many recipients");
+                string text = "Too many recipients.";
+                await SendResponseAsync(new SMTP_ServerResponse(452,new SMTP_t_EnhancedStatusCode(4,5,3),text));
+
+                return;
+            }
+            // Recipient already specified.
+            if(m_pTo.ContainsKey(address)){
+                string text = "Recipient already specified.";
+                await SendResponseAsync(new SMTP_ServerResponse(452,new SMTP_t_EnhancedStatusCode(4,5,3),text));
+
                 return;
             }
 
-            SMTP_RcptTo to    = new SMTP_RcptTo(address,notify,orcpt);
-            SMTP_Reply  reply = new SMTP_Reply(250,"OK.");
+            var to       = new SMTP_t_RcptTo(address,notify,orcpt);
+            var response = new SMTP_ServerResponse(250,null,"OK.");
 
-            reply = OnRcptTo(to,reply);
+            // Raise event MailFromAsync.
+            if(this.RcptToAsync != null){
+                SMTP_e_RcptTo eArgs = new SMTP_e_RcptTo(this,to,response);
+                await this.RcptToAsync(eArgs);
 
-            // RCPT accepted.
-            if(reply.ReplyCode < 300){
-                if(!m_pTo.ContainsKey(address.ToLower())){
-                    m_pTo.Add(address.ToLower(),to);
-                }
+                response = eArgs.Response;
             }
 
-            WriteLine(reply.ToString());
+            // RCPT accepted.
+            if(response.IsSuccess){
+                if(!m_pTo.ContainsKey(address)){
+                    m_pTo.Add(address,to);
+                }
+            }  
+
+            await SendResponseAsync(response);
         }
 
         #endregion
 
-        #region method BDAT
+        #region method DataAsync
 
-        private bool BDAT(string cmdText)
+        private async Task DataAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
-                return true;
+            /*
+                DATA command syntax (RFC 5321 + RFC 3030 CHUNKING interaction):
+
+                  DATA CRLF
+                  <message content> CRLF "." CRLF
+
+                semantics:
+                  - DATA initiates the transfer of message content unless BDAT is used.
+                  - The server MUST reply with 354 to signal readiness to receive data.
+                  - The message ends when a line containing only "." is received.
+                  - If CHUNKING (BDAT) is active, DATA MUST NOT be used (503).
+
+                reply codes:
+                  354 Start mail input; end with <CRLF>.<CRLF>
+                  250 OK — message accepted for delivery
+                  451 Requested action aborted: local error in processing
+                  452 Requested action not taken: insufficient system storage
+                  552 Requested mail action aborted: exceeded storage allocation
+                  554 Transaction failed (policy rejection)
+
+                error handling:
+                  - No MAIL FROM issued → 503 Bad sequence of commands
+                  - No RCPT TO issued → 503 Bad sequence of commands
+                  - BDAT in progress → 503 Bad sequence of commands
+                  - Message size exceeds server maximum → 552 5.3.4
+                  - Temporary storage failure → 452 4.5.3
+                  - Policy rejection → 554 5.7.1
+                  - Local processing error → 451 4.3.0
+
+                notes:
+                  - DATA and BDAT are mutually exclusive; once BDAT is used, DATA is invalid.
+                  - The server must treat DATA and BDAT as equivalent message-delivery
+                    mechanisms; both feed into the same message-storing pipeline.
+                  - The final response after storing the message is identical for DATA and BDAT.
+            */
+
+            if(string.IsNullOrEmpty(m_EhloHost)){                
+                string text = "Bad sequence of commands: send EHLO/HELO first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
             }
-            // RFC 5321 4.1.4.
-            if(string.IsNullOrEmpty(m_EhloHost)){
-                WriteLine("503 Bad sequence of commands: send EHLO/HELO first.");
-                return true;
+            if(m_pFrom == null){     
+                string text = "Bad sequence of commands: send 'MAIL FROM:' first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
             }
-            // RFC 5321 4.1.4.
-            if(m_pFrom == null){
-                WriteLine("503 Bad sequence of commands: send 'MAIL FROM:' first.");
-                return true;
+            if(m_pTo.Count == 0){     
+                string text = "Bad sequence of commands: send 'RCPT TO:' first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
             }
-            // RFC 5321 4.1.4.
-            if(m_pTo.Count == 0){
-                WriteLine("503 Bad sequence of commands: send 'RCPT TO:' first.");
-                return true;
+            if(m_pMessageStream != null){     
+                string text = "Bad sequence of commands: BDAT command is pending.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
             }
 
-            /* RFC 3030 2
-				The BDAT verb takes two arguments.The first argument indicates the length, 
-                in octets, of the binary data chunk. The second optional argument indicates 
-                that the data chunk	is the last.
-				
-				The message data is sent immediately after the trailing <CR>
-				<LF> of the BDAT command line.  Once the receiver-SMTP receives the
-				specified number of octets, it will return a 250 reply code.
+            // DATA may not have arguments.
+            if(cmdText.Length > 0){
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
 
-				The optional LAST parameter on the BDAT command indicates that this
-				is the last chunk of message data to be sent.  The last BDAT command
-				MAY have a byte-count of zero indicating there is no additional data
-				to be sent.  Any BDAT command sent after the BDAT LAST is illegal and
-				MUST be replied to with a 503 "Bad sequence of commands" reply code.
-				The state resulting from this error is indeterminate.  A RSET command
-				MUST be sent to clear the transaction before continuing.
-				
-				A 250 response MUST be sent to each successful BDAT data block within
-				a mail transaction.
+                return;
+            }
 
-				bdat-cmd   ::= "BDAT" SP chunk-size [ SP end-marker ] CR LF
-				chunk-size ::= 1*DIGIT
-				end-marker ::= "LAST"
-			*/
+            await SendResponseAsync(new SMTP_ServerResponse(354,null,"Start mail input; end with <CRLF>.<CRLF>."));
+            
+            // Raise MessageStoringBeginAsync event.
+            if(this.MessageStoringBeginAsync != null){
+                var eArgs = new SMTP_e_MessageStoringBegin(this);
+                await this.MessageStoringBeginAsync(eArgs);
 
-            DateTime startTime = DateTime.Now;
+                m_pMessageStream = eArgs.StoreStream;                
+            }
+            // User didn't specify stream, usedefault stream.
+            if(m_pMessageStream == null){
+                m_pMessageStream = new MemoryStreamEx(128000);
+            }
+
+            try{
+                // Add Received: header.
+                byte[] recevived = CreateReceivedHeader();
+                await m_pMessageStream.WriteAsync(recevived);
+
+                int msgSize = await this.TcpStream.ReadPeriodTerminatedAsync(m_pMessageStream,this.Server.MaxMessageSize,32000,SizeExceededAction.JunkAndThrowException);
+                LogAddRead(msgSize,$"Message received: {msgSize} bytes.");
+            }
+            catch(Exception x){
+                // Raise MessageStoringCancelAsync event.
+                if(this.MessageStoringCancelAsync != null){
+                    var eArgs = new SMTP_e_MessageStoringCancel(this,m_pMessageStream);
+                    await this.MessageStoringCancelAsync(eArgs);        
+                }
+
+                if(x is IncompleteDataException){
+                    LogAddText("Disposing SMTP session, remote endpoint closed socket.");
+                    await DisconnectAsync();
+                }
+                else if(x is LineSizeExceededException){
+                    await SendResponseAsync(new SMTP_ServerResponse(552,null,"Line too long."));
+                }
+                else if(x is DataSizeExceededException){
+                    await SendResponseAsync(new SMTP_ServerResponse(552,null,"Too much mail data."));
+                }
+                else{
+                    LogAddText("Disposing SMTP session, fatal error:" + x.Message);
+                    await OnErrorAsync(x);
+                    await DisconnectAsync();
+                }                
+
+                Reset();
+
+                return;
+            }
+
+            var response = new SMTP_ServerResponse(250,null,"OK — message accepted for delivery");
+
+            // Raise MessageStoringCompleteAsync event.
+            if(this.MessageStoringCompleteAsync != null){
+                var eArgs = new SMTP_e_MessageStoringComplete(this,m_pMessageStream,response);
+                await this.MessageStoringCompleteAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+                        
+            await SendResponseAsync(response);
+
+            Reset();
+        }
+
+        #endregion
+
+        #region method BdatAsync
+
+        private async Task BdatAsync(string cmdText)
+        {
+            /*
+                BDAT (RFC 3030) Chunked Transfer Notes:
+
+                - BDAT <size> [LAST] declares the exact octet count of the following chunk.
+                - Server MUST read exactly <size> bytes; BDAT does not use CRLF.CRLF termination.
+                - The LAST keyword marks the final chunk; server finalizes the message afterward.
+                - BDAT and DATA MUST NOT be mixed in the same SMTP transaction.
+                - After each BDAT (except LAST), server replies: 250 OK.
+                - After BDAT LAST, server replies: 250 OK or an appropriate error.
+
+                Syntax:
+                    BDAT <octet-count> [LAST]
+
+                Example:
+                    C: EHLO client.example
+                    S: 250-CHUNKING
+                       250 OK
+
+                    C: BDAT 1024
+                    S: 250 OK
+
+                    C: <1024 bytes of binary data>
+
+                    C: BDAT 512 LAST
+                    S: 250 OK
+
+                    C: <512 bytes of binary data>
+
+                    (Message is now complete)
+            */
+
+            if(!Supports(SMTP_ServiceExtensions.CHUNKING)){
+                string text = "Unrecognized command.";
+                await SendResponseAsync(new SMTP_ServerResponse(500,new SMTP_t_EnhancedStatusCode(5,5,1),text));
+
+                return;
+            }
+            if(string.IsNullOrEmpty(m_EhloHost)){                
+                string text = "Bad sequence of commands: send EHLO/HELO first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
+            }
+            if(m_pFrom == null){     
+                string text = "Bad sequence of commands: send 'MAIL FROM:' first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
+            }
+            if(m_pTo.Count == 0){     
+                string text = "Bad sequence of commands: send 'RCPT TO:' first.";
+                await SendResponseAsync(new SMTP_ServerResponse(503,new SMTP_t_EnhancedStatusCode(5,5,3),text));
+
+                return;
+            }
 
             int chunkSize = 0;
             bool last     = false;
             string[] args = cmdText.Split(' ');
             if(cmdText == string.Empty || args.Length > 2){
-                WriteLine("501 Syntax error, syntax: \"BDAT\" SP chunk-size [SP \"LAST\"] CRLF");
-                return true;
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                return;
             }
             if(!int.TryParse(args[0],out chunkSize)){
-                WriteLine("501 Syntax error(chunk-size must be integer), syntax: \"BDAT\" SP chunk-size [SP \"LAST\"] CRLF");
-                return true;
+                string text = "Syntax error in parameters or arguments.";
+                await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                return;
             }
             if(args.Length == 2){
                 if(args[1].ToUpperInvariant() != "LAST"){
-                    WriteLine("501 Syntax error, syntax: \"BDAT\" SP chunk-size [SP \"LAST\"] CRLF");
-                    return true;
+                    string text = "Syntax error in parameters or arguments.";
+                    await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
+
+                    return;
                 }
                 last = true;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             // First BDAT block in transaction.
-            if (m_pMessageStream == null){
-                m_pMessageStream = OnGetMessageStream();
-                if(m_pMessageStream == null){
-                    m_pMessageStream = new MemoryStreamEx(32000);
+            if(m_pMessageStream == null){
+                // Raise MessageStoringBeginAsync event.
+                if(this.MessageStoringBeginAsync != null){
+                    var eArgs = new SMTP_e_MessageStoringBegin(this);
+                    await this.MessageStoringBeginAsync(eArgs);
+
+                    m_pMessageStream = eArgs.StoreStream;                
                 }
+                // User didn't specify stream, usedefault stream.
+                if(m_pMessageStream == null){
+                    m_pMessageStream = new MemoryStreamEx(128000);
+                }
+
                 // RFC 5321.4.4 trace info.
                 byte[] recevived = CreateReceivedHeader();
-                m_pMessageStream.Write(recevived,0,recevived.Length);
+                await m_pMessageStream.WriteAsync(recevived);
             }
 
             Stream storeStream = m_pMessageStream;
-            // Maximum allowed message size exceeded.
+            // Maximum allowed message size exceeded, junk all incoming data.
             if((m_BDatReadedCount + chunkSize) > this.Server.MaxMessageSize){
                 storeStream = new JunkingStream();
             }
 
-            // Read data block.
-            this.TcpStream.BeginReadFixedCount(
-                storeStream,
-                chunkSize,
-                new AsyncCallback(delegate(IAsyncResult ar){
-                    try{
-                        this.TcpStream.EndReadFixedCount(ar);
+            // Read BDAT chunk.
+            this.TcpStream.ReadFixedCount(storeStream,chunkSize);
+            m_BDatReadedCount += chunkSize;
 
-                        m_BDatReadedCount += chunkSize;
+            // Maximum allowed message size exceeded.
+            if(m_BDatReadedCount > this.Server.MaxMessageSize){
+                await SendResponseAsync(new SMTP_ServerResponse(552,null,"Too much mail data."));
 
-                        // Maximum allowed message size exceeded.
-                        if(m_BDatReadedCount > this.Server.MaxMessageSize){
-                            WriteLine("552 Too much mail data.");
+                // Raise MessageStoringCancelAsync event.
+                if(this.MessageStoringCancelAsync != null){
+                    var eArgs = new SMTP_e_MessageStoringCancel(this,m_pMessageStream);
+                    await this.MessageStoringCancelAsync(eArgs);        
+                }
 
-                            OnMessageStoringCanceled();            
-                        }
-                        else{
-                            SMTP_Reply reply = new SMTP_Reply(250,chunkSize + " bytes received in " + (DateTime.Now - startTime).TotalSeconds.ToString("f2") + " seconds.");
+                // According RFC 3030, client should send RSET and we must wait it and reject transaction commands.
+                // If we reset internally, so all transaction commands will be blocked. 
+                Reset();
+                
+                return;
+            }
+            
+            var response = new SMTP_ServerResponse(250,null,"Ok.");
 
-                            if(last){
-                                reply = OnMessageStoringCompleted(reply);
-                            }
-                            
-                            WriteLine(reply.ToString());                            
-                        }
+            if(last){
+                // Raise MessageStoringCompleteAsync event.
+                if(this.MessageStoringCompleteAsync != null){
+                    var eArgs = new SMTP_e_MessageStoringComplete(this,m_pMessageStream,response);
+                    await this.MessageStoringCompleteAsync(eArgs);
 
-                        if(last){
-                            // Accoring RFC 3030, client should send RSET and we must wait it and reject transaction commands.
-                            // If we reset internally, then all works as specified. 
-                            Reset();
-                        }
-                    }
-                    catch(Exception x){
-                        OnError(x);
-                    }
+                    response = eArgs.Response;
+                }
 
-                    BeginReadCmd();
-                }),
-                null
-            );
-
-            return false;
+                // According RFC 3030, client should send RSET and we must wait it and reject transaction commands.
+                // If we reset internally, so all transaction commands will be blocked. 
+                Reset();
+            }
+            
+            await SendResponseAsync(response); 
         }
 
         #endregion
 
-        #region method RSET
+        #region method RsetAsync
 
-        private void RSET(string cmdText)
+        private async Task RsetAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
-                return;
-            }
-
             /* RFC 5321 4.1.1.5.
                 This command specifies that the current mail transaction will be
                 aborted.  Any stored sender, recipients, and mail data MUST be
@@ -1914,28 +1410,26 @@ namespace LumiSoft.Net.SMTP.Server
                 connection as the result of receiving a RSET; that action is reserved
                 for QUIT (see Section 4.1.1.10).
             */
-
+            
             if(m_pMessageStream != null){
-                OnMessageStoringCanceled();
+                // Raise MessageStoringCancelAsync event.
+                if(this.MessageStoringCancelAsync != null){
+                    var eArgs = new SMTP_e_MessageStoringCancel(this,m_pMessageStream);
+                    await this.MessageStoringCancelAsync(eArgs);        
+                }
             }
 
             Reset();
 
-            WriteLine("250 OK.");
+            await SendResponseAsync(new SMTP_ServerResponse(250,null,"OK."));
         }
 
         #endregion
 
-        #region method NOOP
+        #region method NoopAsync
 
-        private void NOOP(string cmdText)
+        private async Task NoopAsync(string cmdText)
         {
-            // RFC 5321 3.1.
-            if(m_SessionRejected){
-                WriteLine("503 bad sequence of commands: Session rejected.");
-                return;
-            }
-
             /* RFC 5321 4.1.1.9.
                 This command does not affect any parameters or previously entered
                 commands.  It specifies no action other than that the receiver send a
@@ -1949,14 +1443,14 @@ namespace LumiSoft.Net.SMTP.Server
                     noop = "NOOP" [ SP String ] CRLF
             */
 
-            WriteLine("250 OK.");
+            await SendResponseAsync(new SMTP_ServerResponse(250,null,"OK."));
         }
 
         #endregion
 
-        #region method QUIT
+        #region method QuitAsync
 
-        private void QUIT(string cmdText)
+        private async Task QuitAsync(string cmdText)
         {
             /* RFC 5321 4.1.1.10.
                 This command specifies that the receiver MUST send a "221 OK" reply,
@@ -1969,12 +1463,13 @@ namespace LumiSoft.Net.SMTP.Server
             */
 
             try{
-                WriteLine("221 <" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> Service closing transmission channel.");                
+                string text = "<" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> Service closing transmission channel.";
+                await SendResponseAsync(new SMTP_ServerResponse([new SMTP_t_ReplyLine(221,text)]));                              
             }
             catch{
             }
-            Disconnect();
-            Dispose();
+            
+            await DisconnectAsync();
         }
 
         #endregion
@@ -1995,6 +1490,32 @@ namespace LumiSoft.Net.SMTP.Server
             m_pTo.Clear();                    
             m_pMessageStream = null;
             m_BDatReadedCount = 0;
+        }
+
+        #endregion
+
+        #region method Supports
+
+        /// <summary>
+        /// Determines whether the SMTP session's server advertises support for the
+        /// specified extension or capability.
+        /// </summary>
+        /// <param name="feature">
+        /// The SMTP extension or capability token to check.
+        /// </param>
+        /// <returns>
+        /// <c>true</c> if the server lists the specified feature; otherwise <c>false</c>.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="feature"/> is <c>null</c>.
+        /// </exception>
+        private bool Supports(string feature)
+        {
+            if(feature == null){
+                throw new ArgumentNullException(nameof(feature));
+            }
+
+            return this.Server.Extentions.Contains(feature,StringComparer.OrdinalIgnoreCase);
         }
 
         #endregion
@@ -2032,7 +1553,7 @@ namespace LumiSoft.Net.SMTP.Server
 
             ArgumentNullException.ThrowIfNull(this.RemoteEndPoint);
 
-            LumiSoft.Net.Mail.Mail_h_Received received = new LumiSoft.Net.Mail.Mail_h_Received(this.EhloHost,Net_Utils.GetLocalHostName(this.LocalHostName),DateTime.Now);
+            LumiSoft.Net.Mail.Mail_h_Received received = new LumiSoft.Net.Mail.Mail_h_Received(this.EhloHost!,Net_Utils.GetLocalHostName(this.LocalHostName),DateTime.Now);
             received.From_TcpInfo = new LumiSoft.Net.Mail.Mail_t_TcpInfo(this.RemoteEndPoint.Address,null);
             received.Via = "TCP";
             if(!this.IsAuthenticated && !this.IsSecureConnection){
@@ -2053,25 +1574,29 @@ namespace LumiSoft.Net.SMTP.Server
 
         #endregion
 
-        #region method WriteLine
+        #region method SendResponseAsync
 
         /// <summary>
-        /// Sends and logs specified line to connected host.
+        /// Sends the specified SMTP server response to the remote endpoint by writing
+        /// its formatted reply lines to the underlying TCP stream and recording the
+        /// outgoing data in the session log.
         /// </summary>
-        /// <param name="line">Line to send.</param>
-        private void WriteLine(string line)
+        /// <param name="response">
+        /// The <see cref="SMTP_ServerResponse"/> instance containing the reply lines
+        /// to transmit to the peer.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="response"/> is <c>null</c>.
+        /// </exception>
+        internal async Task SendResponseAsync(SMTP_ServerResponse response)
         {
-            if(line == null){
-                throw new ArgumentNullException("line");
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
-            int countWritten = this.TcpStream.WriteLine(line);
-
-            // Log.
-            if(this.Server.Logger != null){
-                this.Server.Logger.AddWrite(this.ID,this.AuthenticatedUserIdentity,countWritten,line,this.LocalEndPoint,this.RemoteEndPoint);
-            }
+            string cmdLine = response.ToString();            
+            LogAddWrite(Encoding.UTF8.GetByteCount(cmdLine),cmdLine.TrimEnd());
+            await this.TcpStream.WriteLineAsync(cmdLine);
         }
 
         #endregion
@@ -2191,9 +1716,11 @@ namespace LumiSoft.Net.SMTP.Server
         #region Properties implementation
 
         /// <summary>
-        /// Gets session owner SMTP server.
+        /// Gets the SMTP server instance that owns this session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public new SMTP_Server Server
         {
             get{
@@ -2206,9 +1733,15 @@ namespace LumiSoft.Net.SMTP.Server
         }
 
         /// <summary>
-        /// Gets supported SASL authentication methods collection.
+        /// Gets the collection of supported SASL authentication mechanisms for
+        /// this SMTP server. The returned dictionary maps mechanism names to
+        /// their corresponding <see cref="AUTH_SASL_ServerMechanism"/> instances.
+        /// Applications may add or remove mechanisms from this collection to
+        /// customize the server's available authentication methods.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public Dictionary<string,AUTH_SASL_ServerMechanism> Authentications
         {
             get{
@@ -2221,9 +1754,14 @@ namespace LumiSoft.Net.SMTP.Server
         }
 
         /// <summary>
-        /// Gets number of bad commands happened on SMTP session.
+        /// Gets the number of invalid or unrecognized SMTP commands received
+        /// during this session. This counter is incremented whenever the client
+        /// issues a syntactically incorrect command or a command that is not
+        /// permitted in the current session state.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public int BadCommands
         {
             get{ 
@@ -2236,9 +1774,14 @@ namespace LumiSoft.Net.SMTP.Server
         }
 
         /// <summary>
-        /// Gets number of mail transactions processed by this SMTP session.
+        /// Gets the number of mail transactions processed during this SMTP
+        /// session. A transaction begins with a successful MAIL FROM command
+        /// and ends after the message is fully processed (either accepted or
+        /// rejected).
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public int Transactions
         {
             get{
@@ -2251,10 +1794,13 @@ namespace LumiSoft.Net.SMTP.Server
         }
                 
         /// <summary>
-        /// Gets client reported EHLO host name. Returns null if EHLO/HELO is not issued yet.
+        /// Gets the host name reported by the client in the EHLO or HELO command.
+        /// Returns <c>null</c> if the client has not issued EHLO or HELO yet.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public string EhloHost
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
+        public string? EhloHost
         {
             get{ 
                 if(this.IsDisposed){
@@ -2266,9 +1812,12 @@ namespace LumiSoft.Net.SMTP.Server
         }
 
         /// <summary>
-        /// Gets authenticated user identity or null if user has not authenticated.
+        /// Gets the identity of the user authenticated for this SMTP session,
+        /// or <c>null</c> if no authentication has been performed.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
         public override GenericIdentity? AuthenticatedUserIdentity
         {
 	        get{
@@ -2281,10 +1830,14 @@ namespace LumiSoft.Net.SMTP.Server
         }
         
         /// <summary>
-        /// Gets MAIL FROM: value. Returns null if MAIL FROM: is not issued yet.
+        /// Gets the value supplied by the client in the MAIL FROM command.
+        /// Returns <c>null</c> if MAIL FROM has not been issued in the current
+        /// transaction.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public SMTP_MailFrom? From
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
+        public SMTP_t_MailFrom? From
         {
             get{ 
                 if(this.IsDisposed){
@@ -2296,10 +1849,15 @@ namespace LumiSoft.Net.SMTP.Server
         }
 
         /// <summary>
-        /// Gets RCPT TO: values. Returns null if RCPT TO: is not issued yet.
+        /// Gets the collection of recipient addresses supplied by the client
+        /// through RCPT TO commands. Returns an array containing all accepted
+        /// recipients for the current mail transaction. If no RCPT TO command
+        /// has been issued yet, the array is empty.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public SMTP_RcptTo[] To
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown if this object has been disposed and the property is accessed.
+        /// </exception>
+        public SMTP_t_RcptTo[] To
         {
             get{ 
                 if(this.IsDisposed){
@@ -2307,7 +1865,7 @@ namespace LumiSoft.Net.SMTP.Server
                 }
 
                 lock(m_pTo){
-                    SMTP_RcptTo[] retVal = new SMTP_RcptTo[m_pTo.Count];
+                    SMTP_t_RcptTo[] retVal = new SMTP_t_RcptTo[m_pTo.Count];
                     m_pTo.Values.CopyTo(retVal,0);
 
                     return retVal;
@@ -2320,185 +1878,137 @@ namespace LumiSoft.Net.SMTP.Server
         #region Events implementation
 
         /// <summary>
-        /// Is raised when session has started processing and needs to send 220 greeting or 554 error resposne to the connected client.
+        /// Occurs when a new SMTP session is created, before the server sends
+        /// its initial 220 greeting banner.  This event allows the application
+        /// to inspect the session, customize the greeting <see cref="SMTP_ServerResponse"/>,
+        /// or reject the connection entirely by returning an error response.
         /// </summary>
-        public event EventHandler<SMTP_e_Started>? Started = null;
-
-        #region method OnStarted
+        /// <remarks>
+        /// The event is raised immediately after the TCP connection is accepted
+        /// and before any protocol-level data is transmitted to the client.
+        /// Handlers may replace the default greeting banner or return a non-2xx
+        /// reply to terminate the session.
+        /// </remarks>
+        public event Func<SMTP_e_Started,Task>? StartedAsync = null;
 
         /// <summary>
-        /// Raises <b>Started</b> event.
+        /// Occurs when the server receives the EHLO command from the client.
+        /// The event is raised after the command syntax has been validated but
+        /// before the server sends its 250 reply lines.  Handlers may inspect
+        /// the session, modify the default <see cref="SMTP_ServerResponse"/>,
+        /// add or remove advertised SMTP extensions, or reject the EHLO command
+        /// by returning an error response.
         /// </summary>
-        /// <param name="reply">Default SMTP server reply.</param>
-        /// <returns>Returns SMTP server reply what must be sent to the connected client.</returns>
-        private SMTP_Reply OnStarted(SMTP_Reply reply)
-        {
-            if(this.Started != null){
-                SMTP_e_Started eArgs = new SMTP_e_Started(this,reply);
-                this.Started(this,eArgs);
-
-                return eArgs.Reply;
-            }
-
-            return reply;
-        }
-
-        #endregion
+        /// <remarks>
+        /// The event provides full access to the parsed EHLO domain and the
+        /// server-generated reply lines.  Applications may customize the
+        /// advertised capabilities (for example, conditionally exposing AUTH
+        /// mechanisms only when TLS is active) or override the response entirely.
+        /// </remarks>
+        public event Func<SMTP_e_Ehlo,Task>? EhloAsync = null;
 
         /// <summary>
-        /// Is raised when EHLO command received.
+        /// Occurs when the server receives the HELO command from the client.
+        /// The event is raised after the command syntax has been validated but
+        /// before the server sends its 250 reply.  Handlers may inspect the
+        /// session, modify the default <see cref="SMTP_ServerResponse"/>, or
+        /// reject the HELO command by returning an error response.
         /// </summary>
-        public event EventHandler<SMTP_e_Ehlo>? Ehlo = null;
-
-        #region method OnEhlo
+        /// <remarks>
+        /// HELO is the simple greeting command defined by RFC 5321.  Unlike EHLO,
+        /// it does not negotiate extensions.  Applications may use this event to
+        /// customize the greeting reply or enforce connection policies before the
+        /// session proceeds.
+        /// </remarks>
+        public event Func<SMTP_e_Helo,Task>? HeloAsync = null;
 
         /// <summary>
-        /// Raises <b>Ehlo</b> event.
+        /// Occurs when the server receives the MAIL FROM command. The event is
+        /// raised after the command syntax and address have been parsed but
+        /// before the server sends its reply. Handlers may inspect the sender
+        /// address, apply acceptance policies, modify the default
+        /// <see cref="SMTP_ServerResponse"/>, or reject the MAIL FROM command
+        /// by returning an error response.
         /// </summary>
-        /// <param name="domain">Ehlo/Helo domain.</param>
-        /// <param name="reply">Default SMTP server reply.</param>
-        /// <returns>Returns SMTP server reply what must be sent to the connected client.</returns>
-        private SMTP_Reply OnEhlo(string domain,SMTP_Reply reply)
-        {
-            if(this.Ehlo != null){
-                SMTP_e_Ehlo eArgs = new SMTP_e_Ehlo(this,domain,reply);
-                this.Ehlo(this,eArgs);
-
-                return eArgs.Reply;
-            }
-
-            return reply;
-        }
-
-        #endregion
+        /// <remarks>
+        /// The MAIL FROM command initializes a new message transaction. This
+        /// event provides access to the envelope sender, optional parameters
+        /// (such as SIZE or BODY), and the current SMTP session state. The
+        /// application may enforce sender validation, rate limits, size limits,
+        /// or other policies before the transaction proceeds.
+        /// </remarks>
+        public event Func<SMTP_e_MailFrom,Task>? MailFromAsync = null;
 
         /// <summary>
-        /// Is raised when MAIL FROM: command received.
+        /// Occurs when the server receives the RCPT TO command. The event is
+        /// raised after the command syntax, address, and parameters have been
+        /// parsed but before the server sends its reply. Handlers may inspect
+        /// the recipient address, apply acceptance policies, modify the default
+        /// <see cref="SMTP_ServerResponse"/>, or reject the RCPT TO command by
+        /// returning an error response.
         /// </summary>
-        public event EventHandler<SMTP_e_MailFrom>? MailFrom = null;
-
-        #region method OnMailFrom
+        /// <remarks>
+        /// The RCPT TO command adds a recipient to the current message
+        /// transaction. This event provides access to the envelope recipient,
+        /// optional parameters (such as NOTIFY or ORCPT), and the current SMTP
+        /// session state. Applications may enforce recipient validation,
+        /// forwarding rules, relay restrictions, quota limits, or other policies
+        /// before the recipient is accepted.
+        /// </remarks>
+        public event Func<SMTP_e_RcptTo,Task>? RcptToAsync = null;
 
         /// <summary>
-        /// Raises <b>MailFrom</b> event.
+        /// Occurs when the server is about to begin receiving message content
+        /// for a DATA or BDAT command. The event is raised after the command
+        /// has been accepted and before any message data is read. No server
+        /// reply is sent at this stage, and the message transfer cannot be
+        /// aborted here. Handlers may inspect the session and initialize
+        /// storage resources in preparation for reading the message content.
         /// </summary>
-        /// <param name="from">MAIL FROM: value.</param>
-        /// <param name="reply">Default SMTP server reply.</param>
-        /// <returns>Returns SMTP server reply what must be sent to the connected client.</returns>
-        private SMTP_Reply OnMailFrom(SMTP_MailFrom from,SMTP_Reply reply)
-        {
-            if(this.MailFrom != null){
-                SMTP_e_MailFrom eArgs = new SMTP_e_MailFrom(this,from,reply);
-                this.MailFrom(this,eArgs);
-
-                return eArgs.Reply;
-            }
-
-            return reply;
-        }
-
-        #endregion
+        /// <remarks>
+        /// For DATA, this event is raised immediately after the server has sent
+        /// the 354 reply and before the first byte of message data is read.
+        /// For BDAT, it is raised after the BDAT command is parsed and accepted.
+        /// The application may allocate buffers, open storage streams, or perform
+        /// other initialization tasks required for processing the incoming data.
+        /// </remarks>
+        public event Func<SMTP_e_MessageStoringBegin,Task>? MessageStoringBeginAsync = null;
 
         /// <summary>
-        /// Is raised when RCPT TO: command received.
+        /// Occurs when the server aborts a DATA or BDAT message transfer before
+        /// completion. This event is raised if the client closes the connection,
+        /// the session times out while reading message data, or the incoming
+        /// message exceeds the server's configured maximum size. The transfer
+        /// cannot continue once this event is raised.
         /// </summary>
-        public event EventHandler<SMTP_e_RcptTo>? RcptTo = null;
-
-        #region method OnRcptTo
+        /// <remarks>
+        /// The event is triggered during the message data phase, after the server
+        /// has begun reading content but before a successful terminating sequence
+        /// (CRLF.CRLF for DATA or the final BDAT chunk) is received. Handlers may
+        /// inspect any partial message data that was collected and perform cleanup
+        /// or logging. The server will send the appropriate SMTP error reply after
+        /// the handler returns.
+        /// </remarks>
+        public event Func<SMTP_e_MessageStoringCancel,Task>? MessageStoringCancelAsync = null;
 
         /// <summary>
-        /// Raises <b>RcptTo</b> event.
+        /// Occurs when the server has successfully finished receiving all message
+        /// content for a DATA or BDAT command. The event is raised after the
+        /// terminating sequence (CRLF.CRLF for DATA or the final BDAT chunk) has
+        /// been fully read and before the server sends its final reply. Handlers
+        /// may inspect the completed message data, perform final processing, or
+        /// reject the message by returning a non-success <see cref="SMTP_ServerResponse"/>.
         /// </summary>
-        /// <param name="to">RCPT TO: value.</param>
-        /// <param name="reply">Default SMTP server reply.</param>
-        /// <returns>Returns SMTP server reply what must be sent to the connected client.</returns>
-        private SMTP_Reply OnRcptTo(SMTP_RcptTo to,SMTP_Reply reply)
-        {
-            if(this.RcptTo != null){
-                SMTP_e_RcptTo eArgs = new SMTP_e_RcptTo(this,to,reply);
-                this.RcptTo(this,eArgs);
-
-                return eArgs.Reply;
-            }
-
-            return reply;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when SMTP server needs to get stream where to store incoming message.
-        /// </summary>
-        public event EventHandler<SMTP_e_Message>? GetMessageStream = null;
-
-        #region method OnGetMessageStream
-
-        /// <summary>
-        /// Raises <b>GetMessageStream</b> event.
-        /// </summary>
-        /// <returns>Returns message store stream.</returns>
-        private Stream? OnGetMessageStream()
-        {
-            if(this.GetMessageStream != null){
-                SMTP_e_Message eArgs = new SMTP_e_Message(this);
-                this.GetMessageStream(this,eArgs);
-
-                return eArgs.Stream;
-            }
-
-            return null;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when SMTP server has canceled message storing.
-        /// </summary>
-        /// <remarks>This can happen on 2 cases: on session timeout and if between BDAT chunks RSET issued.</remarks>
-        public event EventHandler? MessageStoringCanceled = null;
-
-        #region method OnMessageStoringCanceled
-
-        /// <summary>
-        /// Raises <b>MessageStoringCanceled</b> event.
-        /// </summary>
-        private void OnMessageStoringCanceled()
-        {
-            if(this.MessageStoringCanceled != null){
-                this.MessageStoringCanceled(this,new EventArgs());
-            }
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when SMTP server has completed message storing.
-        /// </summary>
-        public event EventHandler<SMTP_e_MessageStored>? MessageStoringCompleted = null;
-
-        #region method OnMessageStoringCompleted
-
-        /// <summary>
-        /// Raises <b>MessageStoringCompleted</b> event.
-        /// </summary>
-        /// <param name="reply">Default SMTP server reply.</param>
-        /// <returns>Returns SMTP server reply what must be sent to the connected client.</returns>
-        private SMTP_Reply OnMessageStoringCompleted(SMTP_Reply reply)
-        {
-            ArgumentNullException.ThrowIfNull(this.m_pMessageStream);
-
-            if (this.MessageStoringCompleted != null){
-                SMTP_e_MessageStored eArgs = new SMTP_e_MessageStored(this,m_pMessageStream,reply);
-                this.MessageStoringCompleted(this,eArgs);
-
-                return eArgs.Reply;
-            }
-
-            return reply;
-        }
-
-        #endregion
-
+        /// <remarks>
+        /// This event indicates a normal, successful end of the message data
+        /// phase. For DATA, it is raised after the terminating dot sequence is
+        /// received. For BDAT, it is raised after the last chunk marked with
+        /// the LAST flag has been completely read. Applications may finalize
+        /// storage, commit the message to a queue, update metadata, or reject
+        /// the message before the server sends its final acceptance response.
+        /// </remarks>
+        public event Func<SMTP_e_MessageStoringComplete,Task>? MessageStoringCompleteAsync = null;
+        
         #endregion
 
     }

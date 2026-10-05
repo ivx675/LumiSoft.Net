@@ -29,13 +29,8 @@ namespace LumiSoft.Net.SMTP.Server
             m_pServiceExtentions.Add(SMTP_ServiceExtensions.SIZE);
             m_pServiceExtentions.Add(SMTP_ServiceExtensions.STARTTLS);
             m_pServiceExtentions.Add(SMTP_ServiceExtensions._8BITMIME);
-            m_pServiceExtentions.Add(SMTP_ServiceExtensions.BINARYMIME);
             m_pServiceExtentions.Add(SMTP_ServiceExtensions.CHUNKING);
         }
-
-        // TODO:
-
-        //public override Dispose
 
 
         #region override method OnMaxConnectionsExceeded
@@ -49,7 +44,8 @@ namespace LumiSoft.Net.SMTP.Server
         /// </remarks>
         protected override void OnMaxConnectionsExceeded(SMTP_Session session)
         {
-            session.TcpStream.WriteLine("421 Client host rejected: too many connections, please try again later.");
+            var response = new SMTP_ServerResponse(421,null,"Service not available, too many connections. Please try again later.");
+            session.SendResponseAsync(response).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -65,7 +61,8 @@ namespace LumiSoft.Net.SMTP.Server
         /// </remarks>
         protected override void OnMaxConnectionsPerIPExceeded(SMTP_Session session)
         {
-            session.TcpStream.WriteLine("421 Client host rejected: too many connections from your IP(" + session.RemoteEndPoint.Address + "), please try again later.");
+            var response = new SMTP_ServerResponse(421,null,"Too many concurrent connections from your IP (" + session.RemoteEndPoint.Address + "). Please try again later.");
+            session.SendResponseAsync(response).GetAwaiter().GetResult();
         }
 
         #endregion
@@ -75,7 +72,7 @@ namespace LumiSoft.Net.SMTP.Server
 
         /// <summary>
         /// Gets or sets SMTP server supported service extentions.
-        /// Supported values: PIPELINING,SIZE,STARTTLS,8BITMIME,BINARYMIME,CHUNKING,DSN.
+        /// Supported values: PIPELINING,SIZE,STARTTLS,8BITMIME,CHUNKING,DSN.
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
         /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
@@ -108,9 +105,6 @@ namespace LumiSoft.Net.SMTP.Server
                     }
                     else if(extention.ToUpper() == SMTP_ServiceExtensions._8BITMIME){
                         m_pServiceExtentions.Add(SMTP_ServiceExtensions._8BITMIME);
-                    }
-                    else if(extention.ToUpper() == SMTP_ServiceExtensions.BINARYMIME){
-                        m_pServiceExtentions.Add(SMTP_ServiceExtensions.BINARYMIME);
                     }
                     else if(extention.ToUpper() == SMTP_ServiceExtensions.CHUNKING){
                         m_pServiceExtentions.Add(SMTP_ServiceExtensions.CHUNKING);
