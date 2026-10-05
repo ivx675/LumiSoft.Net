@@ -457,61 +457,94 @@ namespace LumiSoft.Net.IO
         #region method ReadPeriodTerminatedAsync
 
         /// <summary>
-        /// Reads a period-terminated data block from the underlying stream asynchronously.
-        /// The data is read line-by-line using <see cref="ReadLineAsync(Memory{byte}, SizeExceededAction, CancellationToken)"/>
-        /// and written into the specified <paramref name="storeStream"/>.
-        /// A data block is terminated by a single dot (<c>.</c>) on a line by itself.
+        /// Reads a period‑terminated multi‑line data block from the underlying stream.
+        /// This method is used by both SMTP (<c>DATA</c>) and POP3 multi‑line responses.
+        /// Lines are read using <see cref="ReadLineAsync(Memory{byte}, SizeExceededAction, CancellationToken)"/>,
+        /// dot‑stuffing is removed, and accepted lines are written into <paramref name="storeStream"/>.
+        /// The block ends when a line containing only a single dot (<c>.</c>) is received.
         /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The method enforces both per‑line and total‑message size limits. When a line exceeds
+        /// <paramref name="maxLineSize"/>, <see cref="ReadLineAsync"/> consumes the entire overlong line
+        /// and then throws <see cref="LineSizeExceededException"/>. If <paramref name="exceededAction"/>
+        /// is <see cref="SizeExceededAction.JunkAndThrowException"/>, the exception is caught and the
+        /// method continues reading subsequent lines until the terminating dot is reached. No further
+        /// data is written to <paramref name="storeStream"/> once a line‑size violation has occurred.
+        /// After the terminating dot, the method throws <see cref="LineSizeExceededException"/> to
+        /// signal that the block was invalid.
+        /// </para>
+        ///
+        /// <para>
+        /// When the accumulated message size exceeds <paramref name="maxCount"/>, the method enters
+        /// a similar junk mode: excess data is ignored, and the method continues reading until the
+        /// terminating dot. If <paramref name="exceededAction"/> is
+        /// <see cref="SizeExceededAction.ThrowException"/>, the method throws
+        /// <see cref="DataSizeExceededException"/> immediately when the overflow occurs. If
+        /// <paramref name="exceededAction"/> is <see cref="SizeExceededAction.JunkAndThrowException"/>,
+        /// the method continues reading until the terminating dot and then throws
+        /// <see cref="DataSizeExceededException"/>.
+        /// </para>
+        ///
+        /// <para>
+        /// Dot‑stuffing is automatically removed: lines beginning with a dot have the leading dot
+        /// stripped before being written to <paramref name="storeStream"/>, except for the terminating
+        /// dot line (<c>.</c>), which ends the block.
+        /// </para>
+        /// </remarks>
         /// <param name="storeStream">
-        /// The destination stream where the decoded data block will be written.
-        /// Lines beginning with a dot (<c>.</c>) have the leading dot removed according to SMTP/POP3 dot-stuffing rules.
+        /// Destination stream for accepted data. Lines rejected due to size violations are not written.
         /// </param>
         /// <param name="maxCount">
-        /// The maximum number of data bytes allowed to be written to <paramref name="storeStream"/>.
-        /// Must be at least <c>8000</c>.
-        /// If the accumulated data exceeds this limit and <paramref name="exceededAction"/> is
-        /// <see cref="SizeExceededAction.ThrowException"/>, a <see cref="DataSizeExceededException"/> is thrown.
+        /// Maximum number of bytes allowed to be written to <paramref name="storeStream"/>.
+        /// Must be at least <c>8000</c>. When exceeded, the method either throws immediately or
+        /// continues in junk mode depending on <paramref name="exceededAction"/>.
         /// </param>
         /// <param name="maxLineSize">
-        /// The maximum allowed size of a single line (including CRLF).
-        /// Must be at least <c>64</c>.
-        /// This value determines the size of the temporary line buffer used during reading.
+        /// Maximum allowed size of a single line (including CRLF). Must be at least <c>64</c>.
+        /// Overlong lines are fully consumed and discarded by <see cref="ReadLineAsync"/>.
         /// </param>
         /// <param name="exceededAction">
-        /// Specifies how the method behaves when the data block exceeds <paramref name="maxCount"/>.
-        /// If set to <see cref="SizeExceededAction.ThrowException"/>, a <see cref="DataSizeExceededException"/> is thrown.
-        /// Otherwise, excess data is ignored and the method continues reading until the terminating dot line.
+        /// Determines how size violations are handled:
+        /// <list type="bullet">
+        /// <item>
+        /// <see cref="SizeExceededAction.ThrowException"/> — throw immediately when the violation occurs.
+        /// </item>
+        /// <item>
+        /// <see cref="SizeExceededAction.JunkAndThrowException"/> — junk offending data, continue reading
+        /// until the terminating dot, then throw.
+        /// </item>
+        /// </list>
         /// </param>
         /// <param name="cancellationToken">
-        /// A token that may be used to cancel the asynchronous read operation.
+        /// Optional cancellation token.
         /// </param>
         /// <returns>
-        /// The total number of bytes written to <paramref name="storeStream"/> after dot-stuffing removal.
-        /// This count includes CRLF terminators exactly as they appear in the incoming period-terminated data block.
+        /// Total number of bytes written to <paramref name="storeStream"/> (after dot‑stuffing removal).
         /// </returns>
         /// <exception cref="ObjectDisposedException">
-        /// Thrown if this <see cref="SmartStream"/> instance has been disposed.
+        /// Thrown if the underlying <see cref="SmartStream"/> has been disposed.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="storeStream"/> is <c>null</c>.
         /// </exception>
         /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="maxCount"/> is less than <c>8000</c>
-        /// or <paramref name="maxLineSize"/> is less than <c>64</c>.
+        /// Thrown if <paramref name="maxCount"/> is less than <c>8000</c> or
+        /// <paramref name="maxLineSize"/> is less than <c>64</c>.
         /// </exception>
         /// <exception cref="IncompleteDataException">
-        /// Thrown if the underlying stream ends before a period-terminated block is completed.
+        /// Thrown if the underlying stream ends before a period‑terminated block is completed.
+        /// </exception>
+        /// <exception cref="LineSizeExceededException">
+        /// Thrown immediately (for <see cref="SizeExceededAction.ThrowException"/>) or after the
+        /// terminating dot (for <see cref="SizeExceededAction.JunkAndThrowException"/>) if any line
+        /// exceeded <paramref name="maxLineSize"/>.
         /// </exception>
         /// <exception cref="DataSizeExceededException">
-        /// Thrown when the data block exceeds <paramref name="maxCount"/> and
-        /// <paramref name="exceededAction"/> is <see cref="SizeExceededAction.ThrowException"/>.
+        /// Thrown immediately (for <see cref="SizeExceededAction.ThrowException"/>) or after the
+        /// terminating dot (for <see cref="SizeExceededAction.JunkAndThrowException"/>) if the total
+        /// message size exceeded <paramref name="maxCount"/>.
         /// </exception>
-        /// <remarks>
-        /// This method implements the period-terminated block semantics used by SMTP (<c>DATA</c>)
-        /// and POP3 multi-line responses.
-        /// Dot-stuffing is automatically removed: lines beginning with <c>.</c> have the leading dot stripped,
-        /// except for the terminating line (<c>.</c>).
-        /// </remarks>
         public async ValueTask<int> ReadPeriodTerminatedAsync(Stream storeStream,long maxCount,int maxLineSize,SizeExceededAction exceededAction,CancellationToken cancellationToken = default)
         {
             if(m_IsDisposed){
@@ -525,12 +558,24 @@ namespace LumiSoft.Net.IO
                 throw new ArgumentException("Argument 'maxLineSize' must be >= 64.");
             }
 
-            Memory<byte> buffer      = new Memory<byte>(new byte[maxLineSize]);
-            bool         exceeded    = false;
-            int          bytesStored = 0;
+            Memory<byte> buffer              = new Memory<byte>(new byte[maxLineSize]);
+            bool         maxCountExceeded    = false;
+            bool         maxLineSizeExceeded = false;
+            int          bytesStored         = 0;
             while(true){
-                ReadLineResult result = await ReadLineAsync(buffer,exceededAction,cancellationToken).ConfigureAwait(false);
-
+                ReadLineResult result;
+                try{
+                    result = await ReadLineAsync(buffer,exceededAction,cancellationToken).ConfigureAwait(false);
+                }
+                catch(LineSizeExceededException){
+                    maxLineSizeExceeded = true;
+                    if(exceededAction == SizeExceededAction.JunkAndThrowException){
+                        continue;
+                    }
+                    else{
+                        throw;
+                    }
+                }
                 
                 Span<byte> bufferSpan  = buffer.Span;
                 // We reached end of stream, no more data.
@@ -539,14 +584,17 @@ namespace LumiSoft.Net.IO
                 }
                 // We have period terminator.
                 else if(result.LineBytesInBuffer == 1 && bufferSpan[0] == '.'){
-                    if(exceeded){
+                    if(maxLineSizeExceeded){
+                        throw new LineSizeExceededException();
+                    }
+                    if(maxCountExceeded){
                         throw new DataSizeExceededException();
                     }
 
                     return bytesStored;
                 }
                 // Normal line.
-                else{
+                else if(!maxLineSizeExceeded && !maxCountExceeded){
                     if((bytesStored + result.LineBytesInBuffer) <= maxCount){
                         // Period handling: If line starts with '.', it must be removed.
                         if(bufferSpan[0] == '.'){
@@ -564,7 +612,7 @@ namespace LumiSoft.Net.IO
                     }
                     // Maximum allowed data to store bytes is exceeded.
                     else{                                             
-                        exceeded = true;
+                        maxCountExceeded = true;
                         if(exceededAction == SizeExceededAction.ThrowException){
                             throw new DataSizeExceededException();
                         }   
@@ -1282,29 +1330,25 @@ namespace LumiSoft.Net.IO
 
         #endregion
 
-        #region method WriteHeader
+
+        #region override method Close
 
         /// <summary>
-        /// Reads header from source <b>stream</b> and writes it to stream.
+        /// Closes current stream and releases any resources.
         /// </summary>
-        /// <param name="stream">Stream from where to read header.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public void WriteHeader(Stream stream)
+        /// <exception cref="ObjectDisposedException"></exception>
+        public override void Close()
         {
             if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ObjectDisposedException("SmartStream");
             }
 
-            SmartStream reader = new SmartStream(stream,false);
-            reader.ReadHeader(this,0,SizeExceededAction.ThrowException);
+            base.Close();
+
+            m_pStream.Close();
         }
 
         #endregion
-
 
         #region override method Flush
 
@@ -3321,463 +3365,6 @@ namespace LumiSoft.Net.IO
         }
 
         #endregion
-
-        #region class ReadPeriodTerminatedAsyncOP
-
-        /// <summary>
-        /// This class implements read period-terminated operation.
-        /// </summary>
-        public class ReadPeriodTerminatedAsyncOP : IDisposable,IAsyncOP
-        {
-            private object             m_pLock           = new object(); 
-            private AsyncOP_State      m_State           = AsyncOP_State.WaitingForStart;
-            private Exception?         m_pException      = null;
-            private bool               m_RiseCompleted   = false;
-            private SmartStream?       m_pOwner          = null;
-            private Stream             m_pStream;
-            private long               m_MaxCount        = 0;
-            private SizeExceededAction m_ExceededAction  = SizeExceededAction.JunkAndThrowException;
-            private ReadLineAsyncOP    m_pReadLineOP;
-            private long               m_BytesStored     = 0;
-            private int                m_LinesStored     = 0;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="stream">Stream wehre to sore readed data.</param>
-            /// <param name="maxCount">Maximum number of bytes to read. Value 0 means not limited.</param>
-            /// <param name="exceededAction">Specifies how period-terminated reader behaves when <b>maxCount</b> exceeded.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-            public ReadPeriodTerminatedAsyncOP(Stream stream,long maxCount,SizeExceededAction exceededAction)
-            {
-                if(stream == null){
-                    throw new ArgumentNullException("stream");
-                }
-                if(maxCount < 0){
-                    throw new ArgumentException("Argument 'maxCount' must be >= 0.","maxCount");
-                }
-
-                m_pStream        = stream;
-                m_MaxCount       = maxCount;
-                m_ExceededAction = exceededAction;
-
-                m_pReadLineOP = new ReadLineAsyncOP(new byte[32000],exceededAction);
-                m_pReadLineOP.CompletedAsync += new EventHandler<EventArgs<ReadLineAsyncOP>>(m_pReadLineOP_CompletedAsync);
-            }
-
-            /// <summary>
-            /// Destructor.
-            /// </summary>
-            ~ReadPeriodTerminatedAsyncOP()
-            {
-                Dispose();
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resources being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                m_State             = AsyncOP_State.Disposed;
-                m_pOwner            = null;
-                m_pReadLineOP.Dispose();
-                m_pException        = null;
-                this.CompletedAsync = null;
-                this.Completed      = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts asynchronous operation.
-            /// </summary>
-            /// <param name="async">If true then this method can complete asynchronously. If false, this method always completes syncronously.</param>
-            /// <param name="stream">Owner SmartStream.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-            /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-            /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-            internal bool Start(bool async,SmartStream stream)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(m_State == AsyncOP_State.Active){
-                    throw new InvalidOperationException("There is existing active operation. There may be only one active operation at same time.");
-                }
-                if(stream == null){
-                    throw new ArgumentNullException("stream");
-                }
-
-                m_pOwner        = stream;
-                m_State         = AsyncOP_State.Active;
-                m_RiseCompleted = false;
-                m_pException    = null;
-                m_BytesStored   = 0;
-                m_LinesStored   = 0;
-
-                if(DoRead(async)){
-                    SetState(AsyncOP_State.Completed);
-                }
-   
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-                    
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method m_pReadLineOP_CompletedAsync
-
-            /// <summary>
-            /// Is called when asynchronous line reading has completed.
-            /// </summary>
-            /// <param name="sender">Sender.</param>
-            /// <param name="e">Event data.</param>
-            private void m_pReadLineOP_CompletedAsync(object? sender,EventArgs<ReadLineAsyncOP> e)
-            {
-                bool setCompletedState = false;
-
-                try{
-                    if(ProcessReadedLine()){
-                        setCompletedState = true;
-                    }
-                    else{
-                        if(DoRead(true)){
-                            setCompletedState = true;
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-
-                    setCompletedState = true;
-                }
-
-                // SetState may not be in try/catch. If CompletedAsync event consumer causes unhandled Exception,
-                // we may not catch it, we need to let it happen on active thread.
-                if(setCompletedState){
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-            #region method DoRead
-
-            /// <summary>
-            /// Continues period-terminated reading.
-            /// </summary>
-            /// <param name="async">If true then this method can complete asynchronously. If false, this method completes always syncronously.</param>
-            /// <returns>Returns true if operation has completed synchronously, false if asynchronous operation pending.</returns>
-            private bool DoRead(bool async)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pOwner);
-
-                    while (m_pOwner.ReadLine(m_pReadLineOP,async)){
-                        if(ProcessReadedLine()){
-                            return true;
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                }
-
-                return false;
-            }
-
-            #endregion
-
-            #region method ProcessReadedLine
-
-            /// <summary>
-            /// Processes readed line.
-            /// </summary>
-            /// <returns>Returns true if read period-terminated operation has completed.</returns>
-            private bool ProcessReadedLine()
-            {
-                if(m_pReadLineOP.Error != null){
-                    m_pException = m_pReadLineOP.Error;
-
-                    return true;
-                }
-                // We reached end of stream, no more data.
-                else if(m_pReadLineOP.BytesInBuffer == 0){
-                    m_pException = new IncompleteDataException("Data is not period-terminated.");
-
-                    return true;
-                }
-                // We have period terminator.
-                else if(m_pReadLineOP.LineBytesInBuffer == 1 && m_pReadLineOP.Buffer[0] == '.'){
-                    return true;
-                }
-                // Normal line.
-                else{
-                    if(m_MaxCount < 1 || (m_BytesStored + m_pReadLineOP.BytesInBuffer) < m_MaxCount){
-                        // Period handling: If line starts with '.', it must be removed.
-                        if(m_pReadLineOP.Buffer[0] == '.'){
-                            m_pStream.Write(m_pReadLineOP.Buffer,1,m_pReadLineOP.BytesInBuffer - 1);
-                            m_BytesStored += m_pReadLineOP.BytesInBuffer - 1;
-                            m_LinesStored++;
-                        }
-                        // Nomrmal line.
-                        else{
-                            m_pStream.Write(m_pReadLineOP.Buffer,0,m_pReadLineOP.BytesInBuffer);
-                            m_BytesStored += m_pReadLineOP.BytesInBuffer;
-                            m_LinesStored++;
-                        }                        
-                    }
-                    // Maximum allowed to store bytes exceeded.
-                    else{
-                        if(m_ExceededAction == SizeExceededAction.ThrowException){
-                            m_pException = new DataSizeExceededException();
-
-                            return true;
-                        }
-                        else if(m_pException == null){
-                            m_pException = new DataSizeExceededException();
-                        }
-                    }
-                }
-
-                return false;
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-            
-                // Note: Get riseCompleted in lock, otherwise we get race condition Start method m_RiseCompleted = true.
-                bool riseCompleted = m_RiseCompleted;
-                lock(m_pLock){
-                    m_State = state;
-                    riseCompleted = m_RiseCompleted;
-                }
-
-                if(m_State == AsyncOP_State.Completed && riseCompleted){
-                    OnCompletedAsync();
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error occured during asynchronous operation. Value null means no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed in ivalid state.</exception>
-            public Exception? Error
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }                    
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("This property is only valid in AsyncOP_State.Completed state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Gets stream where period terminated data has stored.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed in ivalid state.</exception>
-            public Stream Stream
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }                    
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("This property is only valid in AsyncOP_State.Completed state.");
-                    }
-
-                    return m_pStream; 
-                }
-            }
-
-            /// <summary>
-            /// Gets number of bytes stored to <see cref="Stream">Stream</see> stream.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed in ivalid state.</exception>
-            public long BytesStored
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }                    
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("This property is only valid in AsyncOP_State.Completed state.");
-                    }
-
-                    return m_BytesStored; 
-                }
-            }
-
-            /// <summary>
-            /// Gets number of lines stored to <see cref="Stream">Stream</see> stream.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed in ivalid state.</exception>
-            public int LinesStored
-            {
-                get{
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }                    
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("This property is only valid in AsyncOP_State.Completed state.");
-                    }
-
-                    return m_LinesStored; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is raised when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<ReadPeriodTerminatedAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<ReadPeriodTerminatedAsyncOP>(this));
-                }
-
-                // For obsolete support.
-                if(this.Completed != null){
-                    this.Completed(this,new EventArgs<ReadPeriodTerminatedAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-
-
-            //---------- Obsolete stuff
-
-            #region Obsolete
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            [Obsolete("Use CompletedAsync event istead.")]
-            public event EventHandler<EventArgs<ReadPeriodTerminatedAsyncOP>>? Completed = null;
-
-            #endregion
-        }
-
-        #endregion
-
-        #region method ReadPeriodTerminated
-
-        /// <summary>
-        /// Begins period-terminated data reading.
-        /// </summary>
-        /// <param name="op">Read period terminated opeartion.</param>
-        /// <param name="async">If true then this method can complete asynchronously. If false, this method completed always syncronously.</param>
-        /// <returns>Returns true if read line completed synchronously, false if asynchronous operation pending.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        public bool ReadPeriodTerminated(ReadPeriodTerminatedAsyncOP op,bool async)
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-
-            return !op.Start(async,this);
-        }
-
-        #endregion
-                
-        #region method ReadHeader
-
-        /// <summary>
-        /// Reads header from stream and stores to the specified <b>storeStream</b>.
-        /// </summary>
-        /// <param name="storeStream">Stream where to store readed header.</param>
-        /// <param name="maxCount">Maximum number of bytes to read. Value 0 means not limited.</param>
-        /// <param name="exceededAction">Specifies action what is done if <b>maxCount</b> number of bytes has exceeded.</param>
-        /// <returns>Returns how many bytes readed from source stream.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>storeStream</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="LineSizeExceededException">Is raised when source stream has too big line.</exception>
-        /// <exception cref="DataSizeExceededException">Is raised when reading exceeds <b>maxCount</b> specified value.</exception>
-        /// <exception cref="IncompleteDataException">Is raised when source stream closed before header-terminator reached.</exception>
-        public int ReadHeader(Stream storeStream,int maxCount,SizeExceededAction exceededAction)
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(storeStream == null){
-                throw new ArgumentNullException("storeStream");
-            }            
-            if(maxCount < 0){
-                throw new ArgumentException("Argument 'maxCount' must be >= 0.");
-            }
-
-            IAsyncResult ar = BeginReadHeader(storeStream,maxCount,exceededAction,null,null);
-
-            return EndReadHeader(ar);
-        }
-
-        #endregion        
                        
         #region override method BeginRead
 
@@ -3903,830 +3490,6 @@ namespace LumiSoft.Net.IO
             }
 
             ((Task)asyncResult).GetAwaiter().GetResult();
-        }
-
-        #endregion
-
-        #region method WriteStreamAsync
-
-        #region class WriteStreamAsyncOP
-
-        /// <summary>
-        /// This class represents SmartStream.WriteStreamAsync asynchronous operation.
-        /// </summary>
-        public class WriteStreamAsyncOP : IDisposable,IAsyncOP
-        {
-            private object        m_pLock         = new object();
-            private AsyncOP_State m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?    m_pException    = null;
-            private bool          m_RiseCompleted = false;
-            private SmartStream?  m_pOwner        = null;
-            private Stream        m_pStream;
-            private long          m_Count         = 0;
-            private byte[]        m_pBuffer;
-            private long          m_BytesWritten  = 0;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="stream">Stream which data to write.</param>
-            /// <param name="count">Number of bytes to write. Value -1 means all stream data will be written.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-            public WriteStreamAsyncOP(Stream stream,long count)
-            {
-                if(stream == null){
-                    throw new ArgumentNullException("stream");
-                }
-
-                m_pStream = stream;
-                m_Count   = count;
-                m_pBuffer = new byte[32000];
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resources being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-                
-                m_pException = null;
-                m_pOwner     = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner SmartStream.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(SmartStream owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-                
-                m_pOwner = owner;
-
-                SetState(AsyncOP_State.Active);
-                
-                BeginReadData();
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                // Note: Get riseCompleted in lock, otherwise we get race condition Start method m_RiseCompleted = true.
-                bool riseCompleted = m_RiseCompleted;
-                lock(m_pLock){
-                    m_State = state;
-                    riseCompleted = m_RiseCompleted;
-                }
-
-                if(m_State == AsyncOP_State.Completed && riseCompleted){
-                    OnCompletedAsync();
-                }
-            }
-
-            #endregion
-
-            #region method BeginReadData
-
-            /// <summary>
-            /// Starts reading data.
-            /// </summary>
-            private void BeginReadData()
-            {                
-                try{
-                    while(true){
-                        bool isBeginReadCompleted = false;
-                        bool isCompletedSync      = false;
-                        int count = m_Count == -1 ? m_pBuffer.Length : (int)Math.Min(m_pBuffer.Length,m_Count - m_BytesWritten);
-                        IAsyncResult readResult = m_pStream.BeginRead(
-                            m_pBuffer,
-                            0,
-                            count,
-                            delegate(IAsyncResult r){
-                                lock(m_pLock){
-                                    // BeginRead completed synchronously.
-                                    if(!isBeginReadCompleted){
-                                        isCompletedSync = true;
-                                        return;
-                                    }
-                                }
-
-                                ProcessReadDataResult(r);
-                            },
-                            null
-                        );
-
-                        lock(m_pLock){
-                            isBeginReadCompleted = true;
-                        }
-
-                        // Read data completed synchonously.
-                        if(isCompletedSync){
-                            // Operation completed asynchronously, it will continue processing.
-                            if(ProcessReadDataResult(readResult)){
-                                break;
-                            }
-                            // Error happened in ProcessReadDataResult method.
-                            if(this.State != AsyncOP_State.Active){
-                                break;
-                            }
-                        }
-                        // Read data completed asynchonously.
-                        else{
-                            break;
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-            #region method ProcessReadDataResult
-
-            /// <summary>
-            /// Processes read data result.
-            /// </summary>
-            /// <param name="readResult">Asynchronous result.</param>
-            /// <returns>Retruns true if this method completed asynchronously, otherwise false.</returns>
-            private bool ProcessReadDataResult(IAsyncResult readResult)
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pOwner);
-
-                    int countReaded = m_pStream.EndRead(readResult);
-                    if(countReaded == 0){
-                        // We readed all stream data and write count not specified, we are done.
-                        if(m_Count == -1){
-                            SetState(AsyncOP_State.Completed);
-                        }
-                        // Source stream has less data than specified by count.
-                        else{
-                            m_pException = new ArgumentException("Argument 'stream' has less data than specified in 'count'.","stream");
-                            SetState(AsyncOP_State.Completed);
-                        }
-                    }
-                    else{
-                        bool isBeginWriteCompleted = false;
-                        bool isCompletedSync       = false;
-                        IAsyncResult writeResult = m_pOwner.BeginWrite(
-                            m_pBuffer,
-                            0,
-                            countReaded,
-                            delegate(IAsyncResult r){
-                                lock(m_pLock){
-                                    // BeginWrite completed synchronously.
-                                    if(!isBeginWriteCompleted){
-                                        isCompletedSync = true;
-                                        return;
-                                    }
-                                }
-
-                                try{
-                                    m_pOwner.EndWrite(r);
-                                    m_BytesWritten += countReaded;
-
-                                    // We have read and sent all requested data.
-                                    if(m_Count == m_BytesWritten){
-                                        SetState(AsyncOP_State.Completed);
-                                    }
-                                    // Start reading next data block(s).
-                                    else{                                        
-                                        BeginReadData();
-                                    }
-                                }
-                                catch(Exception x){
-                                    m_pException = x;
-                                    SetState(AsyncOP_State.Completed);
-                                }
-                            },
-                            null
-                        );
-
-                        lock(m_pLock){
-                            isBeginWriteCompleted = true;
-                        }
-
-                        // BeginWrite completed synchronously.
-                        if(isCompletedSync){
-                            m_pOwner.EndWrite(writeResult);
-                            m_BytesWritten += countReaded;
-
-                            // We have read and sent all requested data.
-                            if(m_Count == m_BytesWritten){
-                                SetState(AsyncOP_State.Completed);
-                            }
-                        }
-                        else{
-                            return true;
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                return false;
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Gets number of bytes written.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public long BytesWritten
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Socket' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-                    if(m_pException != null){
-                        throw m_pException;
-                    }
-
-                    return m_BytesWritten; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<WriteStreamAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<WriteStreamAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Starts writing stream data to this stream.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="WriteStreamAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        public bool WriteStreamAsync(WriteStreamAsyncOP op)
-        {
-            if(this.m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method WriteStream
-
-        /// <summary>
-        /// Writes all source <b>stream</b> data to stream.
-        /// </summary>
-        /// <param name="stream">Stream which data to write.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public void WriteStream(Stream stream)
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
-            WriteStreamAsync(stream,0,int.MaxValue,CancellationToken.None).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
-        /// Writes specified number of bytes from source <b>stream</b> to stream.
-        /// </summary>
-        /// <param name="stream">Stream which data to write.</param>
-        /// <param name="count">Number of bytes to write.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when <b>count</b> argument has invalid value.</exception>
-        public void WriteStream(Stream stream,long count)
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-            if(count < 0){
-                throw new ArgumentException("Argument 'count' value must be >= 0.");
-            }
-
-            WriteStreamAsync(stream,count,int.MaxValue,CancellationToken.None).GetAwaiter().GetResult();
-        }
-
-        #endregion
-        
-        #region method WritePeriodTerminatedAsync
-
-        #region class WritePeriodTerminatedAsyncOP
-
-        /// <summary>
-        /// This class represents SmartStream.WritePeriodTerminatedAsync asynchronous operation.
-        /// </summary>
-        public class WritePeriodTerminatedAsyncOP : IDisposable,IAsyncOP
-        {
-            private object           m_pLock         = new object();
-            private AsyncOP_State    m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?       m_pException    = null;
-            private SmartStream      m_pStream;
-            private SmartStream?     m_pOwner        = null;
-            private ReadLineAsyncOP? m_pReadLineOP   = null;
-            private int              m_BytesWritten  = 0;
-            private bool             m_EndsCRLF      = false;
-            private bool             m_RiseCompleted = false;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="stream">Source stream. Reading starts from stream current location.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-            public WritePeriodTerminatedAsyncOP(Stream stream)
-            {
-                if(stream == null){
-                    throw new ArgumentNullException("stream");
-                }
-
-                m_pStream = new SmartStream(stream,false);
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resources being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-                
-                m_pException  = null;
-                m_pOwner      = null;
-                m_pReadLineOP = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner SmartStream.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(SmartStream owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
-                m_pOwner = owner;
-
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    // Read line.
-                    m_pReadLineOP = new ReadLineAsyncOP(new byte[32000],SizeExceededAction.ThrowException);
-                    m_pReadLineOP.CompletedAsync += delegate(object? s,EventArgs<ReadLineAsyncOP> e){
-                        if(!ProcessReadLineResultAsync()){
-                            BeginReadLine();
-                        }
-                    };
-                    
-                    BeginReadLine();
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                    m_pReadLineOP?.Dispose();
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method BeginReadLine
-
-            /// <summary>
-            /// Starts reading line of data.
-            /// </summary>
-            private void BeginReadLine()
-            {                
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pReadLineOP);
-
-                    while (this.State == AsyncOP_State.Active){
-                        // Read data completed synchonously.
-                        if(m_pStream.ReadLine(m_pReadLineOP,true)){
-                            // Operation completed asynchronously, it will continue processing.
-                            if(ProcessReadLineResultAsync()){
-                                break;
-                            }
-                        }
-                        // Read data completed asynchonously.
-                        else{
-                            break;
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-            }
-
-            #endregion
-
-            #region method ProcessReadLineResultAsync
-
-            /// <summary>
-            /// Processes read line result.
-            /// </summary>
-            /// <returns>Retruns true if this method completed asynchronously, otherwise false.</returns>
-            private bool ProcessReadLineResultAsync()
-            {
-                try{
-                    ArgumentNullException.ThrowIfNull(m_pOwner);
-                    ArgumentNullException.ThrowIfNull(m_pReadLineOP);
-
-                    if (m_pReadLineOP.Error != null){
-                        m_pException = m_pReadLineOP.Error;
-                        SetState(AsyncOP_State.Completed);
-                    }
-                    else{
-                        // We have readed all source stream data, we are done.
-                        if(m_pReadLineOP.BytesInBuffer == 0){
-                            byte[] period_crlf = new byte[]{(byte)'.',(byte)'\r',(byte)'\n'};
-                            // Line last doesn't end CRLF, we need to add it. We must get CRLF.CRLF.
-                            if(!m_EndsCRLF){
-                                period_crlf = new byte[]{(byte)'\r',(byte)'\n',(byte)'.',(byte)'\r',(byte)'\n'};
-                            }
-
-                            // Send terminator.
-                            m_BytesWritten += period_crlf.Length;
-                            m_pOwner.Write(period_crlf,0,period_crlf.Length);
-
-                            SetState(AsyncOP_State.Completed);
-
-                            return false;
-                        }
-                        // Write readed line.
-                        else{
-                            // Check if line ends CRLF.
-                            if(m_pReadLineOP.BytesInBuffer >= 2 && m_pReadLineOP.Buffer[m_pReadLineOP.BytesInBuffer - 2] == '\r' && m_pReadLineOP.Buffer[m_pReadLineOP.BytesInBuffer - 1] == '\n'){
-                                m_EndsCRLF = true;
-                            }
-                            else{
-                                m_EndsCRLF = false;
-                            }
-                            
-                            m_BytesWritten += m_pReadLineOP.BytesInBuffer;
-
-                            byte[] writeBuffer        = m_pReadLineOP.Buffer;
-                            int    bytesInWriteBuffer = m_pReadLineOP.BytesInBuffer;
-
-                            // Period handling. If line starts with period(.), additional period is added.
-                            if(writeBuffer[0] == '.'){
-                                byte[] buffer = new byte[bytesInWriteBuffer + 1];
-                                buffer[0] = (byte)'.';
-                                Array.Copy(writeBuffer,0,buffer,1,bytesInWriteBuffer);
-
-                                writeBuffer = buffer;
-                                bytesInWriteBuffer = buffer.Length;
-                            }                            
-                            
-                            bool writeOpAsynchronous = true;
-                            bool beginWriteMethodDone = false;
-                            IAsyncResult writeResult = m_pOwner.BeginWrite(
-                                writeBuffer,
-                                0,
-                                bytesInWriteBuffer,
-                                delegate(IAsyncResult r){
-                                    // Note: This delegate can be synchronous and called from inside BeginWrite method.
-                                    //       In case of synchronous, be aware of calling nested methods to avoid stack overflow.
-                                    
-                                    try{
-                                        m_pOwner.EndWrite(r);
-
-                                        lock(m_pLock){
-                                            if(!beginWriteMethodDone){
-                                                writeOpAsynchronous = false;
-                                            }
-                                        }
-
-                                        // Operation is asynchronous.
-                                        if(writeOpAsynchronous){
-                                            BeginReadLine();                                 
-                                        }
-                                    }
-                                    catch(Exception x){
-                                        m_pException = x;
-                                        SetState(AsyncOP_State.Completed);
-                                    }
-                                },
-                                null
-                            );
-
-                            lock(m_pLock){
-                                beginWriteMethodDone = true;
-
-                                return writeOpAsynchronous;
-                            }                            
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                return false;
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            /// <summary>
-            /// Gets number of bytes written.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public int BytesWritten
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Socket' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-                    if(m_pException != null){
-                        throw m_pException;
-                    }
-
-                    return m_BytesWritten; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<WritePeriodTerminatedAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<WritePeriodTerminatedAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Starts writing period handled and terminated data to this stream.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="WritePeriodTerminatedAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        public bool WritePeriodTerminatedAsync(WritePeriodTerminatedAsyncOP op)
-        {
-            if(this.m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
-
-            return op.Start(this);
-        }
-
-        #endregion
-
-        #region method WritePeriodTerminated
-
-        /// <summary>
-        /// Writes period handled and terminated data to this stream.
-        /// </summary>
-        /// <param name="stream">Source stream. Reading starts from stream current location.</param>
-        /// <returns>Returns number of bytes written to stream.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        /// <exception cref="LineSizeExceededException">Is raised when <b>stream</b> has too big line.</exception>        
-        public long WritePeriodTerminated(Stream stream)
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
-            ManualResetEvent wait = new ManualResetEvent(false);
-            WritePeriodTerminatedAsyncOP op = new WritePeriodTerminatedAsyncOP(stream);
-            op.CompletedAsync += delegate(object? s1,EventArgs<WritePeriodTerminatedAsyncOP> e1){
-                wait.Set();
-            };
-            if(!this.WritePeriodTerminatedAsync(op)){
-                wait.Set();
-            }
-            wait.WaitOne();
-            wait.Close();
-
-            if(op.Error != null){
-                throw op.Error;
-            }
-            else{
-                return op.BytesWritten;
-            }
         }
 
         #endregion
