@@ -1,11 +1,11 @@
+using LumiSoft.Net.Log;
+using LumiSoft.Net.SMTP.Server;
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Threading;
-
-using LumiSoft.Net.Log;
 
 namespace LumiSoft.Net.TCP
 {    
@@ -14,322 +14,28 @@ namespace LumiSoft.Net.TCP
     /// </summary>
     public class TCP_Server<T> : IDisposable where T : TCP_ServerSession,new()
     {
-        #region class ListeningPoint
-
-        /// <summary>
-        /// This class holds listening point info.
-        /// </summary>
-        private class ListeningPoint
-        {
-            private Socket     m_pSocket;
-            private IPBindInfo m_pBindInfo;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="socket">Listening socket.</param>
-            /// <param name="bind">Bind info what acceped socket.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>socket</b> or <b>bind</b> is null reference.</exception>
-            public ListeningPoint(Socket socket,IPBindInfo bind)
-            {
-                if(socket == null){
-                    throw new ArgumentNullException("socket");
-                }
-                if(bind == null){
-                    throw new ArgumentNullException("socket");
-                }
-
-                m_pSocket   = socket;
-                m_pBindInfo = bind;
-            }
-
-
-            #region Properties Implementation
-
-            /// <summary>
-            /// Gets socket.
-            /// </summary>
-            public Socket Socket
-            {
-                get{ return m_pSocket; }
-            }
-
-            /// <summary>
-            /// Gets bind info.
-            /// </summary>
-            public IPBindInfo BindInfo
-            {
-                get{ return m_pBindInfo; }
-            }
-
-            #endregion
-
-        }
-
-        #endregion
-
-        #region class TCP_Acceptor
-
-        /// <summary>
-        /// Implements single TCP connection acceptor.
-        /// </summary>
-        /// <remarks>For higher performance, mutiple acceptors per socket must be created.</remarks>
-        private class TCP_Acceptor : IDisposable
-        {
-            private bool                      m_IsDisposed  = false;
-            private bool                      m_IsRunning   = false;
-            private Socket                    m_pSocket;
-            private SocketAsyncEventArgs?     m_pSocketArgs = null;
-            private Dictionary<string,object> m_pTags;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="socket">Socket.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>socket</b> is null reference.</exception>
-            public TCP_Acceptor(Socket socket)
-            {
-                if(socket == null){
-                    throw new ArgumentNullException("socket");
-                }
-
-                m_pSocket = socket;
-
-                m_pTags = new Dictionary<string,object>();
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resources being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_IsDisposed){
-                    return;
-                }
-                m_IsDisposed = true;
-
-                this.ConnectionAccepted = null;
-                this.Error = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts accpeting connections.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this calss is disposed and this method is accessed.</exception>
-            public void Start()
-            {
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                if(m_IsRunning){
-                    return;
-                }
-                m_IsRunning = true;
-
-                // Move processing to thread pool.
-                ThreadPool.QueueUserWorkItem(delegate(object? state){
-                    try{
-                        #region IO completion ports
-
-                        if(Net_Utils.IsSocketAsyncSupported()){
-                            m_pSocketArgs = new SocketAsyncEventArgs();
-                            m_pSocketArgs.Completed += delegate(object? s1,SocketAsyncEventArgs e1){
-                                if(m_IsDisposed){
-                                    return;
-                                }
-
-                                try{
-                                    if(m_pSocketArgs.SocketError == SocketError.Success){
-                                        OnConnectionAccepted(m_pSocketArgs.AcceptSocket!);                       
-                                    }
-                                    else{
-                                        OnError(new Exception("Socket error '" + m_pSocketArgs.SocketError + "'."));
-                                    }
-
-                                    IOCompletionAccept();
-                                }
-                                catch(Exception x){
-                                    OnError(x);
-                                }
-                            };
-
-                            IOCompletionAccept();
-                        }
-
-                        #endregion
-
-                        #region Async sockets
-
-                        else{
-                            m_pSocket.BeginAccept(new AsyncCallback(this.AsyncSocketAccept),null);
-                        }
-
-                        #endregion
-                    }
-                    catch(Exception x){
-                        OnError(x);
-                    }
-                });
-            }
-
-            #endregion
-
-
-            #region method IOCompletionAccept
-
-            /// <summary>
-            /// Accpets connection synchornously(if connection(s) available now) or starts waiting TCP connection asynchronously if no connections at moment.
-            /// </summary>
-            private void IOCompletionAccept()
-            {
-                try{
-                    // We need to clear it, before reuse.
-                    m_pSocketArgs!.AcceptSocket = null;
-
-                    // Use active worker thread as long as ReceiveFromAsync completes synchronously.
-                    // (With this approach we don't have thread context switches while ReceiveFromAsync completes synchronously)
-                    while(!m_IsDisposed && !m_pSocket.AcceptAsync(m_pSocketArgs)){
-                        if(m_pSocketArgs.SocketError == SocketError.Success){
-                            try{
-                                OnConnectionAccepted(m_pSocketArgs.AcceptSocket!);
-
-                                // We need to clear it, before reuse.
-                                m_pSocketArgs.AcceptSocket = null;
-                            }
-                            catch(Exception x){
-                                OnError(x);
-                            }
-                        }
-                        else{
-                            OnError(new Exception("Socket error '" + m_pSocketArgs.SocketError + "'."));
-                        }
-                    }
-                }
-                catch(Exception x){
-                    OnError(x);
-                }
-            }
-
-            #endregion
-
-            #region method AsyncSocketAccept
-
-            /// <summary>
-            /// Is called BeginAccept has completed.
-            /// </summary>
-            /// <param name="ar">The result of the asynchronous operation.</param>
-            private void AsyncSocketAccept(IAsyncResult ar)
-            {
-                if(m_IsDisposed){
-                    return;
-                }
-
-                try{
-                    OnConnectionAccepted(m_pSocket.EndAccept(ar));
-                }
-                catch(Exception x){
-                    OnError(x);
-                }
-
-                try{
-                    m_pSocket.BeginAccept(new AsyncCallback(this.AsyncSocketAccept),null);
-                }
-                catch(Exception x){
-                    OnError(x);
-                }
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets user data items.
-            /// </summary>
-            public Dictionary<string,object> Tags
-            {
-                get{ return m_pTags; }
-            }
-
-            #endregion
-
-            #region Events handling
-
-            /// <summary>
-            /// Is raised when new TCP connection was accepted.
-            /// </summary>
-            public event EventHandler<EventArgs<Socket>>? ConnectionAccepted = null;
-
-            #region method OnConnectionAccepted
-
-            /// <summary>
-            /// Raises <b>ConnectionAccepted</b> event.
-            /// </summary>
-            /// <param name="socket">Accepted socket.</param>
-            private void OnConnectionAccepted(Socket socket)
-            {
-                if(this.ConnectionAccepted != null){
-                    this.ConnectionAccepted(this,new EventArgs<Socket>(socket));
-                }
-            }
-
-            #endregion
-
-            /// <summary>
-            /// Is raised when unhandled error happens.
-            /// </summary>
-            public event EventHandler<ExceptionEventArgs>? Error = null;
-
-            #region method OnError
-
-            /// <summary>
-            /// Raises <b>Error</b> event.
-            /// </summary>
-            /// <param name="x">Exception happened.</param>
-            private void OnError(Exception x)
-            {
-                if(this.Error != null){
-                    this.Error(this,new ExceptionEventArgs(x));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        private bool                                     m_IsDisposed           = false;
-        private bool                                     m_IsRunning            = false;
-        private IPBindInfo[]                             m_pBindings            = new IPBindInfo[0];
-        private long                                     m_MaxConnections       = 0;
-        private long                                     m_MaxConnectionsPerIP  = 0; 
-        private int                                      m_SessionIdleTimeout   = 100;
-        private Logger?                                  m_pLogger              = null;
-        private DateTime                                 m_StartTime;
-        private long                                     m_ConnectionsProcessed = 0;
-        private List<TCP_Acceptor>                       m_pConnectionAcceptors;
-        private List<ListeningPoint>                     m_pListeningPoints;
-        private TCP_SessionCollection<TCP_ServerSession> m_pSessions;
-        private TimerEx?                                 m_pTimer_IdleTimeout   = null;
+        private bool                     m_IsDisposed           = false;
+        private bool                     m_IsRunning            = false;
+        private TCP_ServerEndpoint[]     m_pListenEndpoints     = [];
+        private long                     m_MaxConnections       = 0;
+        private long                     m_MaxConnectionsPerIP  = 0; 
+        private int                      m_SessionIdleTimeout   = 100;
+        private Logger?                  m_pLogger              = null;
+        private DateTime                 m_StartTime;
+        private long                     m_ConnectionsProcessed = 0;
+        private List<Socket>             m_pListeningSockets;
+        private TCP_SessionCollection<T> m_pSessions;
+        private Timer                    m_pTimer_IdleTimeout;
 
         /// <summary>
         /// Default constructor.
         /// </summary>
         public TCP_Server()
         {
-            m_pConnectionAcceptors = new List<TCP_Server<T>.TCP_Acceptor>();
-            m_pListeningPoints = new List<TCP_Server<T>.ListeningPoint>();
-            m_pSessions = new TCP_SessionCollection<TCP_ServerSession>();
+            m_pListeningSockets = new List<Socket>();
+            m_pSessions = new TCP_SessionCollection<T>();
+
+            m_pTimer_IdleTimeout = new Timer(_ => TimeoutScan(),null,1000,60000);
         }
 
         #region method Dispose
@@ -351,8 +57,10 @@ namespace LumiSoft.Net.TCP
             }
             m_IsDisposed = true;
 
+            m_pTimer_IdleTimeout.Dispose();
+
             // We must call disposed event before we release events.
-            try{
+            try {
                 OnDisposed();
             }
             catch{
@@ -369,49 +77,15 @@ namespace LumiSoft.Net.TCP
         #endregion
 
 
-        #region Events handling
-
-        #region method m_pTimer_IdleTimeout_Elapsed
-
-        /// <summary>
-        /// Is called when session idle check timer triggered.
-        /// </summary>
-        /// <param name="sender">Sender.</param>
-        /// <param name="e">Event data.</param>
-        private void m_pTimer_IdleTimeout_Elapsed(object? sender,System.Timers.ElapsedEventArgs e)
-        {
-            try{
-                foreach(T session in this.Sessions.ToArray()){
-                    try{
-                        if(DateTime.Now > session.TcpStream.LastActivity.AddSeconds(m_SessionIdleTimeout)){;
-                            session.OnTimeoutI();
-                            // Session didn't dispose itself, so dispose it.
-                            if(!session.IsDisposed){
-                                session.Disconnect();
-                                session.Dispose();
-                            }
-                        }
-                    }
-                    catch{
-                    }
-                }
-            }
-            catch(Exception x){
-                OnError(x);
-            }
-        }
-
-        #endregion
-
-        #endregion
-
-
         #region method Start
 
         /// <summary>
-        /// Starts TCP server.
+        /// Starts the TCP server if it is not already running. Initializes runtime
+        /// state, records the start time, and begins accepting incoming connections
+        /// on all configured IPv4/IPv6 bindings. Each binding launches its own
+        /// asynchronous accept loop. If startup succeeds, the <see cref="OnStarted"/>
+        /// callback is raised.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
         public void Start()
         {
             if(m_IsDisposed){
@@ -425,13 +99,16 @@ namespace LumiSoft.Net.TCP
             m_StartTime = DateTime.Now;
             m_ConnectionsProcessed = 0;
 
-            ThreadPool.QueueUserWorkItem(new WaitCallback(delegate(object? state){
-                StartListen();
-            }));
-
-            m_pTimer_IdleTimeout = new TimerEx(30000,true);
-            m_pTimer_IdleTimeout.Elapsed += new System.Timers.ElapsedEventHandler(m_pTimer_IdleTimeout_Elapsed);
-            m_pTimer_IdleTimeout.Enabled = true;
+            try{
+                foreach(TCP_ServerEndpoint ep in m_pListenEndpoints){
+                    if(ep.IPEndPoint.AddressFamily == AddressFamily.InterNetwork || ep.IPEndPoint.AddressFamily == AddressFamily.InterNetworkV6){
+                        _= AcceptConnectionLoopAsync(ep);
+                    }
+                }
+            }
+            catch(Exception x){
+                OnError(x);
+            }
 
             OnStarted();
         }
@@ -441,7 +118,11 @@ namespace LumiSoft.Net.TCP
         #region method Stop
 
         /// <summary>
-        /// Stops TCP server, all active connections will be terminated.
+        /// Stops the TCP server if it is currently running. Marks the server as
+        /// inactive, disposes all active listening sockets to stop accepting new
+        /// connections and raises the <see cref="OnStopped"/>
+        /// callback. Existing client sessions continue running until they exit
+        /// naturally or are closed by timeout logic.
         /// </summary>
         public void Stop()
         {
@@ -450,30 +131,16 @@ namespace LumiSoft.Net.TCP
             }
             m_IsRunning = false;
 
-            // Dispose all old TCP acceptors.
-            foreach(TCP_Acceptor acceptor in m_pConnectionAcceptors.ToArray()){
+            // Dispose all listeining sockets.
+            foreach(Socket socket in m_pListeningSockets){
                 try{
-                    acceptor.Dispose();
+                    socket.Dispose();
                 }
                 catch(Exception x){
                     OnError(x);
                 }
             }
-            m_pConnectionAcceptors.Clear();
-
-            // Dispose all old binds.
-            foreach(ListeningPoint listeningPoint in m_pListeningPoints.ToArray()){
-                try{
-                    listeningPoint.Socket.Close();
-                }
-                catch(Exception x){
-                    OnError(x);
-                }
-            }
-            m_pListeningPoints.Clear();
-
-            m_pTimer_IdleTimeout?.Dispose();
-            m_pTimer_IdleTimeout = null;
+            m_pListeningSockets.Clear();
 
             OnStopped();
         }
@@ -483,7 +150,10 @@ namespace LumiSoft.Net.TCP
         #region method Restart
 
         /// <summary>
-        /// Restarts TCP server.
+        /// Restarts the TCP server by stopping the current instance and starting
+        /// it again. If the server is not running, this method simply performs a
+        /// fresh start. Any existing listening sockets are closed and new accept
+        /// loops are initialized.
         /// </summary>
         public void Restart()
         {
@@ -525,68 +195,40 @@ namespace LumiSoft.Net.TCP
         #endregion
 
 
-        #region method StartListen
+        #region method AcceptConnectionLoopAsync
 
-        /// <summary>
-        /// Starts listening incoming connections. NOTE: All active listening points will be disposed.
-        /// </summary>
-        private void StartListen()
+        private async Task AcceptConnectionLoopAsync(TCP_ServerEndpoint ep)
         {
-            try{
-                // Dispose all old binds.
-                foreach(ListeningPoint listeningPoint in m_pListeningPoints.ToArray()){
-                    try{
-                        listeningPoint.Socket.Close();
-                    }
-                    catch(Exception x){
-                        OnError(x);
-                    }
+            Socket? listener = null;
+            try{            
+                listener = new(ep.IPEndPoint.AddressFamily,SocketType.Stream,ProtocolType.Tcp);
+                if(ep.IPEndPoint.AddressFamily == AddressFamily.InterNetworkV6){
+                    listener.DualMode = false;
                 }
-                m_pListeningPoints.Clear();
-
-                // Create new listening points and start accepting connections.
-                foreach(IPBindInfo bind in m_pBindings){
+                listener.Bind(ep.IPEndPoint);
+                listener.Listen(backlog:500);
+    
+                while(m_IsRunning){
                     try{
-                        Socket socket;
-                        if(bind.IP.AddressFamily == AddressFamily.InterNetwork){
-                            socket = new Socket(AddressFamily.InterNetwork,SocketType.Stream,ProtocolType.Tcp);
-                        }
-                        else if(bind.IP.AddressFamily == AddressFamily.InterNetworkV6){
-                            socket = new Socket(AddressFamily.InterNetworkV6,SocketType.Stream,ProtocolType.Tcp);
-                        }
-                        else{
-                            // Invalid address family, just skip it.
-                            continue;
-                        }
-                        socket.Bind(new IPEndPoint(bind.IP,bind.Port));
-                        socket.Listen(100);
-                                                
-                        ListeningPoint listeningPoint = new ListeningPoint(socket,bind);
-                        m_pListeningPoints.Add(listeningPoint);
+                        Socket clientSocket = await listener.AcceptAsync();
+                        clientSocket.NoDelay = true;
 
-                        // Create TCP connection acceptors.
-                        for(int i=0;i<10;i++){
-                            TCP_Acceptor acceptor = new TCP_Server<T>.TCP_Acceptor(socket);
-                            acceptor.Tags["bind"] = bind;
-                            acceptor.ConnectionAccepted += delegate(object? s1,EventArgs<Socket> e1){
-                                // NOTE: We may not use 'bind' variable here, foreach changes it's value before we reach here.
-                                ProcessConnection(e1.Value,(IPBindInfo)acceptor.Tags["bind"]);
-                            };
-                            acceptor.Error += delegate(object? s1,ExceptionEventArgs e1){
-                                OnError(e1.Exception);
-                            };
-                            m_pConnectionAcceptors.Add(acceptor);
-                            acceptor.Start();
-                        }
+                        _ = ProcessConnectionAsync(clientSocket,ep);
                     }
                     catch(Exception x){
-                        // The only exception what we should get there is if socket is in use.
-                        OnError(x);
+                        if(m_IsRunning){
+                            OnError(x);
+                        }
                     }
                 }
             }
             catch(Exception x){
-                OnError(x);
+                if(m_IsRunning){
+                    OnError(x);
+                }
+            }
+            finally{
+                listener?.Dispose();
             }
         }
 
@@ -594,26 +236,20 @@ namespace LumiSoft.Net.TCP
 
         #region method ProcessConnection
 
-        /// <summary>
-        /// Processes specified connection.
-        /// </summary>
-        /// <param name="socket">Accpeted socket.</param>
-        /// <param name="bindInfo">Local bind info what accpeted connection.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>socket</b> or <b>bindInfo</b> is null reference.</exception>
-        private void ProcessConnection(Socket socket,IPBindInfo bindInfo)
+        private async Task ProcessConnectionAsync(Socket socket,TCP_ServerEndpoint ep)
         {
             if(socket == null){
-                throw new ArgumentNullException("socket");
+                throw new ArgumentNullException(nameof(socket));
             }
-            if(bindInfo == null){
-                throw new ArgumentNullException("bindInfo");
+            if(ep == null){
+                throw new ArgumentNullException(nameof(ep));
             }
 
             m_ConnectionsProcessed++;
                                 
             try{
                 T session = new T();
-                session.Init(this,socket,bindInfo.HostName,bindInfo.SslMode == SslMode.SSL,bindInfo.Certificate);
+                session.Init(this,socket,ep.HostName,ep.TlsMode == TCP_ServerTlsMode.Implicit,ep.Certificate);
 
                 // Maximum allowed connections exceeded, reject connection.
                 if(m_MaxConnections != 0 && m_pSessions.Count > m_MaxConnections){
@@ -627,17 +263,47 @@ namespace LumiSoft.Net.TCP
                 }
                 // Start processing new session.
                 else{
-                    session.Disonnected += new EventHandler(delegate(object? sender,EventArgs e){
-                        m_pSessions.Remove((TCP_ServerSession)sender!);
+                    session.Disposing += new EventHandler(delegate(object? sender,EventArgs e){                        
+                        m_pSessions.Remove(session);
                     });
                     m_pSessions.Add(session);
-                
-                    OnSessionCreated(session);
 
-                    session.StartI();
+                    // Raise session created event.
+                    if (this.SessionCreatedAsync != null) {
+                        await this.SessionCreatedAsync(new TCP_Server_e_SessionCreated<T>(session));
+                    }
+
+                    await session.StartIAsync();
                 }
             }
             catch(Exception x){
+                OnError(x);
+            }
+        }
+
+        #endregion
+
+        #region method TimeoutScan
+
+        /// <summary>
+        /// Scans all active sessions and disconnects those whose last activity
+        /// exceeds the configured idle timeout. Ensures timed‑out sessions invoke
+        /// their timeout handler and are disposed if not already closed.
+        /// </summary>
+        private void TimeoutScan()
+        {
+            try{
+                foreach(T session in this.Sessions.ToArray()){
+                    try{
+                        if(DateTime.Now > session.TcpStream.LastActivity.AddSeconds(m_SessionIdleTimeout)){                            
+                            session.OnTimeoutI();
+                        }
+                    }
+                    catch{
+                    }
+                }
+            }
+            catch (Exception x){
                 OnError(x);
             }
         }
@@ -648,7 +314,9 @@ namespace LumiSoft.Net.TCP
         #region Properties Implementation
 
         /// <summary>
-        /// Gets if server is disposed.
+        /// Gets a value indicating whether this server instance has been disposed.
+        /// When <c>true</c>, accessing members that require an active instance will
+        /// raise an <see cref="ObjectDisposedException"/>.
         /// </summary>
         public bool IsDisposed
         {
@@ -656,7 +324,9 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
-        /// Gets if server is running.
+        /// Gets a value indicating whether the server is currently running. This becomes
+        /// <c>true</c> after the server has been started and remains <c>true</c> until
+        /// the server is stopped or disposed.
         /// </summary>
         public bool IsRunning
         {
@@ -664,17 +334,28 @@ namespace LumiSoft.Net.TCP
         }
                 
         /// <summary>
-        /// Gets or sets TCP server IP bindings.
+        /// Gets or sets the TCP server listening endpoints. Each endpoint defines an
+        /// advertised hostname, bind IP address, port, and TLS configuration used by
+        /// the server when accepting incoming connections.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public IPBindInfo[] Bindings
+        /// <remarks>
+        /// The collection specifies all network endpoints on which the server listens.
+        /// Assigning <c>null</c> resets the list to an empty array. Accessing this
+        /// property after the server has been disposed will raise an
+        /// <see cref="ObjectDisposedException"/>.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server instance has been
+        /// disposed.
+        /// </exception>
+        public TCP_ServerEndpoint[] ListenEndpoints
         {
             get{
                 if(m_IsDisposed){
                     throw new ObjectDisposedException(this.GetType().Name);
                 }
 
-                return m_pBindings; 
+                return m_pListenEndpoints; 
             }
 
             set{
@@ -682,76 +363,23 @@ namespace LumiSoft.Net.TCP
                     throw new ObjectDisposedException(this.GetType().Name);
                 }
                 if(value == null){
-                    value = new IPBindInfo[0];
+                    value = [];
                 }
 
-                //--- See binds has changed --------------
-                bool changed = false;
-                if(m_pBindings.Length != value.Length){
-                    changed = true;
-                }
-                else{
-                    for(int i=0;i<m_pBindings.Length;i++){
-                        if(!m_pBindings[i].Equals(value[i])){
-                            changed = true;
-                            break;
-                        }
-                    }
-                }
-
-                if(changed){
-                    m_pBindings = value;
-
-                    if(m_IsRunning){
-                        StartListen();
-                    }
-                }
+                m_pListenEndpoints = value;
             }
-        }
+        }        
 
         /// <summary>
-        /// Gets local listening IP end points.
+        /// Gets or sets the maximum number of concurrent connections the server allows.
+        /// A value of <c>0</c> means no limit is enforced.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public IPEndPoint[] LocalEndPoints
-        {
-            get{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-
-                List<IPEndPoint> retVal = new List<IPEndPoint>();
-                foreach(IPBindInfo bind in this.Bindings){
-                    if(bind.IP.Equals(IPAddress.Any)){
-                        foreach(IPAddress ip in System.Net.Dns.GetHostAddresses("")){
-                            if(ip.AddressFamily == AddressFamily.InterNetwork && !retVal.Contains(new IPEndPoint(ip,bind.Port))){
-                                retVal.Add(new IPEndPoint(ip,bind.Port));
-                            }
-                        }
-                    }
-                    else if(bind.IP.Equals(IPAddress.IPv6Any)){
-                        foreach(IPAddress ip in System.Net.Dns.GetHostAddresses("")){
-                            if(ip.AddressFamily == AddressFamily.InterNetworkV6 && !retVal.Contains(new IPEndPoint(ip,bind.Port))){
-                                retVal.Add(new IPEndPoint(ip,bind.Port));
-                            }
-                        }
-                    }
-                    else{
-                        if(!retVal.Contains(bind.EndPoint)){
-                            retVal.Add(bind.EndPoint);
-                        }
-                    }
-                }
-            
-                return retVal.ToArray();
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets maximum allowed concurent connections. Value 0 means unlimited.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ArgumentException">Is raised when negative value is passed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server has been disposed.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when a negative value is assigned.
+        /// </exception>
         public long MaxConnections
         {
             get{
@@ -775,8 +403,15 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
-        /// Gets or sets maximum allowed connections for 1 IP address. Value 0 means unlimited.
+        /// Gets or sets the maximum number of concurrent connections allowed from a
+        /// single IP address. A value of <c>0</c> means no per‑IP limit is enforced.
         /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server has been disposed.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when a negative value is assigned.
+        /// </exception>
         public long MaxConnectionsPerIP
         {
             get{ 
@@ -800,11 +435,16 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
-        /// Gets or sets maximum allowed session idle time in seconds, after what session will be terminated. Value 0 means unlimited,
-        /// but this is strongly not recommened.
+        /// Gets or sets the maximum allowed session idle time, in seconds. When a session
+        /// remains idle longer than this value, it will be terminated. A value of <c>0</c>
+        /// means no idle timeout is enforced, although this is not recommended.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ArgumentException">Is raised when negative value is passed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server has been disposed.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when a negative value is assigned.
+        /// </exception>
         public int SessionIdleTimeout
         {
             get{ 
@@ -828,8 +468,12 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
-        /// Gets or sets logger. Value null means no logging.
+        /// Gets or sets the logger used by the server for diagnostic and operational
+        /// messages. A value of <c>null</c> disables logging.
         /// </summary>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server has been disposed.
+        /// </exception>
         public Logger? Logger
         {
             get{ 
@@ -850,10 +494,20 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
-        /// Gets the time when server was started.
+        /// Gets the time when the server was started.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when TCP server is not running and this property is accesed.</exception>
+        /// <remarks>
+        /// This property is only valid while the server is running. Accessing it before
+        /// the server has been started or after it has been stopped will result in an
+        /// exception.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server instance has been
+        /// disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the server is not running.
+        /// </exception>
         public DateTime StartTime
         {
             get{
@@ -869,10 +523,15 @@ namespace LumiSoft.Net.TCP
         }
                 
         /// <summary>
-        /// Gets how many connections this TCP server has processed.
+        /// Gets the total number of connections the server has processed since it was
+        /// started.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when TCP server is not running and this property is accesed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server has been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the server is not running.
+        /// </exception>
         public long ConnectionsProcessed
         {
             get{ 
@@ -888,24 +547,66 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
-        /// Gets TCP server active sessions.
+        /// Gets the collection of active TCP sessions currently handled by the server.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when TCP server is not running and this property is accesed.</exception>
-        public TCP_SessionCollection<TCP_ServerSession> Sessions
+        /// <remarks>
+        /// The collection reflects all sessions that are presently connected and not yet
+        /// terminated. Accessing this property after the server has been disposed will
+        /// raise an <see cref="ObjectDisposedException"/>.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this property is accessed after the server instance has been
+        /// disposed.
+        /// </exception>
+        public TCP_SessionCollection<T> Sessions
         {
             get{ 
                 if(m_IsDisposed){
                     throw new ObjectDisposedException("TCP_Server");
-                }
-                if(!m_IsRunning){
-                    throw new InvalidOperationException("TCP server is not running.");
                 }
 
                 return m_pSessions; 
             }
         }
 
+
+        /// <summary>
+        /// Gets local listening IP end points.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        internal IPEndPoint[] LocalEndPoints
+        {
+            get{
+                if(m_IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+
+                List<IPEndPoint> retVal = new List<IPEndPoint>();
+                foreach(TCP_ServerEndpoint bind in this.ListenEndpoints){
+                    if(bind.IP.Equals(IPAddress.Any)){
+                        foreach(IPAddress ip in System.Net.Dns.GetHostAddresses("")){
+                            if(ip.AddressFamily == AddressFamily.InterNetwork && !retVal.Contains(new IPEndPoint(ip,bind.Port))){
+                                retVal.Add(new IPEndPoint(ip,bind.Port));
+                            }
+                        }
+                    }
+                    else if(bind.IP.Equals(IPAddress.IPv6Any)){
+                        foreach(IPAddress ip in System.Net.Dns.GetHostAddresses("")){
+                            if(ip.AddressFamily == AddressFamily.InterNetworkV6 && !retVal.Contains(new IPEndPoint(ip,bind.Port))){
+                                retVal.Add(new IPEndPoint(ip,bind.Port));
+                            }
+                        }
+                    }
+                    else{
+                        if(!retVal.Contains(bind.IPEndPoint)){
+                            retVal.Add(bind.IPEndPoint);
+                        }
+                    }
+                }
+            
+                return retVal.ToArray();
+            }
+        }
 
         #endregion
 
@@ -969,24 +670,15 @@ namespace LumiSoft.Net.TCP
         #endregion
 
         /// <summary>
-        /// This event is raised when TCP server creates new session.
+        /// Occurs when a new TCP session has been created. This asynchronous event is
+        /// raised immediately after the session object is constructed but before any
+        /// protocol‑specific processing begins.
         /// </summary>
-        public event EventHandler<TCP_ServerSessionEventArgs<T>>? SessionCreated = null;
-
-        #region method OnSessionCreated
-
-        /// <summary>
-        /// Raises <b>SessionCreated</b> event.
-        /// </summary>
-        /// <param name="session">TCP server session that was created.</param>
-        private void OnSessionCreated(T session)
-        {
-            if(this.SessionCreated != null){
-                this.SessionCreated(this,new TCP_ServerSessionEventArgs<T>(this,session));
-            }
-        }
-
-        #endregion
+        /// <remarks>
+        /// Handlers may perform initialization, logging, or session‑level configuration.
+        /// The event argument provides access to the newly created session instance.
+        /// </remarks>
+        public event Func<TCP_Server_e_SessionCreated<T>,Task>? SessionCreatedAsync = null;
                         
         /// <summary>
         /// This event is raised when TCP server has unknown unhandled error.

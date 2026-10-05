@@ -1,15 +1,16 @@
-using System;
-using System.IO;
-using System.Collections.Generic;
-using System.Text;
-using System.Net;
-using System.Net.Sockets;
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-using System.Threading;
-
 using LumiSoft.Net.IO;
 using LumiSoft.Net.Log;
+using LumiSoft.Net.SMTP.Server;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Threading;
 
 namespace LumiSoft.Net.TCP
 {
@@ -60,6 +61,11 @@ namespace LumiSoft.Net.TCP
                     // Skip disconnect errors.
                 }
             }
+            
+            if(Disposing != null){
+                Disposing(this,EventArgs.Empty);
+            }
+
             m_IsDisposed = true;
 
             // We must call disposed event before we release events.
@@ -83,9 +89,12 @@ namespace LumiSoft.Net.TCP
             m_pRawTcpStream = null;
 
             // Release events.
-            this.IdleTimeout = null;
-            this.Disonnected  = null;
-            this.Disposed    = null;
+            this.IdleTimeout       = null;
+            this.DisconnectedAsync = null;
+            this.Disposed          = null;
+            this.Error             = null;
+            this.ErrorAsync        = null;
+            this.Disposing         = null;
         }
 
         #endregion
@@ -123,58 +132,38 @@ namespace LumiSoft.Net.TCP
 
         #endregion
 
-        #region method Start
+        #region method StartIAsync
 
         /// <summary>
         /// This method is called from TCP server when session should start processing incoming connection.
         /// </summary>
-        internal void StartI()
+        internal async Task StartIAsync()
         {
             if(m_IsSsl){
-                // Log
-                LogAddText("Starting SSL negotiation now.");
+                try{
+                    // Log
+                    LogAddText("Starting SSL negotiation now.");
 
-                DateTime startTime = DateTime.Now;
+                    await SwitchToSecureAsync();
 
-                // Create delegate which is called when SwitchToSecureAsync has completed.
-                Action<SwitchToSecureAsyncOP> switchSecureCompleted = delegate(SwitchToSecureAsyncOP e){
-                    try{
-                        // Operation failed.
-                        if(e.Error != null){
-                            LogAddException(e.Error);
-                            if(!this.IsDisposed){
-                                Disconnect();
-                            }
-                        }
-                        // Operation suceeded.
-                        else{
-                            // Log
-                            LogAddText("SSL negotiation completed successfully in " + (DateTime.Now - startTime).TotalSeconds.ToString("f2") + " seconds.");
-
-                            Start();
-                        }
+                    LogAddText("SSL negotiation completed successfully.");
+                }
+                catch(Exception x){
+                    LogAddException(x);
+                    if(!this.IsDisposed){
+                        Disconnect();
                     }
-                    catch(Exception x){
-                        LogAddException(x);
-                        if(!this.IsDisposed){
-                            Disconnect();
-                        }
-                    }
-                };
 
-                SwitchToSecureAsyncOP op = new SwitchToSecureAsyncOP();
-                op.CompletedAsync += delegate(object? sender,EventArgs<TCP_ServerSession.SwitchToSecureAsyncOP> e){
-                    switchSecureCompleted(op);
-                };
-                // Switch to secure completed synchronously.
-                if(!SwitchToSecureAsync(op)){
-                    switchSecureCompleted(op);
+                    return;
                 }
             }
-            else{
-                Start();
-            }
+
+            Start();
         }
+
+        #endregion
+
+        #region method Start
 
         /// <summary>
         /// This method is called from TCP server when session should start processing incoming connection.
@@ -186,253 +175,30 @@ namespace LumiSoft.Net.TCP
         #endregion
 
 
-        #region method SwitchToSecure
-
-        /// <summary>
-        /// Switches session to secure connection.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when connection is already secure or when SSL certificate is not specified.</exception>
-        public void SwitchToSecure()
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException("TCP_ServerSession");
-            }
-            if(m_IsSecure){
-                throw new InvalidOperationException("Session is already SSL/TLS.");
-            }
-            if(m_pCertificate == null){
-                throw new InvalidOperationException("There is no certificate specified.");
-            }
-
-            ManualResetEvent wait = new ManualResetEvent(false);
-            using(SwitchToSecureAsyncOP op = new SwitchToSecureAsyncOP()){
-                op.CompletedAsync += delegate(object? s1,EventArgs<SwitchToSecureAsyncOP> e1){
-                    wait.Set();
-                };
-                if(!this.SwitchToSecureAsync(op)){
-                    wait.Set();
-                }
-                wait.WaitOne();
-                wait.Close();
-
-                if(op.Error != null){
-                    throw op.Error;
-                }
-            }
-        }
-
-        #endregion
-
         #region method SwitchToSecureAsync
 
-        #region class SwitchToSecureAsyncOP
-
         /// <summary>
-        /// This class represents <see cref="TCP_ServerSession.SwitchToSecureAsync"/> asynchronous operation.
+        /// Upgrades the current plaintext TCP connection to a secure TLS connection
+        /// using the server certificate configured for this session. This method
+        /// performs a synchronous TLS handshake over the existing network stream
+        /// and replaces the underlying <see cref="SmartStream"/> with a secure
+        /// <see cref="SslStream"/> instance.
         /// </summary>
-        public class SwitchToSecureAsyncOP : IDisposable,IAsyncOP
-        {
-            private object             m_pLock         = new object();
-            private bool               m_RiseCompleted = false;
-            private AsyncOP_State      m_State         = AsyncOP_State.WaitingForStart;
-            private Exception?         m_pException    = null;
-            private TCP_ServerSession? m_pTcpSession   = null;
-            private SslStream?         m_pSslStream    = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            public SwitchToSecureAsyncOP()
-            {
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resource being used.
-            /// </summary>
-            public void Dispose()
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-                SetState(AsyncOP_State.Disposed);
-                
-                m_pException  = null;
-                m_pTcpSession = null;
-                m_pSslStream  = null;
-
-                this.CompletedAsync = null;
-            }
-
-            #endregion
-
-
-            #region method Start
-
-            /// <summary>
-            /// Starts operation processing.
-            /// </summary>
-            /// <param name="owner">Owner TCP session.</param>
-            /// <returns>Returns true if asynchronous operation in progress or false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
-            internal bool Start(TCP_ServerSession owner)
-            {
-                if(owner == null){
-                    throw new ArgumentNullException("owner");
-                }
-
-                m_pTcpSession = owner;
-
-                ArgumentNullException.ThrowIfNull(m_pTcpSession.TcpStream);
-                ArgumentNullException.ThrowIfNull(m_pTcpSession.m_pCertificate);
-
-                SetState(AsyncOP_State.Active);
-
-                try{
-                    m_pSslStream = new SslStream(m_pTcpSession.TcpStream.SourceStream,true);
-                    m_pSslStream.BeginAuthenticateAsServer(m_pTcpSession.m_pCertificate,this.BeginAuthenticateAsServerCompleted,null);
-                }
-                catch(Exception x){
-                    m_pException = x;
-                    SetState(AsyncOP_State.Completed);
-                }
-
-                // Set flag rise CompletedAsync event flag. The event is raised when async op completes.
-                // If already completed sync, that flag has no effect.
-                lock(m_pLock){
-                    m_RiseCompleted = true;
-
-                    return m_State == AsyncOP_State.Active;
-                }
-            }
-
-            #endregion
-
-
-            #region method SetState
-
-            /// <summary>
-            /// Sets operation state.
-            /// </summary>
-            /// <param name="state">New state.</param>
-            private void SetState(AsyncOP_State state)
-            {
-                if(m_State == AsyncOP_State.Disposed){
-                    return;
-                }
-
-                lock(m_pLock){
-                    m_State = state;
-
-                    if(m_State == AsyncOP_State.Completed && m_RiseCompleted){
-                        OnCompletedAsync();
-                    }
-                }
-            }
-
-            #endregion
-
-            #region method BeginAuthenticateAsServerCompleted
-
-            /// <summary>
-            /// This method is called when "BeginAuthenticateAsServer" has completed.
-            /// </summary>
-            /// <param name="ar">Asynchronous result.</param>
-            private void BeginAuthenticateAsServerCompleted(IAsyncResult ar)
-            {
-                ArgumentNullException.ThrowIfNull(m_pTcpSession);
-                ArgumentNullException.ThrowIfNull(m_pSslStream);
-                ArgumentNullException.ThrowIfNull(m_pTcpSession.m_pTcpStream);
-
-                try {
-                    m_pSslStream.EndAuthenticateAsServer(ar);
-
-                    // Close old stream, but leave source stream open.
-                    m_pTcpSession.m_pTcpStream.IsOwner = false;
-                    m_pTcpSession.m_pTcpStream.Dispose();
-
-                    m_pTcpSession.m_IsSecure = true;
-                    m_pTcpSession.m_pTcpStream = new SmartStream(m_pSslStream,true);
-                }
-                catch(Exception x){
-                    m_pException = x;                    
-                }
-
-                SetState(AsyncOP_State.Completed);
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets asynchronous operation state.
-            /// </summary>
-            public AsyncOP_State State
-            {
-                get{ return m_State; }
-            }
-
-            /// <summary>
-            /// Gets error happened during operation. Returns null if no error.
-            /// </summary>
-            /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this property is accessed.</exception>
-            /// <exception cref="InvalidOperationException">Is raised when this property is accessed other than <b>AsyncOP_State.Completed</b> state.</exception>
-            public Exception? Error
-            {
-                get{ 
-                    if(m_State == AsyncOP_State.Disposed){
-                        throw new ObjectDisposedException(this.GetType().Name);
-                    }
-                    if(m_State != AsyncOP_State.Completed){
-                        throw new InvalidOperationException("Property 'Error' is accessible only in 'AsyncOP_State.Completed' state.");
-                    }
-
-                    return m_pException; 
-                }
-            }
-
-            #endregion
-
-            #region Events implementation
-
-            /// <summary>
-            /// Is called when asynchronous operation has completed.
-            /// </summary>
-            public event EventHandler<EventArgs<SwitchToSecureAsyncOP>>? CompletedAsync = null;
-
-            #region method OnCompletedAsync
-
-            /// <summary>
-            /// Raises <b>CompletedAsync</b> event.
-            /// </summary>
-            private void OnCompletedAsync()
-            {
-                if(this.CompletedAsync != null){
-                    this.CompletedAsync(this,new EventArgs<SwitchToSecureAsyncOP>(this));
-                }
-            }
-
-            #endregion
-
-            #endregion
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Starts switching connection to secure.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <returns>Returns true if aynchronous operation is pending (The <see cref="SwitchToSecureAsyncOP.CompletedAsync"/> event is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when connection is already secure or when SSL certificate is not specified.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        public bool SwitchToSecureAsync(SwitchToSecureAsyncOP op)
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when the session has already been disposed.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the connection is already secure or when no server
+        /// certificate has been configured.
+        /// </exception>
+        /// <exception cref="System.Security.Authentication.AuthenticationException">
+        /// Thrown when the TLS handshake fails.
+        /// </exception>
+        /// <returns>
+        /// A <see cref="Task"/> representing the asynchronous TLS upgrade
+        /// operation.
+        /// </returns>
+        public async Task SwitchToSecureAsync()
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -443,33 +209,26 @@ namespace LumiSoft.Net.TCP
             if(m_pCertificate == null){
                 throw new InvalidOperationException("There is no certificate specified.");
             }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            if(op.State != AsyncOP_State.WaitingForStart){
-                throw new ArgumentException("Invalid argument 'op' state, 'op' must be in 'AsyncOP_State.WaitingForStart' state.","op");
-            }
 
-            return op.Start(this);
+            var sslStream = new SslStream(m_pTcpStream!.SourceStream,true);
+            await sslStream.AuthenticateAsServerAsync(m_pCertificate);
+
+            // Close old stream, but leave source stream open.
+            m_pTcpStream.IsOwner = false;
+            m_pTcpStream.Dispose();
+
+            m_IsSecure = true;
+            m_pTcpStream = new SmartStream(sslStream,true);
         }
 
         #endregion
-
+// Remove ME:
         #region method Disconnect
 
         /// <summary>
         /// Disconnects session.
         /// </summary>
         public override void Disconnect()
-        {
-            Disconnect(null);
-        }
-
-        /// <summary>
-        /// Disconnects session.
-        /// </summary>
-        /// <param name="text">Text what is sent to connected host before disconnecting.</param>
-        public void Disconnect(string? text)
         {
             if(m_IsDisposed){
                 return;
@@ -479,19 +238,10 @@ namespace LumiSoft.Net.TCP
             }
             m_IsTerminated = true;
 
-            ArgumentNullException.ThrowIfNull(m_pTcpStream);
-
-            if (!string.IsNullOrEmpty(text)){
-                try{                    
-                    m_pTcpStream.Write(text);
-                }
-                catch(Exception x){
-                    OnError(x);
-                }
-            }
-
             try{
-                OnDisonnected();
+                if(this.DisconnectedAsync != null) {
+                   this.DisconnectedAsync(new EventArgs()).GetAwaiter().GetResult();
+                }
             }
             catch(Exception x){
                 // We never should get exception here, user should handle it.
@@ -503,26 +253,79 @@ namespace LumiSoft.Net.TCP
 
         #endregion
 
-
-        #region method OnTimeout
+        #region method DisconnectAsync
 
         /// <summary>
-        /// This method is called when specified session times out.
+        /// Terminates the active session and raises the <see cref="DisconnectedAsync"/>
+        /// event if it has subscribers. If the session is already disposed or has been
+        /// previously terminated, the method returns immediately without performing
+        /// further actions.
         /// </summary>
         /// <remarks>
-        /// This method allows inhereted classes to report error message to connected client.
-        /// Session will be disconnected after this method completes.
+        /// <para>
+        /// This method marks the session as terminated, invokes the asynchronous
+        /// <see cref="DisconnectedAsync"/> event handler (if present), and then disposes
+        /// the session. The event is invoked with <see cref="EventArgs.Empty"/> because
+        /// no protocol‑specific disconnect metadata is provided at the base class level.
+        /// </para>
+        /// <para>
+        /// Derived server implementations may override or extend this behavior to
+        /// perform protocol‑specific cleanup, logging, or final message exchange before
+        /// the session is closed.
+        /// </para>
+        /// <para>
+        /// Calling this method multiple times is safe; subsequent calls exit early based
+        /// on the <c>m_IsDisposed</c> and <c>m_IsTerminated</c> flags.
+        /// </para>
         /// </remarks>
-        protected virtual void OnTimeout()
+        /// <returns>
+        /// A <see cref="Task"/> representing the asynchronous disconnect operation.
+        /// </returns>
+        public virtual async Task DisconnectAsync()
         {
+            if(m_IsDisposed){
+                return;
+            }
+            if(m_IsTerminated){
+                return;
+            }
+            m_IsTerminated = true;
+
+            if(this.DisconnectedAsync != null){
+                await this.DisconnectedAsync(new EventArgs());
+            }
+
+            Dispose();
         }
 
+        #endregion
+
+
+        #region method OnTimeoutAsync
+
         /// <summary>
-        /// Just calls <b>OnTimeout</b> method.
+        /// Is called when session idle timeout reached.
+        /// </summary>
+        protected virtual async Task OnTimeoutAsync()
+        {
+            try{
+                OnIdleTimeout();
+            }
+            finally{
+                await DisconnectAsync();
+            }
+        }
+
+        #endregion
+
+        #region method OnTimeoutI
+
+        /// <summary>
+        /// Just calls <b>OnTimeoutAsync</b> method.
         /// </summary>
         internal virtual void OnTimeoutI()
-        {
-            OnTimeout();
+        {            
+            _= OnTimeoutAsync();
         }
 
         #endregion
@@ -794,7 +597,7 @@ namespace LumiSoft.Net.TCP
         #region Events Implementation
 
         /// <summary>
-        /// This event is raised when session idle(no activity) timeout reached.
+        /// Occurs when the session becomes idle for longer than the configured timeout period.
         /// </summary>
         public event EventHandler? IdleTimeout = null;
 
@@ -813,26 +616,13 @@ namespace LumiSoft.Net.TCP
         #endregion
 
         /// <summary>
-        /// This event is raised when session has disconnected and will be disposed soon.
+        /// Occurs when the session has been disconnected. The event is raised after the
+        /// session transitions into a terminated state and before the session is disposed.
         /// </summary>
-        public event EventHandler? Disonnected = null;
-
-        #region method OnDisonnected
+        public event Func<EventArgs,Task>? DisconnectedAsync = null;
 
         /// <summary>
-        /// Raises <b>Disonnected</b> event.
-        /// </summary>
-        private void OnDisonnected()
-        {
-            if(this.Disonnected != null){
-                this.Disonnected(this,new EventArgs());
-            }
-        }
-
-        #endregion
-
-        /// <summary>
-        /// This event is raised when session has disposed.
+        /// Occurs when the session has been disposed.
         /// </summary>
         public event EventHandler? Disposed = null;
 
@@ -869,6 +659,61 @@ namespace LumiSoft.Net.TCP
         }
 
         #endregion
+
+        /// <summary>
+        /// Asynchronous error notification event for the session.
+        /// 
+        /// <para>
+        /// The server raises this event when an exception occurs inside the
+        /// session processing pipeline. The event provides the exception details
+        /// through an <see cref="ExceptionEventArgs"/> instance and awaits the
+        /// subscriber's returned <see cref="Task"/>, allowing the handler to
+        /// perform asynchronous logging, diagnostics, or cleanup.
+        /// </para>
+        /// 
+        /// <para>
+        /// This event supports only a single subscriber. If more than one handler
+        /// is attached, the server will reject the subscription to ensure
+        /// predictable async behavior and to prevent multicast delegate issues
+        /// where only the last handler's <see cref="Task"/> would be awaited.
+        /// </para>
+        /// 
+        /// <para>
+        /// If no handler is attached, the event is skipped and the exception is
+        /// not processed further by the session.
+        /// </para>
+        /// </summary>
+        public event Func<ExceptionEventArgs,Task>? ErrorAsync = null;
+
+        #region method OnErrorAsync
+
+        /// <summary>
+        /// Raises the <see cref="ErrorAsync"/> event when an exception occurs
+        /// inside the TCP session processing pipeline.
+        /// 
+        /// <para>
+        /// This method wraps the exception into an <see cref="ExceptionEventArgs"/>
+        /// instance and invokes the asynchronous <see cref="ErrorAsync"/> handler
+        /// if one is attached. The server awaits the handler's returned
+        /// <see cref="Task"/>, allowing the subscriber to perform asynchronous
+        /// logging, cleanup, or diagnostics.
+        /// </para>
+        /// </summary>
+        /// <param name="x">The exception that occurred.</param>
+        protected virtual async Task OnErrorAsync(Exception x)
+        {
+            if(this.ErrorAsync != null){
+                await this.ErrorAsync(new ExceptionEventArgs(x));
+            }
+        }
+
+        #endregion
+
+
+        /// <summary>
+        /// Internal notification that the session is being disposed.
+        /// </summary>
+        internal event EventHandler? Disposing = null;
 
         #endregion
 
