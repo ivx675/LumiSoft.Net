@@ -360,7 +360,7 @@ namespace LumiSoft.Net.FTP.Server
 
         #endregion
 
-        #region override method OnTimeout
+        #region override method OnTimeoutAsync
 
         /// <summary>
         /// This method is called when specified session times out.
@@ -369,7 +369,7 @@ namespace LumiSoft.Net.FTP.Server
         /// This method allows inhereted classes to report error message to connected client.
         /// Session will be disconnected after this method completes.
         /// </remarks>
-        protected override void OnTimeout()
+        protected override async Task OnTimeoutAsync()
         {
             try{
                 WriteLine("500 Idle timeout, closing connection.");
@@ -377,6 +377,8 @@ namespace LumiSoft.Net.FTP.Server
             catch{
                 // Skip errors.
             }
+
+            _= base.OnTimeoutAsync();
         }
 
         #endregion
@@ -586,7 +588,7 @@ namespace LumiSoft.Net.FTP.Server
                 WriteLine("234 Ready to start TLS.");
 
                 try{
-                    SwitchToSecure();
+                    SwitchToSecureAsync().GetAwaiter().GetResult();
 
                     // Log
                     LogAddText("TLS negotiation completed successfully.");

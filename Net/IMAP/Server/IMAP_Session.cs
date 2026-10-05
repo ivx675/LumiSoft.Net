@@ -812,7 +812,7 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-        #region override method OnTimeout
+        #region override method OnTimeoutAsync
 
         /// <summary>
         /// This method is called when specified session times out.
@@ -821,7 +821,7 @@ namespace LumiSoft.Net.IMAP.Server
         /// This method allows inhereted classes to report error message to connected client.
         /// Session will be disconnected after this method completes.
         /// </remarks>
-        protected override void OnTimeout()
+        protected override async Task OnTimeoutAsync()
         {
             try{                
                 WriteLine("* BYE Idle timeout, closing connection.");
@@ -829,6 +829,8 @@ namespace LumiSoft.Net.IMAP.Server
             catch{
                 // Skip errors.
             }
+
+            _= base.OnTimeoutAsync();
         }
 
         #endregion
@@ -929,7 +931,6 @@ namespace LumiSoft.Net.IMAP.Server
 
                 if(cmd == "STARTTLS"){                    
                     STARTTLS(cmdTag,args);
-                    readNextCommand = false;
                 }
                 else if(cmd == "LOGIN"){
                     LOGIN(cmdTag,args);
@@ -1129,36 +1130,10 @@ namespace LumiSoft.Net.IMAP.Server
             try{
                 DateTime startTime = DateTime.Now;
 
-                // Create delegate which is called when SwitchToSecureAsync has completed.
-                Action<SwitchToSecureAsyncOP> switchSecureCompleted = delegate(SwitchToSecureAsyncOP e){
-                    try{
-                        // Operation failed.
-                        if(e.Error != null){
-                            LogAddException(e.Error);
-                            Disconnect();
-                        }
-                        // Operation suceeded.
-                        else{
-                            // Log
-                            LogAddText("SSL negotiation completed successfully in " + (DateTime.Now - startTime).TotalSeconds.ToString("f2") + " seconds.");
+                SwitchToSecureAsync().GetAwaiter().GetResult();
 
-                            BeginReadCmd();
-                        }
-                    }
-                    catch(Exception x){
-                        LogAddException(x);
-                        Disconnect();
-                    }
-                };
-
-                SwitchToSecureAsyncOP op = new SwitchToSecureAsyncOP();
-                op.CompletedAsync += delegate(object? sender,EventArgs<TCP_ServerSession.SwitchToSecureAsyncOP> e){
-                    switchSecureCompleted(op);
-                };
-                // Switch to secure completed synchronously.
-                if(!SwitchToSecureAsync(op)){
-                    switchSecureCompleted(op);
-                }
+                // Log
+                LogAddText("SSL negotiation completed successfully in " + (DateTime.Now - startTime).TotalSeconds.ToString("f2") + " seconds.");
             }
             catch(Exception x){
                 LogAddException(x);
@@ -4069,7 +4044,7 @@ namespace LumiSoft.Net.IMAP.Server
                                 WriteLine(reponseBuffer.ToString());
                                 reponseBuffer = new StringBuilder();
 
-                                this.TcpStream.WriteStream(tmpFs);
+                                this.TcpStream.WriteStream(tmpFs,tmpFs.Length,tmpFs.Length);
                                 LogAddWrite(tmpFs.Length,"Wrote " + tmpFs.Length + " bytes.");
                             }
                             // Partial data wanted.
@@ -4086,7 +4061,7 @@ namespace LumiSoft.Net.IMAP.Server
                                     WriteLine(reponseBuffer.ToString());
                                     reponseBuffer = new StringBuilder();
 
-                                    this.TcpStream.WriteStream(tmpFs,count);
+                                    this.TcpStream.WriteStream(tmpFs,count,count);
                                     LogAddWrite(tmpFs.Length,"Wrote " + count + " bytes.");
                                 }
                             }
@@ -4155,7 +4130,7 @@ namespace LumiSoft.Net.IMAP.Server
                             WriteLine(reponseBuffer.ToString());
                             reponseBuffer = new StringBuilder();
 
-                            this.TcpStream.WriteStream(tmpFs);
+                            this.TcpStream.WriteStream(tmpFs,tmpFs.Length,tmpFs.Length);
                             LogAddWrite(tmpFs.Length,"Wrote " + tmpFs.Length + " bytes.");
                         }
                     }
@@ -4175,7 +4150,7 @@ namespace LumiSoft.Net.IMAP.Server
                         WriteLine(reponseBuffer.ToString());
                         reponseBuffer = new StringBuilder();
 
-                        this.TcpStream.WriteStream(ms);
+                        this.TcpStream.WriteStream(ms,ms.Length,ms.Length);
                         LogAddWrite(ms.Length,"Wrote " + ms.Length + " bytes.");
                     }
 
@@ -4202,7 +4177,7 @@ namespace LumiSoft.Net.IMAP.Server
                             WriteLine(reponseBuffer.ToString());
                             reponseBuffer = new StringBuilder();
 
-                            this.TcpStream.WriteStream(tmpFs);
+                            this.TcpStream.WriteStream(tmpFs,tmpFs.Length,tmpFs.Length);
                             LogAddWrite(tmpFs.Length,"Wrote " + tmpFs.Length + " bytes.");
                         }
                     }

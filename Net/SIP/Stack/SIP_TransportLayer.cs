@@ -325,15 +325,17 @@ namespace LumiSoft.Net.SIP.Stack
             }
 
             m_pStack = stack;
+
+             m_pFlowManager = new SIP_FlowManager(this);
           
             m_pUdpServer = new UDP_Server();
             m_pUdpServer.PacketReceived += new EventHandler<UDP_e_PacketReceived>(m_pUdpServer_PacketReceived);
             m_pUdpServer.Error += new ErrorEventHandler(m_pUdpServer_Error);
 
             m_pTcpServer = new TCP_Server<TCP_ServerSession>();
-            m_pTcpServer.SessionCreated += new EventHandler<TCP_ServerSessionEventArgs<TCP_ServerSession>>(m_pTcpServer_SessionCreated);
-
-            m_pFlowManager = new SIP_FlowManager(this);
+            m_pTcpServer.SessionCreatedAsync += async (eArgs) => {
+                m_pFlowManager.CreateFromSession(eArgs.Session);
+            };           
                         
             m_pBinds = new IPBindInfo[]{};
 
@@ -400,20 +402,6 @@ namespace LumiSoft.Net.SIP.Stack
         private void m_pUdpServer_Error(object? sender,Error_EventArgs e)
         {
             m_pStack.OnError(e.Exception);
-        }
-
-        #endregion
-
-        #region method m_pTcpServer_SessionCreated
-
-        /// <summary>
-        /// This method is called when SIP stack has got new incoming connection.
-        /// </summary>
-        /// <param name="sender">Sender.</param>
-        /// <param name="e">Event data.</param>
-        private void m_pTcpServer_SessionCreated(object? sender,TCP_ServerSessionEventArgs<TCP_ServerSession> e)
-        {
-            m_pFlowManager.CreateFromSession(e.Session);
         }
 
         #endregion
@@ -1726,17 +1714,29 @@ namespace LumiSoft.Net.SIP.Stack
                     
                     // Create listening points.
                     List<IPEndPoint> udpListeningPoints = new List<IPEndPoint>();
-                    List<IPBindInfo> tcpListeningPoints = new List<IPBindInfo>();
+                    List<TCP_ServerEndpoint> tcpListeningPoints = new List<TCP_ServerEndpoint>();
                     foreach(IPBindInfo bindInfo in m_pBinds){
                         if(bindInfo.Protocol == BindInfoProtocol.UDP){
                             udpListeningPoints.Add(new IPEndPoint(bindInfo.IP,bindInfo.Port));
                         }
                         else{
-                            tcpListeningPoints.Add(bindInfo);
+                            TCP_ServerTlsMode tlsMode =  TCP_ServerTlsMode.None;
+                            if (bindInfo.SslMode == SslMode.SSL) {
+                                tlsMode = TCP_ServerTlsMode.Implicit;
+                            }
+                            else if (bindInfo.SslMode == SslMode.TLS) {
+                                tlsMode = TCP_ServerTlsMode.Explicit;
+                            }
+                            tcpListeningPoints.Add(new TCP_ServerEndpoint(
+                                bindInfo.HostName,
+                                bindInfo.IP,
+                                bindInfo.Port,
+                                tlsMode,
+                                bindInfo.Certificate));
                         }
                     }
                     m_pUdpServer.Bindings = udpListeningPoints.ToArray();
-                    m_pTcpServer.Bindings = tcpListeningPoints.ToArray();
+                    m_pTcpServer.ListenEndpoints = tcpListeningPoints.ToArray();
 
                     // Build possible local TCP/TLS IP addresses.
                     foreach(IPEndPoint ep in m_pTcpServer.LocalEndPoints){
