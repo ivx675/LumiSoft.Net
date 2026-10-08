@@ -776,6 +776,16 @@ namespace LumiSoft.Net.SMTP.Server
             else{
                 address = cmdText.Substring(1,cmdText.IndexOf('>') - 1).Trim();
                 cmdText = cmdText.Substring(cmdText.IndexOf('>') + 1).Trim();
+
+                bool isEmpty = string.IsNullOrEmpty(address);
+
+                // MAIL FROM can be empty (<>) OR must have valid email syntax
+                if(!isEmpty && !IsValidEmailSyntax(address)){
+                    string text = "Syntax error: Sender address format is invalid (e.g., user@domain.com).";
+                    await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,4),text));
+
+                    return;
+                }
             }
 
             #region Parse parameters
@@ -979,6 +989,14 @@ namespace LumiSoft.Net.SMTP.Server
             else{
                 address = cmdText.Substring(1,cmdText.IndexOf('>') - 1).Trim();
                 cmdText = cmdText.Substring(cmdText.IndexOf('>') + 1).Trim();
+
+                // RCPT TO CANNOT BE EMPTY and must have valid email syntax
+                if (string.IsNullOrEmpty(address) || !IsValidEmailSyntax(address)){
+                    string text = "Syntax error: Recipient address format is invalid or empty.";
+                    await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,4),text));
+
+                    return;
+                }
             }
             if(address == string.Empty){
                 string text = "Syntax error in parameters or arguments.";
@@ -1474,6 +1492,36 @@ namespace LumiSoft.Net.SMTP.Server
 
         #endregion
 
+
+        private bool IsValidEmailSyntax(string address)
+        {
+            if (string.IsNullOrEmpty(address))
+            {
+                return false;
+            }
+
+            int atIndex = address.IndexOf('@');
+    
+            // Must have '@', not at the start or end, and only one '@'
+            if (atIndex > 0 && atIndex < address.Length - 1 && address.IndexOf('@', atIndex + 1) == -1)
+            {
+                string localPart = address.Substring(0, atIndex);
+                string domainPart = address.Substring(atIndex + 1);
+
+                // Basic domain hygiene: must contain a dot, not start/end with dot or hyphen, no spaces
+                bool hasDot = domainPart.Contains('.');
+                bool validDomainEdges = !domainPart.StartsWith(".") && !domainPart.EndsWith(".") && 
+                                        !domainPart.StartsWith("-") && !domainPart.EndsWith("-");
+                bool noSpaces = !address.Contains(' ') && !address.Contains('\t');
+
+                if (hasDot && validDomainEdges && noSpaces)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         #region method Reset
 
