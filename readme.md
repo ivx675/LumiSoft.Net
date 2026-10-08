@@ -7,16 +7,22 @@ A cross‑platform .NET networking library providing **client and server compone
 ## Features
 
 ### Mail Protocols
-- **SMTP Client (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, SIZE, DSN, BINARYMIME, CHUNKING, ENHANCEDSTATUSCODES, Socks5, http-connect)**
-- **POP3 Client (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, APOP, TOP, USER, UIDL, RESP-CODES, UTF8,Socks5, http-connect)**
-- **IMAP Client (STARTTLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, IDLE, LITERAL+, UIDPLUS, Gmail extensions, Socks5, http-connect)**
-- **SMTP Server**
-- **POP3 Server**
+- **SMTP Client** (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, SIZE, DSN, CHUNKING, ENHANCEDSTATUSCODES, Socks5, http-connect)
+ 
+- **POP3 Client** (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, APOP, TOP, USER, UIDL, RESP-CODES, UTF8,Socks5, http-connect)
+
+- **IMAP Client** (STARTTLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, IDLE, LITERAL+, UIDPLUS, Gmail extensions, Socks5, http-connect)
+
+- **SMTP Server** (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5, SIZE, DSN, CHUNKING, ENHANCEDSTATUSCODES)
+
+- **POP3 Server** (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5, TOP, USER, UIDL)
+
 - **IMAP Server**
 - **MIME** message creation and parsing
 
 ### Networking Components
-- **DNS Client**
+- **DNS Client** (A,AAAA,CNAME,HINFO,MX,NAPTR,NS,PTR,SOA,SRV,TXT)
+
 - **FTP Client & Server**
 - **WebDav Client**
 - **UPnP Client**
@@ -25,6 +31,21 @@ A cross‑platform .NET networking library providing **client and server compone
 ---
 
 ## Version History
+
+### 10.3.0 (xx.09.2026)
+
+#### SMTP Server
+- Complete rewrite with fully modern async/await implementation 
+- Added usage example, see Examples link below
+
+#### POP3 Server
+- Complete rewrite with fully modern async/await implementation 
+- Added usage example, see Examples link below
+
+#### DNS Client
+- Complete rewrite with fully modern async/await implementation 
+- Added usage example, see Examples link below
+
 
 ### 10.2.0 (25.09.2026)
 

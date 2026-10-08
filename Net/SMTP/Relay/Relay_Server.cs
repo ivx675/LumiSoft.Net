@@ -41,7 +41,7 @@ namespace LumiSoft.Net.SMTP.Relay
         private long                                  m_MaxConnections        = 0;
         private long                                  m_MaxConnectionsPerIP   = 0;
         private bool                                  m_UseTlsIfPossible      = false; 
-        private Dns_Client                            m_pDsnClient;
+        private DNS_Client                            m_pDsnClient;
         private TCP_SessionCollection<Relay_Session>? m_pSessions             = null;
         private Dictionary<IPAddress,long>?           m_pConnectionsPerIP     = null;
         private int                                   m_SessionIdleTimeout    = 30;
@@ -55,7 +55,7 @@ namespace LumiSoft.Net.SMTP.Relay
         {
             m_pQueues     = new List<Relay_Queue>();
             m_pSmartHosts = new CircleCollection<Relay_SmartHost>();
-            m_pDsnClient  = new Dns_Client();
+            m_pDsnClient  = new DNS_Client();
         }
 
         #region method Dispose
@@ -734,7 +734,7 @@ namespace LumiSoft.Net.SMTP.Relay
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
         /// <exception cref="ArgumentNullException">Is raised when null value is passed.</exception>
-        public Dns_Client DnsClient
+        public DNS_Client DnsClient
         {
             get{
                 if(m_IsDisposed){

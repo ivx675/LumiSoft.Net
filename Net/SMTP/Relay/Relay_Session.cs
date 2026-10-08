@@ -13,6 +13,7 @@ using LumiSoft.Net.SMTP.Client;
 using LumiSoft.Net.DNS;
 using LumiSoft.Net.DNS.Client;
 using LumiSoft.Net.Log;
+using System.Linq.Expressions;
 
 namespace LumiSoft.Net.SMTP.Relay
 {
@@ -244,31 +245,7 @@ namespace LumiSoft.Net.SMTP.Relay
 
                 LogText("Starting to relay message '" + m_pRelayItem.MessageID + "' from '" + m_pRelayItem.From + "' to '" + m_pRelayItem.To + "'.");
 
-                // Resolve email target hosts.               
-                if(m_RelayMode == Relay_Mode.Dns){
-                    Dns_Client.GetEmailHostsAsyncOP op = new Dns_Client.GetEmailHostsAsyncOP(m_pRelayItem.To);
-                    op.CompletedAsync += delegate(object? s1,EventArgs<Dns_Client.GetEmailHostsAsyncOP> e1){
-                        EmailHostsResolveCompleted(m_pRelayItem.To,op);
-                    };
-                    if(!m_pServer.DnsClient.GetEmailHostsAsync(op)){
-                        EmailHostsResolveCompleted(m_pRelayItem.To,op);
-                    }
-                }
-                // Resolve smart hosts IP addresses.
-                else if(m_RelayMode == Relay_Mode.SmartHost){
-                    string[] smartHosts = new string[m_pSmartHosts.Length];
-                    for(int i=0;i<m_pSmartHosts.Length;i++){
-                        smartHosts[i] = m_pSmartHosts[i].Host;
-                    }
-
-                    Dns_Client.GetHostsAddressesAsyncOP op = new Dns_Client.GetHostsAddressesAsyncOP(smartHosts);
-                    op.CompletedAsync += delegate(object? s1,EventArgs<Dns_Client.GetHostsAddressesAsyncOP> e1){
-                        SmartHostsResolveCompleted(op);
-                    };
-                    if(!m_pServer.DnsClient.GetHostsAddressesAsync(op)){
-                        SmartHostsResolveCompleted(op);
-                    }
-                } 
+                _= StartRelaying();
             }
             catch(Exception x){
                 Dispose(x);
@@ -317,89 +294,76 @@ namespace LumiSoft.Net.SMTP.Relay
         #endregion
 
 
-        #region method EmailHostsResolveCompleted
-
-        /// <summary>
-        /// Is called when email domain target servers resolve operation has completed.
-        /// </summary>
-        /// <param name="to">RCPT TO: address.</param>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>to</b> or <b>op</b> is null reference.</exception>
-        private void EmailHostsResolveCompleted(string to,Dns_Client.GetEmailHostsAsyncOP op)
-        {
-            if(to == null){
-                throw new ArgumentNullException("to");
-            }
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-            
-            if(op.Error != null){
-                LogText("Failed to resolve email domain for email address '" + to + "' with error: " + op.Error.Message + ".");
-
-                Dispose(op.Error);
-            }
-            else{
-                StringBuilder buf = new StringBuilder();
-                foreach(HostEntry host in op.Hosts){
-                    foreach(IPAddress ip in host.Addresses){
-                        m_pTargets.Add(new Relay_Target(host.HostName,new IPEndPoint(ip,25)));
-                    }
-                    buf.Append(host.HostName + " ");
-                }
-                LogText("Resolved to following email hosts: (" + buf.ToString().TrimEnd() + ").");
-
-                _= StartRelaying();
-            }
-
-            op.Dispose();
-        }
-
-        #endregion
-
-        #region method SmartHostsResolveCompleted
-
-        /// <summary>
-        /// Is called when smart hosts ip addresses resolve operation has completed.
-        /// </summary>
-        /// <param name="op">Asynchronous operation.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-        private void SmartHostsResolveCompleted(Dns_Client.GetHostsAddressesAsyncOP op)
-        {
-            if(op == null){
-                throw new ArgumentNullException("op");
-            }
-
-            if(op.Error != null){
-                LogText("Failed to resolve relay smart host(s) ip addresses with error: " + op.Error.Message + ".");
-
-                Dispose(op.Error);
-            }
-            else{
-                for(int i=0;i<op.HostEntries.Length;i++){
-                    Relay_SmartHost smartHost = m_pSmartHosts[i];
-
-                    foreach(IPAddress ip in op.HostEntries[i].Addresses){
-                        m_pTargets.Add(new Relay_Target(smartHost.Host,new IPEndPoint(ip,smartHost.Port),smartHost.SslMode,smartHost.UserName,smartHost.Password));
-                    }
-                }                
-
-                _= StartRelaying();
-            }
-
-            op.Dispose();
-        }
-
-        #endregion
-
         #region method StartRelaying
 
         private async ValueTask StartRelaying()
         {
+            // Resolve email target hosts.               
+            if(m_RelayMode == Relay_Mode.Dns){
+                List<string> emailHosts = new List<string>();
+
+                string domain = m_pRelayItem.To.Split('@', 2)[1];
+
+                // Get domain MX records.
+                DNS_ServerResponse? response = await DNS_Client.Static.QueryAsync(domain,DNS_RecordType.MX,1000);
+                if(response == null){
+                    LogText("No response received from DNS server (timeout).");
+                    Dispose(new IOException("No response received from DNS server (timeout)."));
+
+                    return;
+                }
+                if(response.ResponseCode == DNS_ResponseCode.NoError){                    
+                    var mxRecords = response.Answers.MX.OrderBy(mx => mx.Preference).ToArray();
+                    foreach(var mx in mxRecords){
+                        if(!string.IsNullOrEmpty(mx.Host)){
+                            emailHosts.Add(mx.Host);
+                        }
+                    }
+                    LogText($"Resolved(MX) to following email hosts: ({string.Join(' ',emailHosts)})");
+                }
+                else{
+                    LogText($"Dns server returned error: {response.ResponseCode}.");
+                    Dispose(new DNS_ClientException(response.ResponseCode));
+
+                    return;
+                }
+
+                // RFC 5321, Section 5.1, if a domain publishes no MX records, sending mail servers fall back to treating the domain itself.
+                if(emailHosts.Count == 0){
+                    emailHosts.Add(domain);
+                }
+
+                foreach(string host in emailHosts){
+                    try{
+                        foreach(IPAddress ip in await DNS_Client.Static.GetHostAddressesAsync(host)){
+                            m_pTargets.Add(new Relay_Target(host,new IPEndPoint(ip,25)));
+                        }
+                    }
+                    catch(Exception x){
+                        LogText($"Failed to resolve host '{host}': {x.Message}.");
+                    }
+                }
+            }
+            // Resolve smart hosts IP addresses.
+            else if(m_RelayMode == Relay_Mode.SmartHost){
+                for(int i=0;i<m_pSmartHosts.Length;i++){
+                    Relay_SmartHost smartHost = m_pSmartHosts[i];
+
+                    try{
+                        foreach(IPAddress ip in await DNS_Client.Static.GetHostAddressesAsync(m_pSmartHosts[i].Host)){
+                            m_pTargets.Add(new Relay_Target(smartHost.Host,new IPEndPoint(ip,smartHost.Port),smartHost.SslMode,smartHost.UserName,smartHost.Password));
+                        }
+                    }
+                    catch(Exception x){
+                        LogText($"Failed to resolve smarthost '{smartHost.Host}': {x.Message}.");
+                    }
+                }
+            } 
+
             // No tagets, abort relay.
             if(m_pTargets.Count == 0){
-                LogText("No relay target(s) for '" + m_pRelayItem.To + "', aborting.");
-                Dispose(new Exception("No relay target(s) for '" + m_pRelayItem.To + "', aborting."));
+                LogText($"Aborting relay: No valid mail server targets could be resolved for domain '{m_pRelayItem.To}'.");
+                Dispose(new Exception($"Aborting relay: No valid mail server targets could be resolved for domain '{m_pRelayItem.To}'."));
 
                 return;
             }            
@@ -475,7 +439,7 @@ namespace LumiSoft.Net.SMTP.Relay
                 }
 
                 // We don't have suitable local IP end point for relay target.
-                // This may heppen for example: if remote server supports only IPv6 and we don't have local IPv6 local end point.            
+                // This may happen for example: if remote server supports only IPv6 and we don't have local IPv6 local end point.            
                 if(m_pLocalBindInfo == null){
                     LogText("No suitable IPv4/IPv6 local IP endpoint for relay target.");
                     Dispose(new Exception("No suitable IPv4/IPv6 local IP endpoint for relay target."));

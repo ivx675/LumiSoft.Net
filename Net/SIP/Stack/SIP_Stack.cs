@@ -37,7 +37,7 @@ namespace LumiSoft.Net.SIP.Stack
         private List<SIP_UA_Registration>    m_pRegistrations;
         private SIP_t_CallID                 m_RegisterCallID;
         private Logger                       m_pLogger;
-        private Dns_Client                   m_pDnsClient;
+        private DNS_Client                   m_pDnsClient;
         private int                          MTU                  = 1400;
 
         /// <summary>
@@ -60,7 +60,7 @@ namespace LumiSoft.Net.SIP.Stack
                        
             m_pLogger = new Logger();
 
-            m_pDnsClient = new Dns_Client();
+            m_pDnsClient = new DNS_Client();
         }
 
         #region method Dispose
@@ -725,7 +725,7 @@ namespace LumiSoft.Net.SIP.Stack
                 }
             }
             else{
-                DnsServerResponse? response = null;
+                DNS_ServerResponse? response = null;
                 /*
                 DnsServerResponse response = m_pDnsClient.Query(uri.Host,QTYPE.NAPTR);
                 // NAPTR records available.
@@ -749,20 +749,20 @@ namespace LumiSoft.Net.SIP.Stack
                     bool                            srvRecordsAvailable = false;
 
                     // Query SRV to see what protocols are supported.
-                    response = m_pDnsClient.Query("_sips._tcp." + uri.Host,DNS_QType.SRV);
-                    if(response.GetSRVRecords().Length > 0){
+                    response = m_pDnsClient.Query("_sips._tcp." + uri.Host,DNS_RecordType.SRV,2000);
+                    if(response != null && response.Answers.SRV.Length > 0){
                         srvRecordsAvailable = true;
-                        supportedTransports.Add(SIP_Transport.TLS,response.GetSRVRecords());
+                        supportedTransports.Add(SIP_Transport.TLS,response.Answers.SRV);
                     }
-                    response = m_pDnsClient.Query("_sip._tcp." + uri.Host,DNS_QType.SRV);
-                    if(response.GetSRVRecords().Length > 0){
+                    response = m_pDnsClient.Query("_sip._tcp." + uri.Host,DNS_RecordType.SRV,2000);
+                    if(response != null && response.Answers.SRV.Length > 0){
                         srvRecordsAvailable = true;
-                        supportedTransports.Add(SIP_Transport.TCP,response.GetSRVRecords());
+                        supportedTransports.Add(SIP_Transport.TCP,response.Answers.SRV);
                     }
-                    response = m_pDnsClient.Query("_sip._udp." + uri.Host,DNS_QType.SRV);
-                    if(response.GetSRVRecords().Length > 0){
+                    response = m_pDnsClient.Query("_sip._udp." + uri.Host,DNS_RecordType.SRV,2000);
+                    if(response != null && response.Answers.SRV.Length > 0){
                         srvRecordsAvailable = true;
-                        supportedTransports.Add(SIP_Transport.UDP,response.GetSRVRecords());
+                        supportedTransports.Add(SIP_Transport.UDP,response.Answers.SRV);
                     }
 
                     // SRV records available.
@@ -896,17 +896,19 @@ namespace LumiSoft.Net.SIP.Stack
                     //DnsServerResponse response = m_pDnsClient.Query("??? need NAPTR value here",QTYPE.SRV);
                 //}    
                 if(transportSetExplicitly){
-                    DnsServerResponse response;
+                    DNS_ServerResponse? response;
                     if(transport == SIP_Transport.TLS){
-                        response = m_pDnsClient.Query("_sips._tcp." + uri.Host,DNS_QType.SRV);
+                        response = m_pDnsClient.Query("_sips._tcp." + uri.Host,DNS_RecordType.SRV,2000);
                     }
                     else if(transport == SIP_Transport.TCP){
-                        response = m_pDnsClient.Query("_sip._tcp." + uri.Host,DNS_QType.SRV);
+                        response = m_pDnsClient.Query("_sip._tcp." + uri.Host,DNS_RecordType.SRV,2000);
                     }
                     else{
-                        response = m_pDnsClient.Query("_sip._udp." + uri.Host,DNS_QType.SRV);
+                        response = m_pDnsClient.Query("_sip._udp." + uri.Host,DNS_RecordType.SRV,2000);
                     }
-                    targetSRV.AddRange(response.GetSRVRecords());
+                    if(response != null){
+                        targetSRV.AddRange(response.Answers.SRV);
+                    }
                 }                         
 
                 // We have SRV records, resovle them to (IP:Port)'s.
@@ -1357,7 +1359,7 @@ namespace LumiSoft.Net.SIP.Stack
         /// Gets stack DNS client.
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is raised when this class is Disposed and this property is accessed.</exception>
-        public Dns_Client Dns
+        public DNS_Client Dns
         {
             get{ 
                 if(m_State == SIP_StackState.Disposed){

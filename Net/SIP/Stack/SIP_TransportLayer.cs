@@ -1385,11 +1385,14 @@ namespace LumiSoft.Net.SIP.Stack
                     else if(via.ProtocolTransport == SIP_Transport.UDP){
                         srvQuery = "_sips._tcp." + via.SentBy.Host;
                     }
-                    DnsServerResponse dnsResponse = m_pStack.Dns.Query(srvQuery,DNS_QType.SRV);
-                    if(dnsResponse.ResponseCode != DNS_RCode.NO_ERROR){
+                    DNS_ServerResponse? dnsResponse = m_pStack.Dns.Query(srvQuery,DNS_RecordType.SRV,2000);
+                    if(dnsResponse == null){
+                        throw new SIP_TransportException("Dns error: No dns server response.");
+                    }
+                    if(dnsResponse.ResponseCode != DNS_ResponseCode.NoError){
                         throw new SIP_TransportException("Dns error: " + dnsResponse.ResponseCode.ToString());
                     }
-                    DNS_rr_SRV[] srvRecords = dnsResponse.GetSRVRecords();
+                    DNS_rr_SRV[] srvRecords = dnsResponse.Answers.SRV;
 
                     // Use SRV records.
                     if(srvRecords.Length > 0){
