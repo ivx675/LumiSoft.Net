@@ -5,7 +5,8 @@ using LumiSoft.Net.DNS.Client;
 namespace LumiSoft.Net.DNS
 {
 	/// <summary>
-	/// HINFO record.
+	/// DNS HINFO (Host Information) resource record. Specifies the CPU type and operating
+	/// system of a host, as defined in RFC 1035.
 	/// </summary>
 	public class DNS_rr_HINFO : DNS_rr
 	{
@@ -13,13 +14,14 @@ namespace LumiSoft.Net.DNS
 		private string m_OS  = "";
 
 		/// <summary>
-		/// Default constructor.
+		/// Initializes a new instance of the HINFO resource record, defining the CPU type
+		/// and operating system of the host as specified in RFC 1035.
 		/// </summary>
-        /// <param name="name">DNS domain name that owns a resource record.</param>
-		/// <param name="cpu">Host CPU.</param>
-		/// <param name="os">Host OS.</param>
-		/// <param name="ttl">TTL value.</param>
-		public DNS_rr_HINFO(string name,string cpu,string os,int ttl) : base(name,DNS_QType.HINFO,ttl)
+		/// <param name="name">DNS domain name that owns this resource record.</param>
+		/// <param name="cpu">CPU type of the host.</param>
+		/// <param name="os">Operating system of the host.</param>
+		/// <param name="ttl">Time to live value in seconds.</param>
+		public DNS_rr_HINFO(string name,string cpu,string os,int ttl) : base(name,DNS_RecordType.HINFO,ttl)
 		{
 			m_CPU = cpu;
 			m_OS  = os;
@@ -36,7 +38,7 @@ namespace LumiSoft.Net.DNS
         /// <param name="offset">Current offset in reply data.</param>
         /// <param name="rdLength">Resource record data length.</param>
         /// <param name="ttl">Time to live in seconds.</param>
-        public static DNS_rr_HINFO Parse(string name,byte[] reply,ref int offset,int rdLength,int ttl)
+        internal static DNS_rr_HINFO Parse(string name,byte[] reply,ref int offset,int rdLength,int ttl)
         {
             /* RFC 1035 3.3.2. HINFO RDATA format
 
@@ -56,10 +58,10 @@ namespace LumiSoft.Net.DNS
 			*/
 
 			// CPU
-			string cpu = Dns_Client.ReadCharacterString(reply,ref offset);
+			string cpu = DNS_Client.ReadCharacterString(reply,ref offset);
 
 			// OS
-			string os = Dns_Client.ReadCharacterString(reply,ref offset);
+			string os = DNS_Client.ReadCharacterString(reply,ref offset);
 
 			return new DNS_rr_HINFO(name,cpu,os,ttl);
         }
@@ -67,10 +69,28 @@ namespace LumiSoft.Net.DNS
         #endregion
 
 
+        #region override method ToString
+
+        /// <summary>
+        /// Returns a textual representation of the HINFO resource record.
+        /// The format includes the owner name, record type, CPU value,
+        /// OS value, and the TTL value.
+        /// </summary>
+        /// <returns>
+        /// A string in the form: "&lt;name&gt; HINFO &lt;cpu&gt; &lt;os&gt; (TTL=&lt;ttl&gt;)".
+        /// </returns>
+        public override string ToString()
+		{
+			return $"{Name} HINFO {m_CPU} {m_OS} (TTL={TTL})";
+		}
+
+		#endregion
+
+
         #region Properties Implementation
 
         /// <summary>
-		/// Gets host's CPU.
+		/// Gets the CPU type of the host as specified in this HINFO resource record.
 		/// </summary>
 		public string CPU
 		{
@@ -78,7 +98,7 @@ namespace LumiSoft.Net.DNS
 		}
 
 		/// <summary>
-		/// Gets host's OS.
+		/// Gets the operating system of the host as specified in this HINFO resource record.
 		/// </summary>
 		public string OS
 		{

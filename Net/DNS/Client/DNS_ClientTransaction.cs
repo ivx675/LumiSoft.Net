@@ -15,14 +15,15 @@ namespace LumiSoft.Net.DNS.Client
         private object                     m_pLock         = new object();
         private DNS_ClientTransactionState m_State         = DNS_ClientTransactionState.WaitingForStart;
         private DateTime                   m_CreateTime;
-        private Dns_Client                 m_pOwner;
+        private DNS_Client                 m_pOwner;
         private IPAddress[]                m_pDnsServers;
-        private int                        m_ID            = 1;
-        private string                     m_QName         = "";
-        private DNS_QType                  m_QType         = 0;
+        private int                        m_ID             = 1;
+        private string                     m_QName          = "";
+        private DNS_RecordType             m_QType          = 0;
         private TimerEx                    m_pTimeoutTimer;
-        private DnsServerResponse?         m_pResponse     = null;
-        private int                        m_ResponseCount = 0;
+        private DNS_ServerResponse?        m_pResponse      = null;
+        private int                        m_ResponseCount  = 0;
+        private TcpClient?                 m_pTcpConnection = null;
 
         /// <summary>
         /// Default constructor.
@@ -34,7 +35,7 @@ namespace LumiSoft.Net.DNS.Client
         /// <param name="qname">QNAME value.</param>
         /// <param name="timeout">Timeout in milliseconds.</param>
         /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> or <b>qname</b> is null reference.</exception>
-        internal DNS_ClientTransaction(Dns_Client owner,IPAddress[] dnsServers,int id,DNS_QType qtype,string qname,int timeout)
+        internal DNS_ClientTransaction(DNS_Client owner,IPAddress[] dnsServers,int id,DNS_RecordType qtype,string qname,int timeout)
         {
             if(owner == null){
                 throw new ArgumentNullException("owner");
@@ -71,9 +72,8 @@ namespace LumiSoft.Net.DNS.Client
 
                 SetState(DNS_ClientTransactionState.Disposed);
 
-                if(m_pTimeoutTimer != null){
-                    m_pTimeoutTimer.Dispose();
-                }
+                m_pTimeoutTimer?.Dispose();
+                m_pTcpConnection?.Dispose();
 
                 m_pResponse = null;
 
@@ -130,8 +130,8 @@ namespace LumiSoft.Net.DNS.Client
             ThreadPool.QueueUserWorkItem(delegate(object? state){
                 try{
                     // Use DNS cache if allowed.
-			        if(Dns_Client.UseDnsCache){ 
-	                    DnsServerResponse? response = m_pOwner.Cache.GetFromCache(m_QName,(int)m_QType);
+			        if(m_pOwner.UseDnsCache){ 
+	                    DNS_ServerResponse? response = m_pOwner.Cache.GetFromCache(m_QName,(int)m_QType);
 				        if(response != null){
 					        m_pResponse = response;
 
@@ -142,27 +142,18 @@ namespace LumiSoft.Net.DNS.Client
 				        }
 			        }   
 
-                    byte[] buffer = new byte[1400];
-                    int count = CreateQuery(buffer,m_ID,m_QName,m_QType,1);
+                    byte[] queryPacket = CreateQuery(m_ID,m_QName,m_QType,1);
+
+                    m_pTimeoutTimer.Start();
   
                     // Send parallel query to DNS server(s).
                     foreach(IPAddress server in m_pDnsServers){
-                        m_pOwner.Send(server,buffer,count);
-                    }
-
-                    m_pTimeoutTimer.Start();
+                        _= m_pOwner.SendAsync(server,queryPacket);
+                    }                    
                 }
                 catch{
-                    // Check if we have bad unicode qname.
-                    try{
-                        System.Globalization.IdnMapping ldn = new System.Globalization.IdnMapping();
-                        ldn.GetAscii(m_QName);
-                    }
-                    catch{
-                        m_pResponse = new DnsServerResponse(true,m_ID,DNS_RCode.NAME_ERROR,new List<DNS_rr>(),new List<DNS_rr>(),new List<DNS_rr>());
-                    }
-
                     SetState(DNS_ClientTransactionState.Completed);
+                    Dispose();
                 }
             });
         }
@@ -172,30 +163,27 @@ namespace LumiSoft.Net.DNS.Client
 
         #region method ProcessResponse
 
-        /// <summary>
-        /// Processes DNS server response through this transaction.
-        /// </summary>
-        /// <param name="response">DNS server response.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>response</b> is null reference.</exception>
-        internal void ProcessResponse(DnsServerResponse response)
-        {
-            if(response == null){
-                throw new ArgumentNullException("response");
-            }
-                        
+        internal void ProcessResponse(IPAddress serverIP,DNS_ServerResponse response)
+        {                        
             try{
                 lock(m_pLock){
                     if(this.State != DNS_ClientTransactionState.Active){
                         return;
                     }
-                    m_ResponseCount++;
 
-                    // Late arriving response or retransmitted response, just skip it.
-                    if(m_pResponse != null){
+                    // UDP DNS response is truncated, we need to re-query using TCP.
+                    if(response.IsTruncated){
+                        byte[] queryPacket = CreateQuery(m_ID,m_QName,m_QType,1);
+                        
+                        _= QueryTcpAsync(queryPacket,serverIP,53);
+
                         return;
                     }
+
+                    m_ResponseCount++;
+
                     // If server refused to complete query and we more active queries to other servers, skip that response.
-                    if(response.ResponseCode == DNS_RCode.REFUSED && m_ResponseCount < Dns_Client.DnsServers.Length){
+                    if(response.ResponseCode == DNS_ResponseCode.Refused && m_ResponseCount < m_pOwner.DnsServers.Length){
                         return;
                     }
 
@@ -208,6 +196,46 @@ namespace LumiSoft.Net.DNS.Client
                 if(this.State == DNS_ClientTransactionState.Completed){
                     Dispose();
                 }                
+            }
+        }
+
+        #endregion
+
+        #region method QueryTcpAsync
+
+        private async Task QueryTcpAsync(byte[] dnsQuery,IPAddress server,int port)
+        {
+            try{
+                using(var tcp = new TcpClient()){        
+                    m_pTcpConnection = tcp; // We need this transaction timeout, we need to dispose client.
+
+                    await tcp.ConnectAsync(server,port);
+
+                    using(var stream = tcp.GetStream()){
+                        // TCP DNS uses a 2‑byte length prefix
+                        ushort length = (ushort)dnsQuery.Length;
+                        byte[] lenPrefix = { (byte)(length >> 8),(byte)(length & 0xFF) };
+
+                        // Send length + query
+                        await stream.WriteAsync(lenPrefix,0,2);
+                        await stream.WriteAsync(dnsQuery,0,dnsQuery.Length);
+
+                        // Read 2‑byte length prefix of response
+                        byte[] respLenBuf = new byte[2];
+                        await stream.ReadAtLeastAsync(respLenBuf,2);
+                        int respLen = (respLenBuf[0] << 8) | respLenBuf[1];                    
+
+                        // Read full DNS message
+                        byte[] response = new byte[respLen];
+                        await stream.ReadAtLeastAsync(response, respLen);
+
+                        ProcessResponse(server,DNS_ServerResponse.Parse(response));                    
+                    }
+                }
+                m_pTcpConnection = null;
+            }
+            catch{
+                // If TCP query fails, we just ignore it and wait for other responses.
             }
         }
 
@@ -235,16 +263,7 @@ namespace LumiSoft.Net.DNS.Client
 
         #region method CreateQuery
 
-		/// <summary>
-		/// Creates binary query.
-		/// </summary>
-        /// <param name="buffer">Buffer where to store query.</param>
-		/// <param name="ID">Query ID.</param>
-		/// <param name="qname">Query text.</param>
-		/// <param name="qtype">Query type.</param>
-		/// <param name="qclass">Query class.</param>
-		/// <returns>Returns number of bytes stored to <b>buffer</b>.</returns>
-		private int CreateQuery(byte[] buffer,int ID,string qname,DNS_QType qtype,int qclass)
+		private byte[] CreateQuery(int ID,string qname,DNS_RecordType qtype,int qclass)
 		{
 			//---- Create header --------------------------------------------//
 			// Header is first 12 bytes of query
@@ -281,13 +300,14 @@ namespace LumiSoft.Net.DNS.Client
 				
 			*/
 
+            byte[] buffer = new byte[1400];
 			//--------- Header part -----------------------------------//
 			buffer[0]  = (byte) (ID >> 8); buffer[1]  = (byte) (ID & 0xFF);
 			buffer[2]  = (byte) 1;         buffer[3]  = (byte) 0;
-			buffer[4]  = (byte) 0;         buffer[5]  = (byte) 1;
+			buffer[4]  = (byte) 0;         buffer[5]  = (byte) 1; 
 			buffer[6]  = (byte) 0;         buffer[7]  = (byte) 0;
 			buffer[8]  = (byte) 0;         buffer[9]  = (byte) 0;
-			buffer[10] = (byte) 0;         buffer[11] = (byte) 0;
+			buffer[10] = (byte) 0;         buffer[11] = (byte) 1;
 			//---------------------------------------------------------//
 
 			//---- End of header --------------------------------------------//
@@ -349,9 +369,39 @@ namespace LumiSoft.Net.DNS.Client
 			// Set QCLASS
 			buffer[position++] = (byte) 0;
 			buffer[position++] = (byte)qclass;
+
+            // ---- EDNS0 OPT RR ---------------------------
+            // EDNS0 needed for increasing default 512 packet size to 1232.
+
+            // Name = root (0)
+            buffer[position++] = 0;
+
+            // Type = OPT (41)
+            buffer[position++] = 0;
+            buffer[position++] = 41;
+
+            // UDP payload size (recommended 1232)
+            buffer[position++] = (byte)(1232 >> 8);
+            buffer[position++] = (byte)(1232 & 0xFF);
+
+            // Extended RCODE = 0
+            buffer[position++] = 0;
+
+            // EDNS Version = 0
+            buffer[position++] = 0;
+
+            // Z flags = 0 (unless you want DO bit)
+            buffer[position++] = 0;
+            buffer[position++] = 0;
+
+            // RDATA length = 0 (no options)
+            buffer[position++] = 0;
+            buffer[position++] = 0;
+            //--------------------------------------------------------
+
 			//-------------------------------------------------------//
-			
-			return position;
+
+			return buffer.AsMemory(0,position).ToArray();
 		}
 
 		#endregion
@@ -394,7 +444,7 @@ namespace LumiSoft.Net.DNS.Client
         /// <summary>
         /// Gets QTYPE value.
         /// </summary>
-        public DNS_QType QType
+        public DNS_RecordType QType
         {
             get{ return m_QType; }
         }
@@ -402,7 +452,7 @@ namespace LumiSoft.Net.DNS.Client
         /// <summary>
         /// Gets DNS server response. Value null means no response received yet.
         /// </summary>
-        public DnsServerResponse? Response
+        public DNS_ServerResponse? Response
         {
             get{ return m_pResponse; }
         }

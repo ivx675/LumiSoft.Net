@@ -16,8 +16,8 @@ namespace LumiSoft.Net.DNS.Client
         /// </summary>
         private class CacheEntry
         {
-            private DnsServerResponse m_pResponse;
-            private DateTime          m_Expires;
+            private DNS_ServerResponse m_pResponse;
+            private DateTime           m_Expires;
 
             /// <summary>
             /// Default constructor.
@@ -25,7 +25,7 @@ namespace LumiSoft.Net.DNS.Client
             /// <param name="response">DNS server response.</param>
             /// <param name="expires">Time when cache entry expires.</param>
             /// <exception cref="ArgumentNullException">Is raised when <b>response</b> is null reference.</exception>
-            public CacheEntry(DnsServerResponse response,DateTime expires)
+            public CacheEntry(DNS_ServerResponse response,DateTime expires)
             {
                 if(response == null){
                     throw new ArgumentNullException("response");
@@ -41,7 +41,7 @@ namespace LumiSoft.Net.DNS.Client
             /// <summary>
             /// Gets DNS server response.
             /// </summary>
-            public DnsServerResponse Response
+            public DNS_ServerResponse Response
             {
                 get{ return m_pResponse; }
             }
@@ -131,7 +131,7 @@ namespace LumiSoft.Net.DNS.Client
 		/// <returns>Returns DNS server cached response or null if no cached result.</returns>
         /// <exception cref="ArgumentNullException">Is raised when <b>qname</b> is null reference.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-		public DnsServerResponse? GetFromCache(string qname,int qtype)
+		public DNS_ServerResponse? GetFromCache(string qname,int qtype)
 		{
             if(qname == null){
                 throw new ArgumentNullException("qname");
@@ -167,7 +167,7 @@ namespace LumiSoft.Net.DNS.Client
 		/// <param name="response">DNS server response.</param>
         /// <exception cref="ArgumentNullException">Is raised when <b>qname</b> or <b>response</b> is null reference.</exception>
         /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-		public void AddToCache(string qname,int qtype,DnsServerResponse response)
+		public void AddToCache(string qname,int qtype,DNS_ServerResponse response)
 		{
             if(qname == null){
                 throw new ArgumentNullException("qname");
@@ -185,10 +185,16 @@ namespace LumiSoft.Net.DNS.Client
 				    m_pCache.Remove(qname + qtype);
 			    }
 
-                if(response.ResponseCode == DNS_RCode.NO_ERROR){
+                if(response.ResponseCode == DNS_ResponseCode.NoError){
                     int ttl = m_MaxCacheTtl;
+
+                    List<DNS_rr> allAnswers = new List<DNS_rr>();
+                    allAnswers.AddRange(response.Answers.All);
+                    allAnswers.AddRange(response.AuthoritiveAnswers.All);
+                    allAnswers.AddRange(response.AdditionalAnswers.All);
+
                     // Search smallest DNS record TTL and use it.
-                    foreach(DNS_rr rr in response.AllAnswers){
+                    foreach(DNS_rr rr in allAnswers){
                         if(rr.TTL < ttl){
                             ttl = rr.TTL;
                         }

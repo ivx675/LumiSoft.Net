@@ -5,17 +5,18 @@ using System.Text;
 namespace LumiSoft.Net.DNS
 {
     /// <summary>
-	/// This enum holds DNS query type. Defined in RFC 1035.
+	/// Defines the DNS type codes used in both query (QTYPE) and resource record
+	/// (TYPE) fields, as specified in RFC 1035 and related extensions.
 	/// </summary>
-	public enum DNS_QType
+	public enum DNS_RecordType
 	{
 		/// <summary>
-		/// IPv4 host address
+		/// IPv4 host address (A record).
 		/// </summary>
 		A = 1,
 
 		/// <summary>
-		/// An authoritative name server.
+		/// Authoritative name server.
 		/// </summary>
 		NS    = 2,  
 
@@ -23,12 +24,12 @@ namespace LumiSoft.Net.DNS
 	//	MF    = 4,  Obsolete
 
 		/// <summary>
-		/// The canonical name for an alias.
+		/// Canonical name for an alias.
 		/// </summary>
 		CNAME = 5,  
 
 		/// <summary>
-		/// Marks the start of a zone of authority.
+		/// Start of a zone of authority.
 		/// </summary>
 		SOA   = 6,  
 
@@ -43,12 +44,12 @@ namespace LumiSoft.Net.DNS
 		WKS   = 11, */
 
 		/// <summary>
-		/// A domain name pointer.
+		/// Domain name pointer.
 		/// </summary>
 		PTR   = 12, 
 
 		/// <summary>
-		/// Host information.
+		/// Host information (CPU and OS).
 		/// </summary>
 		HINFO = 13, 
 /*
@@ -63,7 +64,7 @@ namespace LumiSoft.Net.DNS
 		MX    = 15, 
 
 		/// <summary>
-		/// Text strings.
+		/// Arbitrary text strings.
 		/// </summary>
 		TXT   = 16, 
 
@@ -73,23 +74,18 @@ namespace LumiSoft.Net.DNS
 		AAAA = 28,
 
         /// <summary>
-        /// SRV record specifies the location of services.
-        /// </summary>
+		/// Service location record.
+		/// </summary>
         SRV = 33,
 
         /// <summary>
-        /// NAPTR(Naming Authority Pointer) record.
-        /// </summary>
+		/// Naming Authority Pointer (NAPTR) record.
+		/// </summary>
         NAPTR = 35,
 
         /// <summary>
-        /// SPF(Sender Policy Framework) record.
-        /// </summary>
-        SPF = 99,
-
-        /// <summary>
-        /// All records what server returns.
-        /// </summary>
+		/// Special query type requesting all records the server is willing to return.
+		/// </summary>
         ANY = 255,
 	}
 }

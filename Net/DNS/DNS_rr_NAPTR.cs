@@ -7,7 +7,9 @@ using LumiSoft.Net.DNS.Client;
 namespace LumiSoft.Net.DNS
 {
     /// <summary>
-    /// NAPRT(Naming Authority Pointer) resource record. Defined in RFC 3403.
+    /// DNS NAPTR (Naming Authority Pointer) resource record. Defines rewrite rules used
+    /// for URI, ENUM, and other applications, including order, preference, flags,
+    /// services, a regular expression, and a replacement domain name.
     /// </summary>
     [Serializable]
     public class DNS_rr_NAPTR : DNS_rr
@@ -20,17 +22,19 @@ namespace LumiSoft.Net.DNS
         private string m_Replacement = "";
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the NAPTR (Naming Authority Pointer) resource record,
+        /// defining a rewrite rule consisting of order, preference, flags, services, a regular
+        /// expression, and a replacement domain name as specified in RFC 3403.
         /// </summary>
-        /// <param name="name">DNS domain name that owns a resource record.</param>
-        /// <param name="order">Oorder in which the NAPTR records MUST be processed.</param>
-        /// <param name="preference">Order in which NAPTR records with equal Order values SHOULD be processed.</param>
-        /// <param name="flags">Flags which control the rewriting and interpretation of the fields in the record.</param>
-        /// <param name="services">Services related to this record.</param>
-        /// <param name="regexp">Regular expression that is applied to the original string.</param>
-        /// <param name="replacement">Regular expressions replacement value.</param>
+        /// <param name="name">DNS domain name that owns this resource record.</param>
+        /// <param name="order">Processing order for NAPTR records; lower values are evaluated first.</param>
+        /// <param name="preference">Preference among records with equal order; lower values indicate higher priority.</param>
+        /// <param name="flags">Flags controlling how the rewrite rule is interpreted.</param>
+        /// <param name="services">Service parameters associated with this rule.</param>
+        /// <param name="regexp">Regular expression used to transform the original domain name.</param>
+        /// <param name="replacement">Replacement domain name used when the regular expression is empty.</param>
         /// <param name="ttl">Time to live value in seconds.</param>
-        public DNS_rr_NAPTR(string name,int order,int preference,string flags,string services,string regexp,string replacement,int ttl) : base(name,DNS_QType.NAPTR,ttl)
+        public DNS_rr_NAPTR(string name,int order,int preference,string flags,string services,string regexp,string replacement,int ttl) : base(name,DNS_RecordType.NAPTR,ttl)
         {
             m_Order       = order;
             m_Preference  = preference;
@@ -51,7 +55,7 @@ namespace LumiSoft.Net.DNS
         /// <param name="offset">Current offset in reply data.</param>
         /// <param name="rdLength">Resource record data length.</param>
         /// <param name="ttl">Time to live in seconds.</param>
-        public static DNS_rr_NAPTR Parse(string name,byte[] reply,ref int offset,int rdLength,int ttl)
+        internal static DNS_rr_NAPTR Parse(string name,byte[] reply,ref int offset,int rdLength,int ttl)
         {
             /* RFC 3403.
                 The packet format for the NAPTR record is as follows
@@ -77,16 +81,37 @@ namespace LumiSoft.Net.DNS
 
             int preference = reply[offset++] << 8 | reply[offset++];
 
-            string flags = Dns_Client.ReadCharacterString(reply,ref offset);
+            string flags = DNS_Client.ReadCharacterString(reply,ref offset);
 
-            string services = Dns_Client.ReadCharacterString(reply,ref offset);
+            string services = DNS_Client.ReadCharacterString(reply,ref offset);
 
-            string regexp = Dns_Client.ReadCharacterString(reply,ref offset);
+            string regexp = DNS_Client.ReadCharacterString(reply,ref offset);
             
-            string replacement = "";
-            Dns_Client.GetQName(reply,ref offset,ref replacement);
+            string? replacement = DNS_Client.ReadQName(reply,ref offset);
+            if(replacement == null){
+                throw new ParseException("Invalid NAPTR resource record data.");
+            }
 
             return new DNS_rr_NAPTR(name,order,preference,flags,services,regexp,replacement,ttl);
+        }
+
+        #endregion
+
+
+        #region override method ToString
+
+        /// <summary>
+        /// Returns a textual representation of the NAPTR resource record.
+        /// The format includes the owner name, record type, order, preference,
+        /// flags, services, regular expression, replacement value, and the TTL.
+        /// </summary>
+        /// <returns>
+        /// A string in the form:
+        /// "&lt;name&gt; NAPTR &lt;order&gt; &lt;preference&gt; &lt;flags&gt; &lt;services&gt; &lt;regexp&gt; &lt;replacement&gt; (TTL=&lt;ttl&gt;)".
+        /// </returns>
+        public override string ToString()
+        {
+            return $"{Name} NAPTR {m_Order} {m_Preference} {m_Flags} {m_Services} {m_Regexp} {m_Replacement} (TTL={TTL})";
         }
 
         #endregion
@@ -95,8 +120,8 @@ namespace LumiSoft.Net.DNS
         #region Properties Implementation
 
         /// <summary>
-        /// Gets order in which the NAPTR records MUST be processed in order to accurately 
-        /// represent the ordered list of Rules.
+        /// Gets the order value of this NAPTR resource record. Lower values are processed
+        /// before higher values when evaluating rewrite rules.
         /// </summary>
         public int Order
         {
@@ -104,8 +129,8 @@ namespace LumiSoft.Net.DNS
         }
 
         /// <summary>
-        /// Gets the order in which NAPTR records with equal Order values SHOULD be processed, 
-        /// low numbers being processed before high numbers.
+        /// Gets the preference value of this NAPTR resource record. Among records with
+        /// the same order value, lower preference values indicate higher priority.
         /// </summary>
         public int Preference
         {
@@ -113,7 +138,8 @@ namespace LumiSoft.Net.DNS
         }
 
         /// <summary>
-        /// Gets flags which control the rewriting and interpretation of the fields in the record.
+        /// Gets the flags that control how this NAPTR rewrite rule is interpreted, as
+        /// defined in RFC 3403.
         /// </summary>
         public string Flags
         {
@@ -121,7 +147,8 @@ namespace LumiSoft.Net.DNS
         }
 
         /// <summary>
-        /// Gets services related to this record. Known values can be get from: http://www.iana.org/assignments/enum-services.
+        /// Gets the service parameters associated with this NAPTR rewrite rule, as
+        /// defined in RFC 3403.
         /// </summary>
         public string Services
         {
@@ -129,8 +156,8 @@ namespace LumiSoft.Net.DNS
         }
 
         /// <summary>
-        /// Gets regular expression that is applied to the original string held by the client in order to 
-        /// construct the next domain name to lookup.
+        /// Gets the regular expression used by this NAPTR rewrite rule to transform the
+        /// original domain name, as defined in RFC 3403.
         /// </summary>
         public string Regexp
         {
@@ -138,7 +165,8 @@ namespace LumiSoft.Net.DNS
         }
 
         /// <summary>
-        /// Gets regular expressions replacement value.
+        /// Gets the replacement domain name used by this NAPTR rewrite rule when the
+        /// regular expression field is empty, as defined in RFC 3403.
         /// </summary>
         public string Replacement
         {

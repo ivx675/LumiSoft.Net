@@ -3,21 +3,26 @@ using System;
 namespace LumiSoft.Net.DNS
 {
 	/// <summary>
-	/// This is base class for DNS records.
+	/// Abstract base class for all DNS resource records. Encapsulates the common
+	/// fields shared by every RR type, including the owner name, record type, and
+	/// time‑to‑live (TTL). Specific RR subclasses (A, AAAA, MX, NS, SOA, SRV, TXT,
+	/// etc.) extend this class to provide type‑specific data and behavior.
 	/// </summary>
 	public abstract class DNS_rr
 	{
-        private string    m_Name = "";
-		private DNS_QType m_Type = DNS_QType.A;
-		private int       m_TTL  = -1;
+        private string         m_Name = "";
+		private DNS_RecordType m_Type = DNS_RecordType.A;
+		private int            m_TTL  = -1;
 
 		/// <summary>
-		/// Default constructor.
+		/// Initializes a new DNS resource record with the specified owner name,
+		/// record type, and time‑to‑live (TTL). This constructor is used by all
+		/// derived RR classes to establish the common fields defined in RFC 1035.
 		/// </summary>
-        /// <param name="name">DNS domain name that owns a resource record.</param>
-		/// <param name="recordType">Record type (A,MX, ...).</param>
-		/// <param name="ttl">TTL (time to live) value in seconds.</param>
-		public DNS_rr(string name,DNS_QType recordType,int ttl)
+		/// <param name="name">The domain name that owns this resource record.</param>
+		/// <param name="recordType">The DNS record type (A, AAAA, MX, NS, SRV, TXT, etc.).</param>
+		/// <param name="ttl">Time‑to‑live value in seconds.</param>
+		public DNS_rr(string name,DNS_RecordType recordType,int ttl)
 		{
             m_Name = name;
 			m_Type = recordType;
@@ -28,23 +33,28 @@ namespace LumiSoft.Net.DNS
         #region Properties Implementation
 
         /// <summary>
-        /// Gets DNS domain name that owns a resource record.
-        /// </summary>
+		/// Gets the owner name of this DNS resource record. This is the domain name
+		/// to which the record applies, as defined in RFC 1035.
+		/// </summary>
         public string Name
         {
             get{ return m_Name; }
         }
 
         /// <summary>
-		/// Gets record type (A,MX,...).
+		/// Gets the DNS record type of this resource record. This identifies the
+		/// specific RR format (A, AAAA, MX, NS, SOA, SRV, TXT, etc.) as defined in
+		/// RFC 1035 and related extensions.
 		/// </summary>
-		public DNS_QType RecordType
+		public DNS_RecordType RecordType
 		{
 			get{ return m_Type; }
 		}
 
 		/// <summary>
-		/// Gets TTL (time to live) value in seconds.
+		/// Gets the time‑to‑live (TTL) value of this DNS resource record, expressed
+		/// in seconds. The TTL defines how long the record may be cached by resolvers
+		/// before it must be refreshed, as specified in RFC 1035.
 		/// </summary>
 		public int TTL
 		{

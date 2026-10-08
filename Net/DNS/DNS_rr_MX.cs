@@ -5,8 +5,9 @@ using LumiSoft.Net.DNS.Client;
 namespace LumiSoft.Net.DNS
 {
 	/// <summary>
-	/// MX record class.
-	/// </summary>
+    /// DNS MX (Mail Exchange) resource record. Specifies a mail server responsible
+    /// for accepting email for the domain, together with its preference value.
+    /// </summary>
 	[Serializable]
 	public class DNS_rr_MX : DNS_rr,IComparable
 	{
@@ -14,13 +15,14 @@ namespace LumiSoft.Net.DNS
 		private string m_Host       = "";
 
 		/// <summary>
-		/// Default constructor.
-		/// </summary>
-        /// <param name="name">DNS domain name that owns a resource record.</param>
-		/// <param name="preference">MX record preference.</param>
-		/// <param name="host">Mail host dns name.</param>
-		/// <param name="ttl">TTL value.</param>
-		public DNS_rr_MX(string name,int preference,string host,int ttl) : base(name,DNS_QType.MX,ttl)
+        /// Initializes a new instance of the MX resource record, defining a mail exchange
+        /// host and its preference value for the specified domain.
+        /// </summary>
+        /// <param name="name">DNS domain name that owns this resource record.</param>
+        /// <param name="preference">Preference value; lower numbers indicate higher priority.</param>
+        /// <param name="host">Mail exchange host name.</param>
+        /// <param name="ttl">Time to live value in seconds.</param>
+		public DNS_rr_MX(string name,int preference,string host,int ttl) : base(name,DNS_RecordType.MX,ttl)
 		{
 			m_Preference = preference;
 			m_Host       = host;
@@ -37,7 +39,7 @@ namespace LumiSoft.Net.DNS
         /// <param name="offset">Current offset in reply data.</param>
         /// <param name="rdLength">Resource record data length.</param>
         /// <param name="ttl">Time to live in seconds.</param>
-        public static DNS_rr_MX Parse(string name,byte[] reply,ref int offset,int rdLength,int ttl)
+        internal static DNS_rr_MX Parse(string name,byte[] reply,ref int offset,int rdLength,int ttl)
         {
             /* RFC 1035	3.3.9. MX RDATA format
 
@@ -61,18 +63,35 @@ namespace LumiSoft.Net.DNS
 			*/
 
 			int pref = reply[offset++] << 8 | reply[offset++];
-		
-			string server = "";			
-			if(Dns_Client.GetQName(reply,ref offset,ref server)){
-				return new DNS_rr_MX(name,pref,server,ttl);
-			}
+		    
+            string? host = DNS_Client.ReadQName(reply,ref offset);
+            if(host != null){
+                return new DNS_rr_MX(name,pref,host,ttl);
+            }
             else{
-                throw new ArgumentException("Invalid MX resource record data !");
+                throw new ParseException("Invalid MX resource record data.");
             }
         }
 
         #endregion
 
+
+        #region override method ToString
+
+        /// <summary>
+        /// Returns a textual representation of the MX resource record.
+        /// The format includes the owner name, record type, preference value,
+        /// mail exchange host, and the TTL value.
+        /// </summary>
+        /// <returns>
+        /// A string in the form: "&lt;name&gt; MX &lt;preference&gt; &lt;host&gt; (TTL=&lt;ttl&gt;)".
+        /// </returns>
+        public override string ToString()
+		{
+			return $"{Name} MX {m_Preference} {m_Host} (TTL={TTL})";
+		}
+
+        #endregion
 
         #region IComparable Implementation
 
@@ -109,16 +128,17 @@ namespace LumiSoft.Net.DNS
         #region Properties Implementation
 
         /// <summary>
-		/// Gets MX record preference. The lower number is the higher priority server.
-		/// </summary>
+        /// Gets the preference value of this MX resource record. Lower values indicate
+        /// higher priority when selecting a mail server for the domain.
+        /// </summary>
 		public int Preference
 		{
 			get{ return m_Preference; }
 		}
 
 		/// <summary>
-		/// Gets mail host dns name.
-		/// </summary>
+        /// Gets the mail exchange host specified by this MX resource record.
+        /// </summary>
 		public string Host
 		{
 			get{ return m_Host; }
