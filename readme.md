@@ -32,7 +32,7 @@ A cross‑platform .NET networking library providing **client and server compone
 
 ## Version History
 
-### 10.3.0 (xx.09.2026)
+### 10.3.0 (08.10.2026)
 
 #### SMTP Server
 - Complete rewrite with fully modern async/await implementation 
