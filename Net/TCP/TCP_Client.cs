@@ -1545,16 +1545,11 @@ namespace LumiSoft.Net.TCP
         /// <returns>Returns readed line.</returns>
         protected string? ReadLine()
         {
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
-
-            SmartStream.ReadLineAsyncOP args = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-            this.TcpStream.ReadLine(args,false);
-            if(args.Error != null){
-                throw args.Error;
-            }
-            string? line = args.LineUtf8;
-            if(args.BytesInBuffer > 0){
-                LogAddRead(args.BytesInBuffer,line!);
+            var readLineResult = this.TcpStream.ReadLine(new byte[32000],SizeExceededAction.JunkAndThrowException);
+            
+            string? line = readLineResult.LineUtf8;
+            if(readLineResult.BytesInBuffer > 0){
+                LogAddRead(readLineResult.BytesInBuffer,line!);
             }
             else{
                 LogAddText("Remote host closed connection.");

@@ -113,36 +113,32 @@ namespace LumiSoft.Net.IO
                 throw new NotSupportedException();
             }
 
+            var lineBuffer = new byte[32000];
             while(true){
                 // Read next quoted-printable line and decode it.
                 if(m_DecodedOffset >= m_DecodedCount){
                     m_DecodedOffset = 0;
                     m_DecodedCount  = 0;
-                    SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.ThrowException);
-                    m_pStream.ReadLine(readLineOP,false);
-                    // IO error reading line.
-                    if(readLineOP.Error != null){
-                        throw readLineOP.Error;
-                    }
+                    var readLineResult = m_pStream.ReadLine(lineBuffer,SizeExceededAction.ThrowException);
                     // We reached end of stream.
-                    else if(readLineOP.BytesInBuffer == 0){
+                    if(readLineResult.BytesInBuffer == 0){
                         return 0;
                     }
                     // Decode quoted-printable line.
                     else{
                         // Process bytes.
                         bool softLineBreak = false;
-                        int lineLength     = readLineOP.LineBytesInBuffer;
-                        for(int i=0;i<readLineOP.LineBytesInBuffer;i++){
-                            byte b = readLineOP.Buffer[i];
+                        int lineLength     = readLineResult.LineBytesInBuffer;
+                        for(int i=0;i<readLineResult.LineBytesInBuffer;i++){
+                            byte b = lineBuffer[i];
                             // We have soft line-break.
                             if(b == '=' && i == (lineLength - 1)){
                                 softLineBreak = true;
                             }
                             // We should have =XX hex-byte.
                             else if(b == '='){
-                                byte b1 = readLineOP.Buffer[++i];
-                                byte b2 = readLineOP.Buffer[++i];
+                                byte b1 = lineBuffer[++i];
+                                byte b2 = lineBuffer[++i];
                         
                                 byte b3 = 0;
                                 if(byte.TryParse(new string(new char[]{(char)b1,(char)b2}),System.Globalization.NumberStyles.HexNumber,null,out b3)){
@@ -162,7 +158,7 @@ namespace LumiSoft.Net.IO
                         }
 
                         // Add hard line break only if there was one in original data.
-                        if(readLineOP.LineBytesInBuffer != readLineOP.BytesInBuffer && !softLineBreak){
+                        if(readLineResult.LineBytesInBuffer != readLineResult.BytesInBuffer && !softLineBreak){
                             m_pDecodedBuffer[m_DecodedCount++] = (byte)'\r';
                             m_pDecodedBuffer[m_DecodedCount++] = (byte)'\n';
                         }

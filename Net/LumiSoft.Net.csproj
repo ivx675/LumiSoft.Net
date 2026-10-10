@@ -10,8 +10,8 @@
     <Description>LumiSoft.Net is a cross‑platform .NET networking library providing full client and server implementations for SMTP, POP3, IMAP, and FTP, plus client‑only components for DNS,SMIME, MIME, WebDav, STUN, and UPnP.</Description>
     <AssemblyVersion></AssemblyVersion>
     <FileVersion></FileVersion>
-    <InformationalVersion>10.2.0</InformationalVersion>
-    <VersionPrefix>10.2.0</VersionPrefix>
+    <InformationalVersion>10.3.0</InformationalVersion>
+    <VersionPrefix>10.3.0</VersionPrefix>
     <PackageLicenseFile>license.txt</PackageLicenseFile>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>LumiSoft.Net.dll</PackageId>
@@ -22,20 +22,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="ABNF\ABFN.cs" />
-    <Compile Remove="ABNF\ABFN_Group.cs" />
-    <Compile Remove="ABNF\ABNF_Alternation.cs" />
-    <Compile Remove="ABNF\ABNF_BinVal.cs" />
-    <Compile Remove="ABNF\ABNF_CharVal.cs" />
-    <Compile Remove="ABNF\ABNF_Concatenation.cs" />
-    <Compile Remove="ABNF\ABNF_DecVal.cs" />
-    <Compile Remove="ABNF\ABNF_Element.cs" />
-    <Compile Remove="ABNF\ABNF_HexVal.cs" />
-    <Compile Remove="ABNF\ABNF_Option.cs" />
-    <Compile Remove="ABNF\ABNF_ProseVal.cs" />
-    <Compile Remove="ABNF\ABNF_Repetition.cs" />
-    <Compile Remove="ABNF\ABNF_Rule.cs" />
-    <Compile Remove="ABNF\ABNF_RuleName.cs" />
     <Compile Remove="Media\Codec\Audio\ILBC.cs" />
     <Compile Remove="POP3\Server\AuthUser_EventArgs.cs" />
     <Compile Remove="RTP\Debug\wfrm_RTP_Debug.cs" />
@@ -52,20 +38,6 @@
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
-    <None Include="ABNF\ABFN.cs" />
-    <None Include="ABNF\ABFN_Group.cs" />
-    <None Include="ABNF\ABNF_Alternation.cs" />
-    <None Include="ABNF\ABNF_BinVal.cs" />
-    <None Include="ABNF\ABNF_CharVal.cs" />
-    <None Include="ABNF\ABNF_Concatenation.cs" />
-    <None Include="ABNF\ABNF_DecVal.cs" />
-    <None Include="ABNF\ABNF_Element.cs" />
-    <None Include="ABNF\ABNF_HexVal.cs" />
-    <None Include="ABNF\ABNF_Option.cs" />
-    <None Include="ABNF\ABNF_ProseVal.cs" />
-    <None Include="ABNF\ABNF_Repetition.cs" />
-    <None Include="ABNF\ABNF_Rule.cs" />
-    <None Include="ABNF\ABNF_RuleName.cs" />
     <None Include="Media\Codec\Audio\ILBC.cs" />
     <None Include="RTP\Debug\wfrm_RTP_Debug.cs" />
     <None Include="SIP\Debug\wfrm_SIP_Debug.cs" />

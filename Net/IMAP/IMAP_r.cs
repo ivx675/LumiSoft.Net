@@ -21,7 +21,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns>Returns this as string.</returns>
         public virtual string ToString(IMAP_Mailbox_Encoding encoding)
         {
-            return "IMAP_r.ToString()";
+            return ToString() ?? "";
         }
 
         #endregion
@@ -64,7 +64,6 @@ namespace LumiSoft.Net.IMAP
             if(session == null){
                 throw new ArgumentNullException("session");
             }
-            ArgumentNullException.ThrowIfNull(session.TcpStream);
 
             return ToStreamAsync(session,session.TcpStream,session.MailboxEncoding,completedAsyncCallback);
         }

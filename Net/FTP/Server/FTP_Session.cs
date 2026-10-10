@@ -1,16 +1,10 @@
-using System;
-using System.Collections.Generic;
-using System.Text;
-using System.IO;
+using LumiSoft.Net.AUTH;
+using LumiSoft.Net.IO;
+using LumiSoft.Net.TCP;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Principal;
-using System.Data;
-using System.Globalization;
-
-using LumiSoft.Net.IO;
-using LumiSoft.Net.TCP;
-using LumiSoft.Net.AUTH;
+using System.Text;
 
 namespace LumiSoft.Net.FTP.Server
 {
@@ -282,33 +276,7 @@ namespace LumiSoft.Net.FTP.Server
         /// </summary>
         protected override void Start()
         {
-            base.Start();
-            
-            try{
-                string reply;
-                if(string.IsNullOrEmpty(this.Server.GreetingText)){
-                    reply = "220 [" + Net_Utils.GetLocalHostName(this.LocalHostName) + "] FTP Service Ready.";
-                }
-                else{
-                    reply = "220 " + this.Server.GreetingText;
-                }
-
-                FTP_e_Started e = OnStarted(reply);
-
-                if(!string.IsNullOrEmpty(e.Response)){
-                    WriteLine(reply.ToString());
-                }
-
-                // Setup rejected flag, so we respond "-ERR Session rejected." any command except QUIT.
-                if(string.IsNullOrEmpty(e.Response) || e.Response.ToUpper().StartsWith("500")){
-                    m_SessionRejected = true;
-                }
-                               
-                BeginReadCmd();
-            }
-            catch(Exception x){
-                OnError(x);
-            }
+            RunAsync();
         }
 
         #endregion
@@ -384,31 +352,161 @@ namespace LumiSoft.Net.FTP.Server
         #endregion
 
 
-        #region method BeginReadCmd
+        #region method RunAsync
 
-        /// <summary>
-        /// Starts reading incoming command from the connected client.
-        /// </summary>
-        private void BeginReadCmd()
+        internal async void RunAsync()
         {
-            if(this.IsDisposed){
-                return;
-            }
+            /* RFC 1939 4.
+                Once the TCP connection has been opened by a POP3 client, the POP3
+                server issues a one line greeting.  This can be any positive
+                response.  An example might be:
+
+                    S:  +OK POP3 server ready
+            */
 
             try{
-                ArgumentNullException.ThrowIfNull(this.TcpStream);
+                string reply;
+                if(string.IsNullOrEmpty(this.Server.GreetingText)){
+                    reply = "220 [" + Net_Utils.GetLocalHostName(this.LocalHostName) + "] FTP Service Ready.";
+                }
+                else{
+                    reply = "220 " + this.Server.GreetingText;
+                }
 
-                SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                // This event is raised only when read next coomand completes asynchronously.
-                readLineOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadLineAsyncOP>>(delegate(object? sender,EventArgs<SmartStream.ReadLineAsyncOP> e){                
-                    if(ProcessCmd(readLineOP)){
-                        BeginReadCmd();
-                    }
-                });
-                // Process incoming commands while, command reading completes synchronously.
-                while(this.TcpStream.ReadLine(readLineOP,true)){
-                    if(!ProcessCmd(readLineOP)){
+                FTP_e_Started e = OnStarted(reply);
+
+                if(!string.IsNullOrEmpty(e.Response)){
+                    WriteLine(reply.ToString());
+                }
+
+                // Setup rejected flag, so we respond "-ERR Session rejected." any command except QUIT.
+                if(string.IsNullOrEmpty(e.Response) || e.Response.ToUpper().StartsWith("500")){
+                    m_SessionRejected = true;
+                }
+
+                // Command loop, while QUIT or fatal error happens.
+                while(!this.IsDisposed){
+                    // Read command line.
+                    ReadLineResult readLineResult = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    // Server closed connection.
+                    if(readLineResult.BytesInBuffer == 0){
+                        LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' closed connection.");
+                        Dispose();
+
                         break;
+                    }                    
+                    string line = readLineResult.LineUtf8 ?? "";
+
+                    string[] cmd_args = line.Split(new char[]{' '},2);
+                    string   cmd      = cmd_args[0].ToUpperInvariant();
+                    string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
+
+                    // Log.
+                    if(this.Server.Logger != null){
+                        // Hide password from log.
+                        if(cmd == "PASS"){
+                            this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,"PASS <***REMOVED***>",this.LocalEndPoint,this.RemoteEndPoint);
+                        }
+                        else{
+                            this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,line,this.LocalEndPoint,this.RemoteEndPoint);
+                        }
+                    }
+
+                    if(cmd == "AUTH"){
+                        AUTH(args);
+                    }
+                    else if(cmd == "USER"){
+                        USER(args);
+                    }
+                    else if(cmd == "PASS"){
+                        PASS(args);
+                    }
+                    else if(cmd == "CWD" || cmd == "XCWD"){
+                        CWD(args);
+                    }
+                    else if(cmd == "CDUP" || cmd == "XCUP"){
+                        CDUP(args);
+                    }
+                    else if(cmd == "PWD" || cmd == "XPWD"){
+                        PWD(args);
+                    }
+                    else if(cmd == "ABOR"){
+                        ABOR(args);
+                    }
+                    else if(cmd == "RETR"){
+                        RETR(args);
+                    }
+                    else if(cmd == "STOR"){
+                        STOR(args);
+                    }
+                    else if(cmd == "DELE"){
+                        DELE(args);
+                    }
+                    else if(cmd == "APPE"){
+                        APPE(args);
+                    }
+                    else if(cmd == "SIZE"){
+                        SIZE(args);
+                    }
+                    else if(cmd == "RNFR"){
+                        RNFR(args);
+                    }
+                    else if(cmd == "DELE"){
+                        DELE(args);
+                    }
+                    else if(cmd == "RNTO"){
+                        RNTO(args);
+                    }
+                    else if(cmd == "RMD" || cmd == "XRMD"){
+                        RMD(args);
+                    }
+                    else if(cmd == "MKD" || cmd == "XMKD"){
+                        MKD(args);
+                    }
+                    else if(cmd == "LIST"){
+                        LIST(args);
+                    }
+                    else if(cmd == "NLST"){
+                        NLST(args);
+                    }
+                    else if(cmd == "TYPE"){
+                        TYPE(args);
+                    }
+                    else if(cmd == "PORT"){
+                        PORT(args);
+                    }
+                    else if(cmd == "PASV"){
+                        PASV(args);
+                    }
+                    else if(cmd == "SYST"){
+                        SYST(args);
+                    }
+                    else if(cmd == "NOOP"){
+                        NOOP(args);
+                    }
+                    else if(cmd == "QUIT"){
+                        QUIT(args);
+                        
+                        break;
+                    }
+                    else if(cmd == "FEAT"){
+                        FEAT(args);
+                    }
+                    else if(cmd == "OPTS"){
+                        OPTS(args);
+                    }
+                    else{
+                        m_BadCommands++;
+
+                        // Maximum allowed bad commands exceeded.
+                        if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
+                            WriteLine("500 Too many bad commands, closing transmission channel.");
+                            Disconnect();
+
+                            return;
+                        }
+                            
+                        WriteLine("500 Error: command '" + cmd + "' not recognized.");
                     }
                 }
             }
@@ -419,153 +517,6 @@ namespace LumiSoft.Net.FTP.Server
 
         #endregion
 
-        #region method ProcessCmd
-
-        /// <summary>
-        /// Completes command reading operation.
-        /// </summary>
-        /// <param name="op">Operation.</param>
-        /// <returns>Returns true if server should start reading next command.</returns>
-        private bool ProcessCmd(SmartStream.ReadLineAsyncOP op)
-        {
-            bool readNextCommand = true;
-                        
-            try{
-                // We are already disposed.
-                if(this.IsDisposed){
-                    return false;
-                }
-                // Check errors.
-                if(op.Error != null){
-                    OnError(op.Error);
-                }
-                // Remote host shut-down(Socket.ShutDown) socket.
-                if(op.BytesInBuffer == 0){
-                    LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' shut down socket.");
-                    Dispose();
-                
-                    return false;
-                }
-                                
-                string[] cmd_args = Encoding.UTF8.GetString(op.Buffer,0,op.LineBytesInBuffer).Split(new char[]{' '},2);
-                string   cmd      = cmd_args[0].ToUpperInvariant();
-                string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
-
-                // Log.
-                if(this.Server.Logger != null){
-                    // Hide password from log.
-                    if(cmd == "PASS"){
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,"PASS <***REMOVED***>",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-                    else{
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,op.LineUtf8 ?? "",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-                }
-
-                if(cmd == "AUTH"){
-                    AUTH(args);
-                }
-                else if(cmd == "USER"){
-                    USER(args);
-                }
-                else if(cmd == "PASS"){
-                    PASS(args);
-                }
-                else if(cmd == "CWD" || cmd == "XCWD"){
-                    CWD(args);
-                }
-                else if(cmd == "CDUP" || cmd == "XCUP"){
-                    CDUP(args);
-                }
-                else if(cmd == "PWD" || cmd == "XPWD"){
-                    PWD(args);
-                }
-                else if(cmd == "ABOR"){
-                    ABOR(args);
-                }
-                else if(cmd == "RETR"){
-                    RETR(args);
-                }
-                else if(cmd == "STOR"){
-                    STOR(args);
-                }
-                else if(cmd == "DELE"){
-                    DELE(args);
-                }
-                else if(cmd == "APPE"){
-                    APPE(args);
-                }
-                else if(cmd == "SIZE"){
-                    SIZE(args);
-                }
-                else if(cmd == "RNFR"){
-                    RNFR(args);
-                }
-                else if(cmd == "DELE"){
-                    DELE(args);
-                }
-                else if(cmd == "RNTO"){
-                    RNTO(args);
-                }
-                else if(cmd == "RMD" || cmd == "XRMD"){
-                    RMD(args);
-                }
-                else if(cmd == "MKD" || cmd == "XMKD"){
-                    MKD(args);
-                }
-                else if(cmd == "LIST"){
-                    LIST(args);
-                }
-                else if(cmd == "NLST"){
-                    NLST(args);
-                }
-                else if(cmd == "TYPE"){
-                    TYPE(args);
-                }
-                else if(cmd == "PORT"){
-                    PORT(args);
-                }
-                else if(cmd == "PASV"){
-                    PASV(args);
-                }
-                else if(cmd == "SYST"){
-                    SYST(args);
-                }
-                else if(cmd == "NOOP"){
-                    NOOP(args);
-                }
-                else if(cmd == "QUIT"){
-                    QUIT(args);
-                    readNextCommand = false;
-                }
-                else if(cmd == "FEAT"){
-                    FEAT(args);
-                }
-                else if(cmd == "OPTS"){
-                    OPTS(args);
-                }
-                else{
-                     m_BadCommands++;
-
-                     // Maximum allowed bad commands exceeded.
-                     if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
-                         WriteLine("500 Too many bad commands, closing transmission channel.");
-                         Disconnect();
-
-                         return false;
-                     }
-                            
-                     WriteLine("500 Error: command '" + cmd + "' not recognized.");
-                 }
-             }
-             catch(Exception x){
-                 OnError(x);
-             }
-
-             return readNextCommand;
-        }
-
-        #endregion
 
         #region method AUTH
 

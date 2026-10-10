@@ -114,7 +114,7 @@ namespace LumiSoft.Net.SIP.Stack
                 Dispose();
             });
 
-            BeginReadHeader();
+            _= ReadMessageLoopAsync();
         }
 
 
@@ -240,7 +240,7 @@ namespace LumiSoft.Net.SIP.Stack
 
                             m_pTcpSession = client;
 
-                            BeginReadHeader();
+                            _= ReadMessageLoopAsync();
                         }
                         catch{
                             Dispose();
@@ -297,136 +297,84 @@ namespace LumiSoft.Net.SIP.Stack
         #endregion
 
 
-        #region method BeginReadHeader
+        #region method ReadMessageLoopAsync
 
-        /// <summary>
-        /// Starts reading SIP message header.
-        /// </summary>
-        private void BeginReadHeader()
-        {   
-            ArgumentNullException.ThrowIfNull(m_pMessage);
-            ArgumentNullException.ThrowIfNull(m_pStack);
-            ArgumentNullException.ThrowIfNull(m_pTcpSession);
-            ArgumentNullException.ThrowIfNull(m_pTcpSession.TcpStream);
-
-            // Clear old data.
-            m_pMessage.SetLength(0);
-
-            // Start reading SIP message header.
-            m_pTcpSession.TcpStream.BeginReadHeader(
-                m_pMessage,
-                m_pStack.MaximumMessageSize,
-                SizeExceededAction.JunkAndThrowException,
-                new AsyncCallback(this.BeginReadHeader_Completed),
-                null
-            );
-        }
-
-        #endregion
-
-        #region method BeginReadHeader_Completed
-
-        /// <summary>
-        /// This method is called when SIP message header reading has completed.
-        /// </summary>
-        /// <param name="asyncResult">An IAsyncResult that represents an asynchronous call.</param>
-        private void BeginReadHeader_Completed(IAsyncResult asyncResult)
-        {   
-            ArgumentNullException.ThrowIfNull(m_pStack);
-            ArgumentNullException.ThrowIfNull(m_pTcpSession);
-            ArgumentNullException.ThrowIfNull(m_pTcpSession.TcpStream);
-            ArgumentNullException.ThrowIfNull(m_pMessage);
-
-            try {
-                int countStored = m_pTcpSession.TcpStream.EndReadHeader(asyncResult);
-      
-                // We got CRLF(ping or pong).
-                if(countStored == 0){ 
-                    // We have ping request.
-                    if(this.IsServer){
-                        // We have full ping request.
-                        if(m_LastCRLF){
-                            m_LastCRLF = false;
-
-                            m_pStack.TransportLayer.OnMessageReceived(this,new byte[]{(byte)'\r',(byte)'\n',(byte)'\r',(byte)'\n'});
-                        }
-                        // We have first CRLF of ping request.
-                        else{
-                            m_LastCRLF = true;
-                        }
-                    }
-                    // We got pong to our ping request.
-                    else{
-                        m_pStack.TransportLayer.OnMessageReceived(this,new byte[]{(byte)'\r',(byte)'\n'});
-                    }
-
-                    // Wait for new SIP message. 
-                    BeginReadHeader();
-                }
-                // We have SIP message header.
-                else{
-                    m_LastCRLF = false;
-
-                    // Add header terminator blank line.
-                    m_pMessage.Write(new byte[]{(byte)'\r',(byte)'\n'},0,2);
-
-                    m_pMessage.Position = 0;
-                    string contentLengthValue = LumiSoft.Net.MIME.MIME_Utils.ParseHeaderField("Content-Length:",m_pMessage);
-                    m_pMessage.Position = m_pMessage.Length;
-
-                    int contentLength = 0;
-
-                    // Read message body.
-                    if(contentLengthValue != ""){
-                        contentLength = Convert.ToInt32(contentLengthValue);
-                    }
-
-                    // Start reading message body.
-                    if(contentLength > 0){
-                        // Read body data.
-                        m_pTcpSession.TcpStream.BeginReadFixedCount(m_pMessage,contentLength,new AsyncCallback(this.BeginReadData_Completed),null);
-                    }
-                    // Message with no body.
-                    else{
-                        byte[] messageData = m_pMessage.ToArray();
-                        // Wait for new SIP message. 
-                        BeginReadHeader();
-                        
-                        m_pStack.TransportLayer.OnMessageReceived(this,messageData);
-                    }
-                }
-            }
-            catch{
-                Dispose();
-            }
-        }
-
-        #endregion
-
-        #region method BeginReadData_Completed
-
-        /// <summary>
-        /// This method is called when SIP message data reading has completed.
-        /// </summary>
-        /// <param name="asyncResult">An IAsyncResult that represents an asynchronous call.</param>
-        private void BeginReadData_Completed(IAsyncResult asyncResult)
+        private async Task ReadMessageLoopAsync()
         {
+            ArgumentNullException.ThrowIfNull(m_pMessage);
             ArgumentNullException.ThrowIfNull(m_pStack);
             ArgumentNullException.ThrowIfNull(m_pTcpSession);
             ArgumentNullException.ThrowIfNull(m_pTcpSession.TcpStream);
-            ArgumentNullException.ThrowIfNull(m_pMessage);
 
-            try {
-                m_pTcpSession.TcpStream.EndReadFixedCount(asyncResult);
+            while(!m_IsDisposed){
+                try{
+                    m_pMessage.SetLength(0);
 
-                byte[] messageData = m_pMessage.ToArray();
-                // Wait for new SIP message. 
-                BeginReadHeader();
+                    int countStored =  await m_pTcpSession.TcpStream.ReadHeaderAsync(
+                        m_pMessage,
+                        m_pStack.MaximumMessageSize,
+                        8000,
+                        SizeExceededAction.JunkAndThrowException
+                    );
+                          
+                    // We got CRLF(ping or pong).
+                    if(countStored == 0){ 
+                        // We have ping request.
+                        if(this.IsServer){
+                            // We have full ping request.
+                            if(m_LastCRLF){
+                                m_LastCRLF = false;
 
-                m_pStack.TransportLayer.OnMessageReceived(this,messageData);
-            }
-            catch{
-                Dispose();
+                                m_pStack.TransportLayer.OnMessageReceived(this,new byte[]{(byte)'\r',(byte)'\n',(byte)'\r',(byte)'\n'});
+                            }
+                            // We have first CRLF of ping request.
+                            else{
+                                m_LastCRLF = true;
+                            }
+                        }
+                        // We got pong to our ping request.
+                        else{
+                            m_pStack.TransportLayer.OnMessageReceived(this,new byte[]{(byte)'\r',(byte)'\n'});
+                        }
+                    }
+                    // We have SIP message header.
+                    else{
+                        m_LastCRLF = false;
+
+                        // Add header terminator blank line.
+                        m_pMessage.Write(new byte[]{(byte)'\r',(byte)'\n'},0,2);
+
+                        m_pMessage.Position = 0;
+                        string contentLengthValue = LumiSoft.Net.MIME.MIME_Utils.ParseHeaderField("Content-Length:",m_pMessage);
+                        m_pMessage.Position = m_pMessage.Length;
+
+                        int contentLength = 0;
+
+                        // Read message body.
+                        if(contentLengthValue != ""){
+                            contentLength = Convert.ToInt32(contentLengthValue);
+                        }
+
+                        // Start reading message body.
+                        if(contentLength > 0){
+                            // Read body data.
+                            await m_pTcpSession.TcpStream.ReadFixedCountAsync(m_pMessage,contentLength);
+
+                            byte[] messageData = m_pMessage.ToArray();
+
+                            m_pStack.TransportLayer.OnMessageReceived(this,messageData);
+                        }
+                        // Message with no body.
+                        else{
+                            byte[] messageData = m_pMessage.ToArray();
+                        
+                            m_pStack.TransportLayer.OnMessageReceived(this,messageData);
+                        }
+                    }
+                }
+                catch{
+                    Dispose();
+                }
             }
         }
 

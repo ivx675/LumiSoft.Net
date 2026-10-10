@@ -726,13 +726,10 @@ namespace LumiSoft.Net.FTP.Client
                 ms.Position = 0;
                 SmartStream mlsdStream = new SmartStream(ms,true);
                 while(true){
-                    SmartStream.ReadLineAsyncOP args = new SmartStream.ReadLineAsyncOP(lineBuffer,SizeExceededAction.JunkAndThrowException);
-                    mlsdStream.ReadLine(args,false);
-                    if(args.Error != null){
-                        throw args.Error;
-                    }
-                    string line = args.LineUtf8 ?? string.Empty;
-
+                    var readLineResult = mlsdStream.ReadLine(lineBuffer,SizeExceededAction.JunkAndThrowException);
+                    
+                    string line = readLineResult.LineUtf8 ?? string.Empty;
+                    
                     // We reached end of stream, we readed whole list sucessfully.
                     if(line == null){
                         break;
@@ -801,16 +798,13 @@ namespace LumiSoft.Net.FTP.Client
                 string[] winDateFormats = new string[]{"M-d-yy h:mmtt","MM-dd-yy HH:mm"};
                 string[] unixFormats    = new string[]{"MMM d H:mm","MMM d yyyy"};
 
-                SmartStream.ReadLineAsyncOP args = new SmartStream.ReadLineAsyncOP(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                byte[] lineBuffer = new byte[8000];
                 while(true){
-                    listStream.ReadLine(args,false);
-                    if(args.Error != null){
-                        throw args.Error;
-                    }
-                    else if(args.BytesInBuffer == 0){
+                    var readLineResult = listStream.ReadLine(lineBuffer,SizeExceededAction.JunkAndThrowException);
+                    if(readLineResult.BytesInBuffer == 0){
                         break;
                     }
-                    string line = args.LineUtf8 ?? string.Empty;
+                    string line = readLineResult.LineUtf8 ?? string.Empty;
 
                     // Dedect listing.
                     string listingType = "unix";                    

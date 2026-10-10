@@ -1,15 +1,16 @@
-﻿using System;
+﻿using LumiSoft.Net.AUTH;
+using LumiSoft.Net.IO;
+using LumiSoft.Net.Mail;
+using LumiSoft.Net.MIME;
+using LumiSoft.Net.POP3;
+using LumiSoft.Net.POP3.Server;
+using LumiSoft.Net.TCP;
+using System;
 using System.Collections.Generic;
-using System.Text;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Principal;
-
-using LumiSoft.Net.IO;
-using LumiSoft.Net.TCP;
-using LumiSoft.Net.AUTH;
-using LumiSoft.Net.MIME;
-using LumiSoft.Net.Mail;
+using System.Text;
 
 namespace LumiSoft.Net.IMAP.Server
 {
@@ -258,7 +259,7 @@ namespace LumiSoft.Net.IMAP.Server
                     // Add initial command line part to command text.
                     cmdText.Append(RemoveLiteralSpecifier(m_InitialCmdLine));
 
-                    SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
+                    byte[] lineBuffer = new byte[64000];
                     while(m_MaxLiteralCount > m_LiteralCount){
                         #region Read literal string
 
@@ -284,33 +285,27 @@ namespace LumiSoft.Net.IMAP.Server
                         #region Read continuing command text
 
                         // Read continuing command text.
-                        m_pSession.TcpStream.ReadLine(readLineOP,false);
+                        var readLineResult = m_pSession.TcpStream.ReadLine(lineBuffer,SizeExceededAction.JunkAndThrowException);
 
-                        // We have error.
-                        if(readLineOP.Error != null){
-                            throw readLineOP.Error;
+                        string line = readLineResult.LineUtf8 ?? string.Empty;
+
+                        // Log
+                        m_pSession.LogAddRead(readLineResult.BytesInBuffer,line);
+
+                        // Add command line part to command text.
+                        if(EndsWithLiteralString(line)){
+                            cmdText.Append(RemoveLiteralSpecifier(line));
                         }
                         else{
-                            string line = readLineOP.LineUtf8 ?? string.Empty;
+                            cmdText.Append(line);
+                        }
 
-                            // Log
-                            m_pSession.LogAddRead(readLineOP.BytesInBuffer,line);
-
-                            // Add command line part to command text.
-                            if(EndsWithLiteralString(line)){
-                                cmdText.Append(RemoveLiteralSpecifier(line));
-                            }
-                            else{
-                                cmdText.Append(line);
-                            }
-
-                            // No more literal string, we are done.
-                            if(!EndsWithLiteralString(line)){
-                                break;
-                            }
-                            else{
-                                literalSize = GetLiteralSize(line);
-                            }
+                        // No more literal string, we are done.
+                        if(!EndsWithLiteralString(line)){
+                            break;
+                        }
+                        else{
+                            literalSize = GetLiteralSize(line);
                         }
 
                         #endregion
@@ -724,44 +719,7 @@ namespace LumiSoft.Net.IMAP.Server
         /// </summary>
         protected override void Start()
         {
-            base.Start();
-
-            /* RFC 3501 7.1.1. Greeting text.
-                The untagged form is also used as one of three possible greetings
-                at connection startup.  It indicates that the connection is not
-                yet authenticated and that a LOGIN command is needed.
-
-                Example:    S: * OK IMAP4rev1 server ready
-                            C: A001 LOGIN fred blurdybloop
-                            S: * OK [ALERT] System shutdown in 10 minutes
-                            S: A001 OK LOGIN Completed
-            */
-      
-            try{
-                IMAP_r_u_ServerStatus? response = null;
-                if(string.IsNullOrEmpty(this.Server.GreetingText)){
-                    response = new IMAP_r_u_ServerStatus("OK","<" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> IMAP4rev1 server ready.");
-                }
-                else{
-                    response = new IMAP_r_u_ServerStatus("OK",this.Server.GreetingText);
-                }
-                
-                IMAP_e_Started e = OnStarted(response);
-
-                if(e.Response != null){
-                    m_pResponseSender.SendResponseAsync(e.Response);
-                }
-
-                // Setup rejected flag, so we respond "* NO Session rejected." any command except LOGOUT.
-                if(e.Response == null || e.Response.ResponseCode.Equals("NO",StringComparison.InvariantCultureIgnoreCase)){
-                    m_SessionRejected = true;
-                }
-                               
-                BeginReadCmd();
-            }
-            catch(Exception x){
-                OnError(x);
-            }
+            RunAsync();
         }
 
         #endregion
@@ -836,226 +794,210 @@ namespace LumiSoft.Net.IMAP.Server
         #endregion
 
 
-        #region method BeginReadCmd
+        #region method RunAsync
 
-        /// <summary>
-        /// Starts reading incoming command from the connected client.
-        /// </summary>
-        private void BeginReadCmd()
+        internal async void RunAsync()
         {
-            if(this.IsDisposed){
-                return;
-            }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
+            /* RFC 3501 7.1.1. Greeting text.
+                The untagged form is also used as one of three possible greetings
+                at connection startup.  It indicates that the connection is not
+                yet authenticated and that a LOGIN command is needed.
 
-            try {
-                SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                // This event is raised only when read next command completes asynchronously.
-                readLineOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadLineAsyncOP>>(delegate(object? sender,EventArgs<SmartStream.ReadLineAsyncOP> e){                
-                    if(ProcessCmd(readLineOP)){
-                        BeginReadCmd();
-                    }
-                });
-                // Process incoming commands while, command reading completes synchronously.
-                while(this.TcpStream.ReadLine(readLineOP,true)){
-                    if(!ProcessCmd(readLineOP)){
+                Example:    S: * OK IMAP4rev1 server ready
+                            C: A001 LOGIN fred blurdybloop
+                            S: * OK [ALERT] System shutdown in 10 minutes
+                            S: A001 OK LOGIN Completed
+            */
+
+            try{
+                IMAP_r_u_ServerStatus? response = null;
+                if(string.IsNullOrEmpty(this.Server.GreetingText)){
+                    response = new IMAP_r_u_ServerStatus("OK","<" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> IMAP4rev1 server ready.");
+                }
+                else{
+                    response = new IMAP_r_u_ServerStatus("OK",this.Server.GreetingText);
+                }
+                
+                IMAP_e_Started e = OnStarted(response);
+         
+                if(e.Response != null){
+                    m_pResponseSender.SendResponseAsync(e.Response);
+                }
+
+                // Setup rejected flag, so we respond "* NO Session rejected." any command except LOGOUT.
+                if(e.Response == null || e.Response.ResponseCode.Equals("NO",StringComparison.InvariantCultureIgnoreCase)){
+                    m_SessionRejected = true;
+                }
+
+                // Command loop, while QUIT or fatal error happens.
+                while(!this.IsDisposed){
+                    // Read command line.
+                    ReadLineResult readLineResult = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    // Server closed connection.
+                    if(readLineResult.BytesInBuffer == 0){
+                        LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' closed connection.");
+                        Dispose();
+
                         break;
+                    }                    
+                    string line = readLineResult.LineUtf8 ?? "";
+
+                    string[] cmd_args = line.Split(new char[]{' '},3);
+                    if(cmd_args.Length < 2){
+                        m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("BAD","Error: Command '" + line + "' not recognized."));
+
+                        return;
+                    }
+                    string   cmdTag   = cmd_args[0];
+                    string   cmd      = cmd_args[1].ToUpperInvariant();
+                    string   args     = cmd_args.Length == 3 ? cmd_args[2] : "";
+
+                    // Log.
+                    if(this.Server.Logger != null){
+                        string responseLine = line ?? "";
+                        // Hide password from log.
+                        if(cmd == "LOGIN"){                        
+                            this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,responseLine.Substring(0,responseLine.LastIndexOf(' ')) + " <***REMOVED***>",this.LocalEndPoint,this.RemoteEndPoint);
+                        }
+                        else{
+                            this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,responseLine,this.LocalEndPoint,this.RemoteEndPoint);
+                        }
+                    }
+
+                    // Command line continues(ends with IMAP literal-string), read while we have full command line.
+                    // Skip APPEND command, we handle it specially.
+                    if(_CmdReader.EndsWithLiteralString(args) && !string.Equals(cmd,"APPEND",StringComparison.InvariantCultureIgnoreCase)){
+                        _CmdReader cmdReader = new _CmdReader(this,args,Encoding.UTF8,99);            
+                        cmdReader.Start();
+
+                        args = cmdReader.CmdLine;
+                    }
+
+                    if(cmd == "STARTTLS"){                    
+                        STARTTLS(cmdTag,args);
+                    }
+                    else if(cmd == "LOGIN"){
+                        LOGIN(cmdTag,args);
+                    }
+                    else if(cmd == "AUTHENTICATE"){
+                        AUTHENTICATE(cmdTag,args);
+                    }
+                    else if(cmd == "NAMESPACE"){
+                        NAMESPACE(cmdTag,args);
+                    }
+                    else if(cmd == "LIST"){
+                        LIST(cmdTag,args);
+                    }
+                    else if(cmd == "CREATE"){
+                        CREATE(cmdTag,args);
+                    }
+                    else if(cmd == "DELETE"){
+                        DELETE(cmdTag,args);
+                    }
+                    else if(cmd == "RENAME"){
+                        RENAME(cmdTag,args);
+                    }
+                    else if(cmd == "LSUB"){
+                        LSUB(cmdTag,args);
+                    }
+                    else if(cmd == "SUBSCRIBE"){
+                        SUBSCRIBE(cmdTag,args);
+                    }
+                    else if(cmd == "UNSUBSCRIBE"){
+                        UNSUBSCRIBE(cmdTag,args);
+                    }
+                    else if(cmd == "STATUS"){
+                        STATUS(cmdTag,args);
+                    }
+                    else if(cmd == "SELECT"){
+                        SELECT(cmdTag,args);
+                    }
+                    else if(cmd == "EXAMINE"){
+                        EXAMINE(cmdTag,args);
+                    }
+                    else if(cmd == "APPEND"){
+                        await AppendAsync(cmdTag,args);
+                    }
+                    else if(cmd == "GETQUOTAROOT"){
+                        GETQUOTAROOT(cmdTag,args);
+                    }
+                    else if(cmd == "GETQUOTA"){
+                        GETQUOTA(cmdTag,args);
+                    }
+                    else if(cmd == "GETACL"){
+                        GETACL(cmdTag,args);
+                    }
+                    else if(cmd == "SETACL"){
+                        SETACL(cmdTag,args);
+                    }
+                    else if(cmd == "DELETEACL"){
+                        DELETEACL(cmdTag,args);
+                    }
+                    else if(cmd == "LISTRIGHTS"){
+                        LISTRIGHTS(cmdTag,args);
+                    }
+                    else if(cmd == "MYRIGHTS"){
+                        MYRIGHTS(cmdTag,args);
+                    }
+                    else if(cmd == "ENABLE"){
+                        ENABLE(cmdTag,args);
+                    }
+                    else if(cmd == "CHECK"){
+                        CHECK(cmdTag,args);
+                    }
+                    else if(cmd == "CLOSE"){
+                        CLOSE(cmdTag,args);
+                    }
+                    else if(cmd == "FETCH"){
+                        FETCH(false,cmdTag,args);
+                    }
+                    else if(cmd == "SEARCH"){
+                        SEARCH(false,cmdTag,args);
+                    }
+                    else if(cmd == "STORE"){
+                        STORE(false,cmdTag,args);
+                    }
+                    else if(cmd == "COPY"){
+                        COPY(false,cmdTag,args);
+                    }
+                    else if(cmd == "UID"){
+                        UID(cmdTag,args);
+                    }
+                    else if(cmd == "EXPUNGE"){
+                        EXPUNGE(cmdTag,args);
+                    }
+                    else if(cmd == "IDLE"){
+                        await IdleAsync(cmdTag,args);
+                    }
+                    else if(cmd == "CAPABILITY"){
+                        CAPABILITY(cmdTag,args);
+                    }
+                    else if(cmd == "NOOP"){
+                        NOOP(cmdTag,args);
+                    }
+                    else if(cmd == "LOGOUT"){
+                        LOGOUT(cmdTag,args);
+                        
+                        break;
+                    }
+                    else{
+                        m_BadCommands++;
+
+                        // Maximum allowed bad commands exceeded.
+                        if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
+                            WriteLine("* BYE Too many bad commands, closing transmission channel.");
+                            Disconnect();
+
+                            break;
+                        }
+                   
+                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error: Command '" + cmd + "' not recognized."));
                     }
                 }
             }
             catch(Exception x){
                 OnError(x);
             }
-        }
-
-        #endregion
-
-        #region method ProcessCmd
-
-        /// <summary>
-        /// Completes command reading operation.
-        /// </summary>
-        /// <param name="op">Operation.</param>
-        /// <returns>Returns true if server should start reading next command.</returns>
-        private bool ProcessCmd(SmartStream.ReadLineAsyncOP op)
-        {
-            bool readNextCommand = true;
-                        
-            try{
-                // We are disposed already.
-                if(this.IsDisposed){
-                    return false;
-                }
-                // Check errors.
-                if(op.Error != null){
-                    OnError(op.Error);
-                }
-                // Remote host shut-down(Socket.ShutDown) socket.
-                if(op.BytesInBuffer == 0){
-                    LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' shut down socket.");
-                    Dispose();
-                
-                    return false;
-                }
-                                                                               
-                string[] cmd_args = Encoding.UTF8.GetString(op.Buffer,0,op.LineBytesInBuffer).Split(new char[]{' '},3);
-                if(cmd_args.Length < 2){
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("BAD","Error: Command '" + op.LineUtf8 + "' not recognized."));
-
-                    return true;
-                }
-                string   cmdTag   = cmd_args[0];
-                string   cmd      = cmd_args[1].ToUpperInvariant();
-                string   args     = cmd_args.Length == 3 ? cmd_args[2] : "";
-
-                // Log.
-                if(this.Server.Logger != null){
-                    string responseLine = op.LineUtf8 ?? "";
-                    // Hide password from log.
-                    if(cmd == "LOGIN"){                        
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,responseLine.Substring(0,responseLine.LastIndexOf(' ')) + " <***REMOVED***>",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-                    else{
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,op.BytesInBuffer,responseLine,this.LocalEndPoint,this.RemoteEndPoint);
-                    }
-                }
-
-                // Command line continues(ends with IMAP literal-string), read while we have full command line.
-                // Skip APPEND command, we handle it specially.
-                if(_CmdReader.EndsWithLiteralString(args) && !string.Equals(cmd,"APPEND",StringComparison.InvariantCultureIgnoreCase)){
-                    _CmdReader cmdReader = new _CmdReader(this,args,Encoding.UTF8,99);            
-                    cmdReader.Start();
-
-                    args = cmdReader.CmdLine;
-                }
-
-                if(cmd == "STARTTLS"){                    
-                    STARTTLS(cmdTag,args);
-                }
-                else if(cmd == "LOGIN"){
-                    LOGIN(cmdTag,args);
-                }
-                else if(cmd == "AUTHENTICATE"){
-                    AUTHENTICATE(cmdTag,args);
-                }
-                else if(cmd == "NAMESPACE"){
-                    NAMESPACE(cmdTag,args);
-                }
-                else if(cmd == "LIST"){
-                    LIST(cmdTag,args);
-                }
-                else if(cmd == "CREATE"){
-                    CREATE(cmdTag,args);
-                }
-                else if(cmd == "DELETE"){
-                    DELETE(cmdTag,args);
-                }
-                else if(cmd == "RENAME"){
-                    RENAME(cmdTag,args);
-                }
-                else if(cmd == "LSUB"){
-                    LSUB(cmdTag,args);
-                }
-                else if(cmd == "SUBSCRIBE"){
-                    SUBSCRIBE(cmdTag,args);
-                }
-                else if(cmd == "UNSUBSCRIBE"){
-                    UNSUBSCRIBE(cmdTag,args);
-                }
-                else if(cmd == "STATUS"){
-                    STATUS(cmdTag,args);
-                }
-                else if(cmd == "SELECT"){
-                    SELECT(cmdTag,args);
-                }
-                else if(cmd == "EXAMINE"){
-                    EXAMINE(cmdTag,args);
-                }
-                else if(cmd == "APPEND"){
-                    APPEND(cmdTag,args);
-
-                    return false;
-                }
-                else if(cmd == "GETQUOTAROOT"){
-                    GETQUOTAROOT(cmdTag,args);
-                }
-                else if(cmd == "GETQUOTA"){
-                    GETQUOTA(cmdTag,args);
-                }
-                else if(cmd == "GETACL"){
-                    GETACL(cmdTag,args);
-                }
-                else if(cmd == "SETACL"){
-                    SETACL(cmdTag,args);
-                }
-                else if(cmd == "DELETEACL"){
-                    DELETEACL(cmdTag,args);
-                }
-                else if(cmd == "LISTRIGHTS"){
-                    LISTRIGHTS(cmdTag,args);
-                }
-                else if(cmd == "MYRIGHTS"){
-                    MYRIGHTS(cmdTag,args);
-                }
-                else if(cmd == "ENABLE"){
-                    ENABLE(cmdTag,args);
-                }
-                else if(cmd == "CHECK"){
-                    CHECK(cmdTag,args);
-                }
-                else if(cmd == "CLOSE"){
-                    CLOSE(cmdTag,args);
-                }
-                else if(cmd == "FETCH"){
-                    FETCH(false,cmdTag,args);
-                }
-                else if(cmd == "SEARCH"){
-                    SEARCH(false,cmdTag,args);
-                }
-                else if(cmd == "STORE"){
-                    STORE(false,cmdTag,args);
-                }
-                else if(cmd == "COPY"){
-                    COPY(false,cmdTag,args);
-                }
-                else if(cmd == "UID"){
-                    UID(cmdTag,args);
-                }
-                else if(cmd == "EXPUNGE"){
-                    EXPUNGE(cmdTag,args);
-                }
-                else if(cmd == "IDLE"){
-                    readNextCommand = IDLE(cmdTag,args);
-                }
-                else if(cmd == "CAPABILITY"){
-                    CAPABILITY(cmdTag,args);
-                }
-                else if(cmd == "NOOP"){
-                    NOOP(cmdTag,args);
-                }
-                else if(cmd == "LOGOUT"){
-                    LOGOUT(cmdTag,args);
-                    readNextCommand = false;
-                }
-                else{
-                    m_BadCommands++;
-
-                    // Maximum allowed bad commands exceeded.
-                    if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
-                        WriteLine("* BYE Too many bad commands, closing transmission channel.");
-                        Disconnect();
-
-                        return false;
-                    }
-                   
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error: Command '" + cmd + "' not recognized."));
-                }
-             }
-             catch(Exception x){
-                 OnError(x);
-             }
-
-             return readNextCommand;
         }
 
         #endregion
@@ -1437,18 +1379,20 @@ namespace LumiSoft.Net.IMAP.Server
                     }
 
                     // Read client response. 
-                    SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                    this.TcpStream.ReadLine(readLineOP,false);
-                    if(readLineOP.Error != null){
-                        throw readLineOP.Error;
+                    var readLineResult = this.TcpStream.ReadLine(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                    if(readLineResult.BytesInBuffer == 0){
+                        LogAddText("Client closed connection.");
+
+                        throw new IOException("Client closed connection.");
                     }
+
                     // Log
                     if(this.Server.Logger != null){
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineOP.BytesInBuffer,"base64 auth-data",this.LocalEndPoint,this.RemoteEndPoint);
+                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,"base64 auth-data",this.LocalEndPoint,this.RemoteEndPoint);
                     }
 
                     // Client canceled authentication.
-                    if(readLineOP.LineUtf8 == "*"){
+                    if(readLineResult.LineUtf8 == "*"){
                         m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication canceled."));
 
                         return;
@@ -1456,7 +1400,7 @@ namespace LumiSoft.Net.IMAP.Server
                     // We have base64 client response, decode it.
                     else{
                         try{
-                            clientResponse = Convert.FromBase64String(readLineOP.LineUtf8 ?? "");
+                            clientResponse = Convert.FromBase64String(readLineResult.LineUtf8 ?? "");
                         }
                         catch{
                             m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Invalid client response '" + clientResponse + "'."));
@@ -2552,9 +2496,9 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-        #region method APPEND
+        #region method AppendAsync
 
-        private void APPEND(string cmdTag,string cmdText)
+        private async Task AppendAsync(string cmdTag,string cmdText)
         {
             /* RFC 3501 6.3.11. APPEND Command.
                 Arguments:  mailbox name
@@ -2701,39 +2645,29 @@ namespace LumiSoft.Net.IMAP.Server
             }
             else{
                 m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus("+","Ready for literal data."));
-                
-                // Create callback which is called when BeginReadFixedCount completes.
-                AsyncCallback readLiteralCompletedCallback = delegate(IAsyncResult ar){
-                    try{
-                        this.TcpStream.EndReadFixedCount(ar);
-                        // Log.
-                        LogAddRead(size,"Readed " + size + " bytes.");
 
-                        // TODO: Async
-                        // Read command line terminating CRLF.
-                        SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                        this.TcpStream.ReadLine(readLineOP,false);
-                        // Read command line terminating CRLF failed.
-                        if(readLineOP.Error != null){
-                            OnError(readLineOP.Error);
-                        }
-                        // Read command line terminating CRLF succeeded.
-                        else{
-                            LogAddRead(readLineOP.BytesInBuffer,readLineOP.LineUtf8 ?? string.Empty);
+                // Read message.
+                await this.TcpStream.ReadFixedCountAsync(e.Stream,size);
 
-                            // Raise Completed event.
-                            e.OnCompleted();
+                // Log.
+                LogAddRead(size,"Readed literal " + size + " bytes.");
 
-                            m_pResponseSender.SendResponseAsync(IMAP_r_ServerStatus.Parse(e.Response.ToString().TrimEnd().Replace("%exectime",((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2"))));
-                            BeginReadCmd();
-                        }
-                    }
-                    catch(Exception x){
-                        OnError(x);
-                    }
-                };
+                // Read command line terminating CRLF.
+                var readLineResult = this.TcpStream.ReadLine(new byte[32000],SizeExceededAction.JunkAndThrowException);
+                if(readLineResult.BytesInBuffer == 0){
+                    LogAddText("Client closed connection.");
 
-                this.TcpStream.BeginReadFixedCount(e.Stream,size,readLiteralCompletedCallback,null);
+                    throw new IOException("Client closed connection.");
+                }
+                // Read command line terminating CRLF succeeded.
+                else{
+                    LogAddRead(readLineResult.BytesInBuffer,readLineResult.LineUtf8 ?? string.Empty);
+
+                    // Raise Completed event.
+                    e.OnCompleted();
+
+                    m_pResponseSender.SendResponseAsync(IMAP_r_ServerStatus.Parse(e.Response.ToString().TrimEnd().Replace("%exectime",((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2"))));
+                }
             }
         }
 
@@ -4901,9 +4835,9 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-        #region method IDLE
+        #region method IdleAsync
 
-        private bool IDLE(string cmdTag,string cmdText)
+        private async Task IdleAsync(string cmdTag,string cmdText)
         {
             /* RFC 2177 3. IDLE Command.
                 Arguments:  none
@@ -4986,13 +4920,12 @@ namespace LumiSoft.Net.IMAP.Server
             if(!this.IsAuthenticated){
                 m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
 
-                return true;
+                return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus("+","idling"));
 
-            TimerEx timer = new TimerEx(30000,true);
+            using TimerEx timer = new TimerEx(30000,true);
             timer.Elapsed += new System.Timers.ElapsedEventHandler(delegate(object? sender,System.Timers.ElapsedEventArgs e){
                 try{
                     UpdateSelectedFolderAndSendChanges();
@@ -5001,82 +4934,27 @@ namespace LumiSoft.Net.IMAP.Server
                 }
             });
             timer.Enabled = true;
-
-            // Read client response. 
-            SmartStream.ReadLineAsyncOP readLineOP = new SmartStream.ReadLineAsyncOP(new byte[32000],SizeExceededAction.JunkAndThrowException);
-            readLineOP.CompletedAsync += new EventHandler<EventArgs<SmartStream.ReadLineAsyncOP>>(delegate(object? sender,EventArgs<SmartStream.ReadLineAsyncOP> e){
-                try{
-                    if(readLineOP.Error != null){
-                        LogAddText("Error: " + readLineOP.Error.Message);
-                        timer.Dispose();
-
-                        return;
-                    }
-                    // Remote host closed connection.
-                    else if(readLineOP.BytesInBuffer == 0){
-                        LogAddText("Remote host(connected client) closed IMAP connection.");
-                        timer.Dispose();
-                        Dispose();
-
-                        return;
-                    }
-
-                    LogAddRead(readLineOP.BytesInBuffer,readLineOP.LineUtf8 ?? string.Empty);
-
-                    if(string.Equals(readLineOP.LineUtf8,"DONE",StringComparison.InvariantCultureIgnoreCase)){
-                        timer.Dispose();
-
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","IDLE terminated."));
-                        BeginReadCmd();
-                    }
-                    else{
-                        while(this.TcpStream.ReadLine(readLineOP,true)){
-                            if(readLineOP.Error != null){
-                                LogAddText("Error: " + readLineOP.Error.Message);
-                                timer.Dispose();
-
-                                return;
-                            }
-                            LogAddRead(readLineOP.BytesInBuffer,readLineOP.LineUtf8 ?? string.Empty);
-
-                            if(string.Equals(readLineOP.LineUtf8,"DONE",StringComparison.InvariantCultureIgnoreCase)){
-                                timer.Dispose();
-
-                                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","IDLE terminated."));
-                                BeginReadCmd();
-
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch(Exception x){
-                    timer.Dispose();
-
-                    OnError(x);
-                }
-            });
-            while(this.TcpStream.ReadLine(readLineOP,true)){
-                if(readLineOP.Error != null){
-                    LogAddText("Error: " + readLineOP.Error.Message);
-                    timer.Dispose();
+                        
+            while(true){
+                var readLineResult = this.TcpStream.ReadLine(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                if(readLineResult.BytesInBuffer == 0){
+                    LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' closed connection.");
 
                     break;
                 }
 
-                LogAddRead(readLineOP.BytesInBuffer,readLineOP.LineUtf8 ?? string.Empty);
+                string line = readLineResult.LineUtf8 ?? "";
 
-                if(string.Equals(readLineOP.LineUtf8,"DONE",StringComparison.InvariantCultureIgnoreCase)){
+                LogAddRead(readLineResult.BytesInBuffer,line);
+
+                if(string.Equals(line,"DONE",StringComparison.OrdinalIgnoreCase)){
                     timer.Dispose();
 
                     m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","IDLE terminated."));
-                    BeginReadCmd();
 
                     break;
-                }                
+                }
             }
-            
-            return false;            
         }
 
         #endregion

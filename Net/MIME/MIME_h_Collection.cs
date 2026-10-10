@@ -426,15 +426,12 @@ namespace LumiSoft.Net.MIME
                 throw new ArgumentNullException("encoding");
             }
 
-            StringBuilder               currentHeader = new StringBuilder();
-            SmartStream.ReadLineAsyncOP readLineOP    = new SmartStream.ReadLineAsyncOP(new byte[84000],SizeExceededAction.ThrowException);
+            var currentHeader = new StringBuilder();
+            var lineBuffer    = new byte[84000];
             while(true){                
-                stream.ReadLine(readLineOP,false);
-                if(readLineOP.Error != null){
-                    throw readLineOP.Error;
-                }
+                var readLineResult = stream.ReadLine(lineBuffer,SizeExceededAction.ThrowException);
                 // We reached end of stream.
-                else if(readLineOP.BytesInBuffer == 0){
+                if(readLineResult.BytesInBuffer == 0){
                     if(currentHeader.Length > 0){
                         Add(currentHeader.ToString());
                     }
@@ -443,7 +440,7 @@ namespace LumiSoft.Net.MIME
                     return;
                 }
                 // We got blank header terminator line.
-                else if(readLineOP.LineBytesInBuffer == 0){
+                else if(readLineResult.LineBytesInBuffer == 0){
                     if(currentHeader.Length > 0){
                         Add(currentHeader.ToString());
                     }
@@ -452,7 +449,7 @@ namespace LumiSoft.Net.MIME
                     return;
                 }
                 else{
-                    string line = encoding.GetString(readLineOP.Buffer,0,readLineOP.BytesInBuffer);
+                    string line = encoding.GetString(lineBuffer,0,readLineResult.BytesInBuffer);
  
                     // New header field starts.
                     if(currentHeader.Length == 0){
