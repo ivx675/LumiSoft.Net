@@ -406,22 +406,35 @@ namespace LumiSoft.Net.UPnP.NAT
         /// <returns>Returns UPnP device response.</returns>
         private string SendCommand(string method,string soapData)
         {
-            byte[] requestBody = Encoding.UTF8.GetBytes(soapData);
-
-            WebRequest request = WebRequest.Create(m_BaseUrl + m_ControlUrl);
-            request.Method = "POST";
-            request.Headers.Add("SOAPAction",m_ServiceType + "#" + method);
-            request.ContentType = "text/xml; charset=\"utf-8\";";
-            request.ContentLength = requestBody.Length;
-
-            // Send SOAP body to server.
-            request.GetRequestStream().Write(requestBody,0,requestBody.Length);
-            request.GetRequestStream().Close();
-
-            WebResponse response = request.GetResponse();
-            using(TextReader r = new StreamReader(response.GetResponseStream())){
-                return r.ReadToEnd();
+            if(method == null){
+                throw new ArgumentNullException(nameof(method));
             }
+            if(soapData == null){
+                throw new ArgumentNullException(nameof(soapData));
+            }
+
+            string url = m_BaseUrl + m_ControlUrl;
+
+            using var client = new HttpClient();
+            using var content = new StringContent(soapData, Encoding.UTF8, "text/xml");
+
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = content
+            };
+
+            // Add the required SOAPAction header
+            requestMessage.Headers.Add("SOAPAction", m_ServiceType + "#" + method);
+
+            // Send the request synchronously using native HttpClient.Send (.NET 5+)
+            using var response = client.Send(requestMessage);
+            response.EnsureSuccessStatusCode();
+
+            // Read the response stream synchronously
+            using var responseStream = response.Content.ReadAsStream();
+            using var reader = new StreamReader(responseStream, Encoding.UTF8);
+
+            return reader.ReadToEnd();
         }
 
         #endregion

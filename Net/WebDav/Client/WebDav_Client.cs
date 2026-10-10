@@ -1,8 +1,12 @@
 ﻿using System;
 using System.IO;
 using System.Collections.Generic;
-using System.Text;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Xml;
 
 namespace LumiSoft.Net.WebDav.Client
@@ -12,29 +16,49 @@ namespace LumiSoft.Net.WebDav.Client
     /// </summary>
     public class WebDav_Client
     {
-        private NetworkCredential? m_pCredentials = null;
+        private          NetworkCredential? m_pCredentials = null;
+        private readonly HttpClientHandler  m_pHttpClientHandler;
+        private readonly HttpClient         m_pHttpClient;
 
         /// <summary>
-        /// Default constructor.
+        /// Default constructor. Initializes a new instance of the <see cref="WebDav_Client"/> class.
         /// </summary>
         public WebDav_Client()
         {
+            m_pHttpClientHandler = new HttpClientHandler();
+            
+            // Set a default timeout of 60 seconds (non-blocking)
+            m_pHttpClient = new HttpClient(m_pHttpClientHandler){
+                Timeout = TimeSpan.FromSeconds(60)
+            };
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="WebDav_Client"/> class with a custom <see cref="HttpClient"/>.
+        /// </summary>
+        /// <param name="httpClient">The pre-configured <see cref="HttpClient"/> instance to use for requests.</param>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="httpClient"/> is a null reference.</exception>
+        public WebDav_Client(HttpClient httpClient)
+        {
+            m_pHttpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+            m_pHttpClientHandler = null!; // Handled externally if custom HttpClient is passed
+        }
 
         #region method PropFind
 
         /// <summary>
-        /// Executes PROPFIND method.
+        /// Executes PROPFIND method asynchronously.
         /// </summary>
-        /// <param name="requestUri">Request URI.</param>
-        /// <param name="propertyNames">Properties to get. Value null means property names listing.</param>
-        /// <param name="depth">Maximum depth inside collections to get.</param>
-        /// <returns>Returns server returned responses.</returns>
-        public WebDav_MultiStatus PropFind(string requestUri,string[] propertyNames,int depth)
+        /// <param name="requestUri">The target request URI.</param>
+        /// <param name="propertyNames">Properties to get. A value of null or empty means property names listing.</param>
+        /// <param name="depth">Maximum depth inside collections to get (-1 for unspecified).</param>
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>Returns server returned <see cref="WebDav_MultiStatus"/> responses.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="requestUri"/> is a null reference.</exception>
+        public async Task<WebDav_MultiStatus> PropFindAsync(string requestUri, string[]? propertyNames, int depth, CancellationToken cancellationToken = default)
         {
             if(requestUri == null){
-                throw new ArgumentNullException("requestUri");
+                throw new ArgumentNullException(nameof(requestUri));
             }
 
             StringBuilder requestContentString = new StringBuilder();
@@ -48,53 +72,49 @@ namespace LumiSoft.Net.WebDav.Client
                 foreach(string propertyName in propertyNames){
                     requestContentString.Append("<" + propertyName + "/>");
                 }
-            }            
+            }
             requestContentString.Append("</prop>\r\n");
             requestContentString.Append("</propfind>\r\n");
 
-            byte[] requestContent = Encoding.UTF8.GetBytes(requestContentString.ToString());
+            var content = new StringContent(requestContentString.ToString(), Encoding.UTF8, "application/xml");
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(requestUri);
-            request.Method = "PROPFIND";
-            request.ContentType = "application/xml";
-            request.ContentLength = requestContent.Length;
-            request.Credentials = m_pCredentials;
+            using var requestMessage = new HttpRequestMessage(new HttpMethod("PROPFIND"), requestUri)
+            {
+                Content = content
+            };
+
             if(depth > -1){
-                request.Headers.Add("Depth: " + depth);
+                requestMessage.Headers.Add("Depth", depth.ToString());
             }
-            request.GetRequestStream().Write(requestContent,0,requestContent.Length);
-            
-            return WebDav_MultiStatus.Parse(request.GetResponse().GetResponseStream());
+
+            using var response = await m_pHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+            return WebDav_MultiStatus.Parse(responseStream);
         }
-
-        #endregion
-
-        #region method PropPatch
-
-        // public void PropPatch()
-        // {
-        // }
 
         #endregion
 
         #region method MkCol
 
         /// <summary>
-        /// Creates new collection to the specified path.
+        /// Creates new collection to the specified path asynchronously.
         /// </summary>
         /// <param name="uri">Target collection URI.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>uri</b> null reference.</exception>
-        public void MkCol(string uri)
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>A task that represents the asynchronous operation.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="uri"/> is a null reference.</exception>
+        public async Task MkColAsync(string uri, CancellationToken cancellationToken = default)
         {
             if(uri == null){
-                throw new ArgumentNullException("uri");
+                throw new ArgumentNullException(nameof(uri));
             }
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(uri);
-            request.Method = "MKCOL";
-            request.Credentials = m_pCredentials;
-
-            HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+            using var requestMessage = new HttpRequestMessage(new HttpMethod("MKCOL"), uri);
+            using var response = await m_pHttpClient.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
         }
 
         #endregion
@@ -102,64 +122,46 @@ namespace LumiSoft.Net.WebDav.Client
         #region method Get
         
         /// <summary>
-        /// Gets the specified resource stream.
+        /// Gets the specified resource stream asynchronously.
         /// </summary>
         /// <param name="uri">Target resource URI.</param>
-        /// <param name="contentSize">Returns resource size in bytes.</param>
-        /// <returns>Retruns resource stream.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>uri</b> is null reference.</exception>
-        public Stream Get(string uri,out long contentSize)
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>Returns a tuple containing the resource stream and its content size in bytes (if available).</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="uri"/> is a null reference.</exception>
+        public async Task<(Stream Stream, long? ContentSize)> GetAsync(string uri, CancellationToken cancellationToken = default)
         {
             if(uri == null){
-                throw new ArgumentNullException("uri");
+                throw new ArgumentNullException(nameof(uri));
             }
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(uri);
-            request.Method = "GET";
-            request.Credentials = m_pCredentials;
+            var response = await m_pHttpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
 
-            HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-            contentSize = response.ContentLength;
+            long? contentSize = response.Content.Headers.ContentLength;
+            Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
-            return response.GetResponseStream();
+            return (stream, contentSize);
         }
-
-        #endregion
-
-        #region method Head
-
-        // public void Head()
-        // {
-        // }
-
-        #endregion
-
-        #region method Post
-
-        // public void Post()
-        // {
-        // }
 
         #endregion
 
         #region method Delete
 
         /// <summary>
-        /// Deletes specified resource.
+        /// Deletes specified resource asynchronously.
         /// </summary>
-        /// <param name="uri">Target URI. For example: htt://server/test.txt .</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>uri</b> is null reference.</exception>
-        public void Delete(string uri)
+        /// <param name="uri">Target URI. For example: http://server/test.txt .</param>
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>A task that represents the asynchronous operation.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="uri"/> is a null reference.</exception>
+        public async Task DeleteAsync(string uri, CancellationToken cancellationToken = default)
         {
             if(uri == null){
-                throw new ArgumentNullException("uri");
+                throw new ArgumentNullException(nameof(uri));
             }
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(uri);
-            request.Method = "DELETE";
-            request.Credentials = m_pCredentials;
-
-            request.GetResponse();
+            using var response = await m_pHttpClient.DeleteAsync(uri, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
         }
 
         #endregion
@@ -167,52 +169,32 @@ namespace LumiSoft.Net.WebDav.Client
         #region method Put
 
         /// <summary>
-        /// Creates specified resource to the specified location.
+        /// Creates specified resource to the specified location asynchronously.
         /// </summary>
-        /// <param name="targetUri">Target URI. For example: htt://server/test.txt .</param>
-        /// <param name="stream">Stream which data to upload.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>targetUri</b> or <b>stream</b> is null reference.</exception>
-        public void Put(string targetUri,Stream stream)
+        /// <param name="targetUri">Target URI. For example: http://server/test.txt .</param>
+        /// <param name="stream">Stream containing data to upload.</param>
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>A task that represents the asynchronous operation.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="targetUri"/> or <paramref name="stream"/> is a null reference.</exception>
+        public async Task PutAsync(string targetUri, Stream stream, CancellationToken cancellationToken = default)
         {
             if(targetUri == null){
-                throw new ArgumentNullException("targetUri");
+                throw new ArgumentNullException(nameof(targetUri));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
-            // Work around, to casuse authentication, otherwise we may not use AllowWriteStreamBuffering = false later.
-            // All this because ms is so lazy, tries to write all data to memory, instead switching to temp file if bigger 
-            // data sent.
-            try{
-                HttpWebRequest dummy  = (HttpWebRequest)HttpWebRequest.Create(targetUri);
-			    // Set the username and the password.
-			    dummy.Credentials = m_pCredentials;
-                dummy.UnsafeAuthenticatedConnectionSharing = true;
-			    dummy.PreAuthenticate = true;
-			    dummy.Method = "HEAD";
-			    ((HttpWebResponse)dummy.GetResponse()).Close(); 
-            }
-            catch{
-            }
+            using var content = new StreamContent(stream);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(targetUri);
-            request.Method = "PUT";
-            request.ContentType = "application/octet-stream";
-            request.Credentials = m_pCredentials;
-            request.UnsafeAuthenticatedConnectionSharing = true;
-            request.PreAuthenticate = true;
-            request.AllowWriteStreamBuffering = false;
-            request.Timeout = System.Threading.Timeout.Infinite;
-            if(stream.CanSeek){                
-                request.ContentLength = (stream.Length - stream.Position);
-            }            
-            
-            using(Stream requestStream = request.GetRequestStream()){                
-                Net_Utils.StreamCopy(stream,requestStream,32000);
-            }
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Put, targetUri)
+            {
+                Content = content
+            };
 
-            ((HttpWebResponse)request.GetResponse()).Close(); 
+            using var response = await m_pHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
         }
 
         #endregion
@@ -220,33 +202,34 @@ namespace LumiSoft.Net.WebDav.Client
         #region method Copy
 
         /// <summary>
-        /// Copies source URI resource to the target URI.
+        /// Copies source URI resource to the target URI asynchronously.
         /// </summary>
         /// <param name="sourceUri">Source URI.</param>
         /// <param name="targetUri">Target URI.</param>
-        /// <param name="depth">If source is collection, then depth specified how many nested levels will be copied.</param>
-        /// <param name="overwrite">If true and target resource already exists, it will be over written. 
-        /// If false and target resource exists, exception is thrown.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>sourceUri</b> or <b>targetUri</b> is null reference.</exception>
-        public void Copy(string sourceUri,string targetUri,int depth,bool overwrite)
+        /// <param name="depth">If source is collection, then depth specifies how many nested levels will be copied (-1 for unspecified).</param>
+        /// <param name="overwrite">If true and target resource already exists, it will be overwritten. If false and target resource exists, an exception is thrown.</param>
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>A task that represents the asynchronous operation.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="sourceUri"/> or <paramref name="targetUri"/> is a null reference.</exception>
+        public async Task CopyAsync(string sourceUri, string targetUri, int depth, bool overwrite, CancellationToken cancellationToken = default)
         {
             if(sourceUri == null){
-                throw new ArgumentNullException(sourceUri);
+                throw new ArgumentNullException(nameof(sourceUri));
             }
             if(targetUri == null){
-                throw new ArgumentNullException(targetUri);
+                throw new ArgumentNullException(nameof(targetUri));
             }
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(sourceUri);
-            request.Method = "COPY";
-            request.Headers.Add("Destination: " + targetUri);
-            request.Headers.Add("Overwrite: " + (overwrite ? "T" : "F"));
-            if(depth > -1){
-                request.Headers.Add("Depth: " + depth);
+            using var requestMessage = new HttpRequestMessage(new HttpMethod("COPY"), sourceUri);
+            requestMessage.Headers.Add("Destination", targetUri);
+            requestMessage.Headers.Add("Overwrite", overwrite ? "T" : "F");
+            if (depth > -1)
+            {
+                requestMessage.Headers.Add("Depth", depth.ToString());
             }
-            request.Credentials = m_pCredentials;
 
-            request.GetResponse();
+            using var response = await m_pHttpClient.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
         }
 
         #endregion
@@ -254,67 +237,55 @@ namespace LumiSoft.Net.WebDav.Client
         #region method Move
 
         /// <summary>
-        /// Moves source URI resource to the target URI.
+        /// Moves source URI resource to the target URI asynchronously.
+        /// enforce handling.
         /// </summary>
         /// <param name="sourceUri">Source URI.</param>
         /// <param name="targetUri">Target URI.</param>
-        /// <param name="depth">If source is collection, then depth specified how many nested levels will be copied.</param>
-        /// <param name="overwrite">If true and target resource already exists, it will be over written. 
-        /// If false and target resource exists, exception is thrown.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>sourceUri</b> or <b>targetUri</b> is null reference.</exception>
-        public void Move(string sourceUri,string targetUri,int depth,bool overwrite)
+        /// <param name="depth">If source is collection, then depth specifies how many nested levels will be moved (-1 for unspecified).</param>
+        /// <param name="overwrite">If true and target resource already exists, it will be overwritten. If false and target resource exists, an exception is thrown.</param>
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <returns>A task that represents the asynchronous operation.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="sourceUri"/> or <paramref name="targetUri"/> is a null reference.</exception>
+        public async Task MoveAsync(string sourceUri, string targetUri, int depth, bool overwrite, CancellationToken cancellationToken = default)
         {
             if(sourceUri == null){
-                throw new ArgumentNullException(sourceUri);
+                throw new ArgumentNullException(nameof(sourceUri));
             }
             if(targetUri == null){
-                throw new ArgumentNullException(targetUri);
+                throw new ArgumentNullException(nameof(targetUri));
             }
 
-            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(sourceUri);
-            request.Method = "MOVE";
-            request.Headers.Add("Destination: " + targetUri);
-            request.Headers.Add("Overwrite: " + (overwrite ? "T" : "F"));
+            using var requestMessage = new HttpRequestMessage(new HttpMethod("MOVE"), sourceUri);
+            requestMessage.Headers.Add("Destination", targetUri);
+            requestMessage.Headers.Add("Overwrite", overwrite ? "T" : "F");
             if(depth > -1){
-                request.Headers.Add("Depth: " + depth);
+                requestMessage.Headers.Add("Depth", depth.ToString());
             }
-            request.Credentials = m_pCredentials;
 
-            request.GetResponse();
+            using var response = await m_pHttpClient.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
         }
 
         #endregion
-
-        #region method Lock
-
-        // public void Lock()
-        // {
-        // }
-
-        #endregion
-
-        #region method Unlock
-
-        // public void Unlock()
-        // {
-        // }
-
-        #endregion
-
 
         #region Properties implementation
 
         /// <summary>
-        /// Gets or sets credentials.
+        /// Gets or sets credentials for network requests.
         /// </summary>
         public NetworkCredential? Credentials
         {
-            get{ return m_pCredentials; }
+            get => m_pCredentials;
 
-            set{ m_pCredentials = value; }
+            set{
+                m_pCredentials = value;
+                if(m_pHttpClientHandler != null){
+                    m_pHttpClientHandler.Credentials = m_pCredentials;
+                }
+            }
         }
 
         #endregion
-
     }
 }
