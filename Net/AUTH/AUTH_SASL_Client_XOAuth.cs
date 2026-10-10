@@ -17,7 +17,7 @@ namespace LumiSoft.Net.AUTH
         /// Default constructor.
         /// </summary>
         /// <param name="userName">User login name.</param>
-        /// <param name="authString">OAUTH authentication string. For example you can use <see cref="AUTH_Gmail_OAuth1_3leg.GetXOAuthStringForImap()"/> to get valid string.</param>
+        /// <param name="authString">OAUTH authentication string.</param>
         /// <exception cref="ArgumentNullException">Is raised when <b>userName</b> or <b>authString</b> is null reference.</exception>
         /// <exception cref="ArgumentException">Is riased when any of the arguments has invalid value.</exception>
         public AUTH_SASL_Client_XOAuth(string userName,string authString)
