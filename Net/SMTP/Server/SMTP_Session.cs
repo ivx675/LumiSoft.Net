@@ -1366,7 +1366,7 @@ namespace LumiSoft.Net.SMTP.Server
             Stream storeStream = m_pMessageStream;
             // Maximum allowed message size exceeded, junk all incoming data.
             if((m_BDatReadedCount + chunkSize) > this.Server.MaxMessageSize){
-                storeStream = new JunkingStream();
+                storeStream = Stream.Null;
             }
 
             // Read BDAT chunk.
