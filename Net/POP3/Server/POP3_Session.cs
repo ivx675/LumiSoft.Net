@@ -234,7 +234,7 @@ namespace LumiSoft.Net.POP3.Server
                 }
             }
             catch(Exception x){
-                OnError(x);
+                await OnErrorAsync(x);
             }
         }
 
