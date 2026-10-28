@@ -8,7 +8,7 @@ namespace LumiSoft.Net.MIME
     /// <summary>
     /// Represents MIME header field parameters collection.
     /// </summary>
-    public class MIME_h_ParameterCollection : IEnumerable
+    public class MIME_h_ParameterCollection : IEnumerable<MIME_h_Parameter>
     {
         #region class _ParameterBuilder
 
@@ -420,15 +420,24 @@ namespace LumiSoft.Net.MIME
         #region interface IEnumerator
 
         /// <summary>
-		/// Gets enumerator.
-		/// </summary>
-		/// <returns></returns>
-		public IEnumerator GetEnumerator()
-		{
-			return m_pParameters.Values.GetEnumerator();
-		}
+        /// Gets generic enumerator.
+        /// </summary>
+        /// <returns>Returns generic enumerator.</returns>
+        public IEnumerator<MIME_h_Parameter> GetEnumerator()
+        {
+            return m_pParameters.Values.GetEnumerator();
+        }
 
-		#endregion
+        /// <summary>
+        /// Gets non-generic enumerator.
+        /// </summary>
+        /// <returns>Returns non-generic enumerator.</returns>
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return m_pParameters.Values.GetEnumerator();
+        }
+
+        #endregion
 
         #region Properties implementation
 
