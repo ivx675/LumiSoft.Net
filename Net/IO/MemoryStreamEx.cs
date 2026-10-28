@@ -1,5 +1,7 @@
 ﻿using System;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Text;
 
@@ -79,6 +81,16 @@ namespace LumiSoft.Net.IO
             m_pStream.Flush();
         }
 
+        /// <inheritdoc />
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            if(m_IsDisposed){
+                throw new ObjectDisposedException("SmartStream");
+            }
+
+            return m_pStream.FlushAsync(cancellationToken);
+        }
+
         #endregion
 
         #region override method Seek
@@ -104,11 +116,10 @@ namespace LumiSoft.Net.IO
         #region override method SetLength
 
         /// <summary>
-        /// Sets the length of the current stream. This method is not supported and always throws a NotSupportedException.
+        /// Sets the length of the current stream.
         /// </summary>
         /// <param name="value">The desired length of the current stream in bytes.</param>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
         public override void SetLength(long value)
         {
             if(m_IsDisposed){
@@ -128,7 +139,7 @@ namespace LumiSoft.Net.IO
         /// <param name="buffer">An array of bytes. When this method returns, the buffer contains the specified byte array with the values between offset and (offset + count - 1) replaced by the bytes read from the current source.</param>
         /// <param name="offset">The zero-based byte offset in buffer at which to begin storing the data read from the current stream.</param>
         /// <param name="count">The maximum number of bytes to be read from the current stream.</param>
-        /// <returns>The total number of bytes read into the buffer. This can be less than the number of bytes requested if that many bytes are not currently available, or zero (0) if the end of the stream has been reached.</returns>
+        /// <returns>The total number of bytes read into the buffer.</returns>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
         /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
         public override int Read(byte[] buffer,int offset,int count)
@@ -141,6 +152,33 @@ namespace LumiSoft.Net.IO
             }
             
             return m_pStream.Read(buffer,offset,count);
+        }        
+
+        #endregion
+
+        #region override method ReadAsync
+
+        /// <inheritdoc />
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if(m_IsDisposed){
+                throw new ObjectDisposedException("SmartStream");
+            }
+            if(buffer == null){
+                throw new ArgumentNullException("buffer");
+            }
+
+            return await m_pStream.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if(m_IsDisposed){
+                throw new ObjectDisposedException("SmartStream");
+            }
+
+            return await m_pStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
         }
 
         #endregion
@@ -149,13 +187,11 @@ namespace LumiSoft.Net.IO
 
         /// <summary>
         /// Writes a sequence of bytes to the current stream and advances the current position within this stream by the number of bytes written.
-        /// This method is not supported and always throws a NotSupportedException.
         /// </summary>
         /// <param name="buffer">An array of bytes. This method copies count bytes from buffer to the current stream.</param>
         /// <param name="offset">The zero-based byte offset in buffer at which to begin copying bytes to the current stream.</param>
         /// <param name="count">The number of bytes to be written to the current stream.</param>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
         /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
         public override void Write(byte[] buffer,int offset,int count)
         {
@@ -166,17 +202,88 @@ namespace LumiSoft.Net.IO
                 throw new ArgumentNullException("buffer");
             }
 
-            // We need switch to temporary file.
-            if(m_pStream is MemoryStream && (m_pStream.Position + count) > m_MaxMemSize){
-                FileStream fs = new FileStream(Path.GetTempPath() + "ls-" + Guid.NewGuid().ToString().Replace("-","") + ".tmp",FileMode.Create,FileAccess.ReadWrite,FileShare.Read,32000,FileOptions.DeleteOnClose);
+            CheckSwitchToTempFile(count);
+ 
+            m_pStream.Write(buffer,offset,count);
+        }
+
+        #endregion
+
+        #region override method WriteAsync
+
+        /// <inheritdoc />
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if(m_IsDisposed){
+                throw new ObjectDisposedException("SmartStream");
+            }
+            if(buffer == null){
+                throw new ArgumentNullException("buffer");
+            }
+
+            await CheckSwitchToTempFileAsync(count, cancellationToken).ConfigureAwait(false);
+
+            await m_pStream.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if(m_IsDisposed){
+                throw new ObjectDisposedException("SmartStream");
+            }
+
+            await CheckSwitchToTempFileAsync(buffer.Length, cancellationToken).ConfigureAwait(false);
+
+            await m_pStream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        }
+
+        #endregion
+
+
+        #region method CheckSwitchToTempFile
+
+        private void CheckSwitchToTempFile(long additionalBytes)
+        {
+            if(m_pStream is MemoryStream && (m_pStream.Position + additionalBytes) > m_MaxMemSize){
+                FileStream fs = new FileStream(
+                    Path.Combine(Path.GetTempPath(), "ls-" + Guid.NewGuid().ToString("N") + ".tmp"),
+                    FileMode.Create,
+                    FileAccess.ReadWrite,
+                    FileShare.Read,
+                    bufferSize: 32000,
+                    options: FileOptions.Asynchronous | FileOptions.DeleteOnClose
+                );
 
                 m_pStream.Position = 0;
+                m_pStream.CopyTo(fs,8000);
                 Net_Utils.StreamCopy(m_pStream,fs,8000);
                 m_pStream.Close();
                 m_pStream = fs;
             }
- 
-            m_pStream.Write(buffer,offset,count);
+        }
+
+        #endregion
+
+        #region method CheckSwitchToTempFileAsync
+
+        private async Task CheckSwitchToTempFileAsync(long additionalBytes, CancellationToken cancellationToken)
+        {
+            if(m_pStream is MemoryStream && (m_pStream.Position + additionalBytes) > m_MaxMemSize){
+                FileStream fs = new FileStream(
+                    Path.Combine(Path.GetTempPath(), "ls-" + Guid.NewGuid().ToString("N") + ".tmp"),
+                    FileMode.Create,
+                    FileAccess.ReadWrite,
+                    FileShare.Read,
+                    bufferSize: 32000,
+                    options: FileOptions.Asynchronous | FileOptions.DeleteOnClose
+                );
+
+                m_pStream.Position = 0;
+                await m_pStream.CopyToAsync(fs,8000,cancellationToken).ConfigureAwait(false);
+                m_pStream.Close();
+                m_pStream = fs;
+            }
         }
 
         #endregion
@@ -252,7 +359,6 @@ namespace LumiSoft.Net.IO
         /// Gets the length in bytes of the stream.
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="Seek">Is raised when this property is accessed.</exception>
         public override long Length
         { 
             get{
