@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>SINCE</c> search key is defined by RFC 3501 and operates on the
+    /// The <c>SINCE</c> search key is defined by RFC 9051 and operates on the
     /// message’s *internal date*—the server‑assigned timestamp indicating when
     /// the message was received or created.
     /// </para>
@@ -23,7 +23,7 @@ namespace LumiSoft.Net.IMAP
     /// </remarks>
     public class IMAP_t_Search_Key_Since : IMAP_t_Search_Key
     {
-        private DateTime m_Date;
+        private DateOnly m_Date;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="IMAP_t_Search_Key_Since"/>
@@ -36,12 +36,12 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>SINCE</c> search key is defined by RFC 3501 and operates on the
+        /// The <c>SINCE</c> search key is defined by RFC 9051 and operates on the
         /// message’s *internal date*—the server‑assigned timestamp indicating when
         /// the message was received or created.
         /// </para>
         /// </remarks>
-        public IMAP_t_Search_Key_Since(DateTime value)
+        public IMAP_t_Search_Key_Since(DateOnly value)
         {
             m_Date = value;
         }
@@ -51,10 +51,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>SINCE</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Since"/> instance containing
@@ -69,7 +69,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>SINCE</c> search key is defined by RFC 3501 and compares the
+        /// The <c>SINCE</c> search key is defined by RFC 9051 and compares the
         /// message’s *internal date*—the server‑assigned timestamp indicating when
         /// the message was received or created—to the specified value.
         /// </para>
@@ -77,32 +77,18 @@ namespace LumiSoft.Net.IMAP
         /// Messages whose internal date is the same day or a later day satisfy
         /// the search criterion.
         /// </para>
-        /// <para>
-        /// The date must follow the IMAP <c>dd-MMM-yyyy</c> format and is parsed
-        /// using <see cref="IMAP_Utils.ParseDate"/>.
-        /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Since Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Since Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"SINCE",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'SINCE' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'SINCE' value.");
-            }
-            DateTime date;
-            try{
-                date = IMAP_Utils.ParseDate(value);
-            }
-            catch{
-                throw new ParseException("Parse error: Invalid 'SINCE' value.");
-            }
+            DateOnly date = r.ReadDate();
 
             return new IMAP_t_Search_Key_Since(date);
         }
@@ -123,7 +109,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>SINCE</c> search key is defined by RFC 3501 and compares the
+        /// The <c>SINCE</c> search key is defined by RFC 9051 and compares the
         /// message’s *internal date*—the date assigned by the server when the
         /// message was received or created—to the provided value.
         /// </para>
@@ -155,7 +141,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>SINCE</c> search key is defined by RFC 3501 and compares the
+        /// The <c>SINCE</c> search key is defined by RFC 9051 and compares the
         /// message’s *internal date*—the server‑assigned timestamp indicating when
         /// the message was received or created—to the specified value.
         /// </para>
@@ -186,9 +172,9 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// Messages whose internal date is the same day or a later day will satisfy
         /// the <c>SINCE</c> search criterion. The comparison is performed at
-        /// day granularity, as defined by RFC 3501.
+        /// day granularity, as defined by RFC 9051.
         /// </remarks>
-        public DateTime Date
+        public DateOnly Date
         {
             get{ return m_Date; }
         }

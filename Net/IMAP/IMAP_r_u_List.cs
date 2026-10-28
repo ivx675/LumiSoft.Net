@@ -6,9 +6,9 @@ namespace LumiSoft.Net.IMAP
 {
     /// <summary>
     /// Represents a single untagged IMAP <c>LIST</c> response as defined in
-    /// RFC 3501 section 7.2.2. A LIST response describes a mailbox available
+    /// RFC 9051 section 7.2.2. A LIST response describes a mailbox available
     /// on the server, including its attribute list, hierarchy delimiter, and
-    /// decoded mailbox name.
+    /// mailbox name.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -18,28 +18,23 @@ namespace LumiSoft.Net.IMAP
     /// </para>
     /// <list type="bullet">
     ///   <item><description>
-    ///     A list of attribute flags (for example <c>\Noselect</c>,
-    ///     <c>\Noinferiors</c>, <c>\Marked</c>, <c>\HasChildren</c>).
+    ///     A list of mailbox attributes (for example <c>\Noselect</c>,
+    ///     <c>\Marked</c>, <c>\HasChildren</c>, <c>\HasNoChildren</c>).
     ///   </description></item>
     ///   <item><description>
-    ///     A hierarchy delimiter, which is either a single ASCII character or
-    ///     <c>NIL</c> when the server does not support hierarchical mailbox
-    ///     names.
+    ///     A hierarchy delimiter, which is either a single character or
+    ///     <c>NIL</c> if no hierarchy delimiter is defined.
     ///   </description></item>
     ///   <item><description>
-    ///     A mailbox name encoded as a quoted string, which may contain
-    ///     modified UTF-7 and must be decoded.
+    ///     A mailbox name represented as an IMAP string. Depending on
+    ///     negotiated UTF-8 capabilities, non-ASCII mailbox names may be
+    ///     encoded either as UTF-8 or legacy modified UTF-7.
     ///   </description></item>
     /// </list>
     /// <para>
-    /// LIST responses do not indicate subscription state or message counts.
-    /// They only describe the mailbox's structural properties and location
-    /// within the hierarchy.
-    /// </para>
-    /// <para>
-    /// Instances of this class are typically created by the <c>Parse</c>
-    /// method, which interprets a raw LIST response line and extracts the
-    /// mailbox components.
+    /// LIST responses describe mailbox hierarchy and mailbox attributes.
+    /// They do not include subscription status, message counts, or mailbox
+    /// status information.
     /// </para>
     /// </remarks>
     public class IMAP_r_u_List : IMAP_r_u
@@ -69,12 +64,6 @@ namespace LumiSoft.Net.IMAP
         /// \HasNoChildren. The array contains each attribute token exactly as provided
         /// by the server.
         /// </param>
-        /// <remarks>
-        /// This constructor is typically used by the Parse method to represent a
-        /// single untagged LIST response as defined in RFC 3501 section 7.2.2.
-        /// The <paramref name="delimiter"/> parameter uses a nullable character type
-        /// so that the IMAP NIL delimiter can be represented cleanly.
-        /// </remarks>
         public IMAP_r_u_List(string folder,char? delimiter,string[] attributes)
         {
             if(folder == null){
@@ -235,75 +224,42 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP wire-format representation of this response using
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>, which emits the mailbox name
-        /// in Unicode without applying modified UTF-7 encoding.
+        /// Returns the IMAP wire-format representation of this LIST
+        /// response with UTF-8 mailbox names allowed.
         /// </summary>
+        /// <returns>
+        /// A string containing the serialized IMAP <c>LIST</c> response.
+        /// </returns>
         /// <remarks>
-        /// <para>
-        /// When <see cref="IMAP_Mailbox_Encoding.None"/> is used, the mailbox name
-        /// is written exactly as stored in the object. On the IMAP wire this is
-        /// transmitted as UTF-8, matching the IMAP UTF-8 extension defined in
-        /// RFC 6855. Servers that advertise UTF8=ACCEPT or UTF8=ONLY allow mailbox
-        /// names to be sent directly in UTF-8 without modified UTF-7 encoding.
-        /// </para>
-        /// <para>
-        /// This overload is intended for debugging, logging, or use with IMAP
-        /// servers that support UTF-8 mailbox names. For compatibility with legacy
-        /// IMAP servers that require modified UTF-7, use
-        /// <see cref="ToString(IMAP_Mailbox_Encoding)"/> with the appropriate
-        /// encoding value.
-        /// </para>
+        /// This method is equivalent to calling
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Converts this LIST response to its IMAP wire-format representation,
-        /// including attribute list, hierarchy delimiter, and encoded mailbox name.
+        /// Returns the IMAP wire-format representation of this LIST
+        /// response.
         /// </summary>
-        /// <param name="encoding">
-        /// Specifies how the mailbox name should be encoded. When set to
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>, the mailbox name is emitted
-        /// in Unicode (UTF-8 on the wire) without modified UTF-7 encoding.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A string containing the IMAP <c>LIST</c> response in protocol format,
-        /// terminated with CRLF. The output includes the attribute list, the
-        /// hierarchy delimiter (quoted when present, or the atom <c>NIL</c> when
-        /// no delimiter exists), and the mailbox name encoded according to the
-        /// specified <paramref name="encoding"/>.
+        /// A string containing the IMAP <c>LIST</c> response terminated
+        /// with CRLF. The output includes the mailbox attributes,
+        /// hierarchy delimiter, and mailbox name.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// The LIST response format is defined in RFC 3501 section 7.2.2. The
-        /// hierarchy delimiter follows this grammar:
-        /// </para>
-        /// <code>
-        /// quoted-delimiter = DQUOTE *CHAR DQUOTE / "NIL"
-        /// </code>
-        /// <para>
-        /// This means that delimiter characters are emitted as quoted strings
-        /// (for example <c>"/"</c> or <c>"."</c>), while the absence of a delimiter
-        /// is represented by the unquoted atom <c>NIL</c>.
-        /// </para>
-        /// <para>
-        /// When the mailbox name is empty (as in <c>LIST "" ""</c>), the response
-        /// represents a hierarchy delimiter discovery request. In this case the
-        /// attribute list must contain <c>\Noselect</c>, the mailbox name is an
-        /// empty quoted string, and the delimiter is emitted using the same rules
-        /// described above.
-        /// </para>
-        /// <para>
-        /// The mailbox name is encoded using
-        /// <see cref="IMAP_Utils.EncodeMailbox(string, IMAP_Mailbox_Encoding)"/>,
-        /// which applies modified UTF-7 when required for compatibility with
-        /// legacy IMAP servers.
-        /// </para>
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names are encoded as
+        /// required for IMAP servers that do not permit UTF-8 mailbox
+        /// names in protocol responses.
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             /*
                 Example:  S: * LIST (\Noselect) "/" ~/Mail/foo
@@ -330,7 +286,7 @@ namespace LumiSoft.Net.IMAP
                 }
                 retVal.Append(") ");
                 retVal.Append(m_Delimiter != null ? "\"" + m_Delimiter + "\" " : "NIL ");
-                retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,encoding));
+                retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed));
                 retVal.Append("\r\n");
 
                 return retVal.ToString();

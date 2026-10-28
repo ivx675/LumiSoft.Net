@@ -5,40 +5,72 @@ using System.Text;
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class provides data for <b cref="IMAP_Session.Store">IMAP_Session.Store</b> event.
+    /// Provides data for the <see cref="IMAP_Session.StoreAsync"/>
+    /// event. This event allows the application to modify message flags
+    /// for one or more messages in the selected mailbox.
     /// </summary>
     public class IMAP_e_Store : EventArgs
     {
+        private IMAP_Session        m_pSession;
         private IMAP_r_ServerStatus m_pResponse;
         private string              m_Folder;
-        private IMAP_MessageInfo    m_pMsgInfo;
+        private IMAP_MessageInfo[]  m_pMessages;
         private IMAP_Flags_SetType  m_SetType   = IMAP_Flags_SetType.Replace;
         private string[]            m_pFlags;
  
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new <see cref="IMAP_e_Store"/> instance containing
+        /// information about the STORE operation requested by the client.
         /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="msgInfo">Message info.</param>
-        /// <param name="flagsSetType">Flags set type.</param>
-        /// <param name="flags">Flags.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b>,<b>msgInfo</b>,<b>flags</b> or <b>response</b> is null reference.</exception>
-        internal IMAP_e_Store(string folder,IMAP_MessageInfo msgInfo,IMAP_Flags_SetType flagsSetType,string[] flags,IMAP_r_ServerStatus response)
+        /// <param name="session">
+        /// The IMAP session that is processing the STORE command.
+        /// </param>
+        /// <param name="folder">
+        /// The mailbox containing the messages to be updated.
+        /// </param>
+        /// <param name="flagsSetType">
+        /// Specifies whether the supplied flags replace, add to, or remove
+        /// existing message flags.
+        /// </param>
+        /// <param name="flags">
+        /// The flags supplied by the client.
+        /// </param>
+        /// <param name="messages">
+        /// The messages affected by the STORE operation.
+        /// </param>
+        /// <param name="response">
+        /// The server response object used to return the result to the
+        /// client.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="session"/>,
+        /// <paramref name="folder"/>,
+        /// <paramref name="flags"/>,
+        /// <paramref name="messages"/>, or
+        /// <paramref name="response"/> is <see langword="null"/>.
+        /// </exception>
+        internal IMAP_e_Store(IMAP_Session session,string folder,IMAP_Flags_SetType flagsSetType,string[] flags,IMAP_MessageInfo[] messages,IMAP_r_ServerStatus response)
         {
-            if(folder == null){
-                throw new ArgumentNullException("folder");
+            if(session == null){
+                throw new ArgumentNullException(nameof(session));
             }
-            if(msgInfo == null){
-                throw new ArgumentNullException("msgInfo");
+            if(folder == null){
+                throw new ArgumentNullException(nameof(folder));
             }
             if(flags == null){
-                throw new ArgumentNullException("flags");
+                throw new ArgumentNullException(nameof(flags));
+            }
+            if(messages == null){
+                throw new ArgumentNullException(nameof(messages));
+            }
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
             }
 
+            m_pSession  = session;
             m_pResponse = response;
             m_Folder    = folder;
-            m_pMsgInfo  = msgInfo;
+            m_pMessages = messages;
             m_SetType   = flagsSetType;
             m_pFlags    = flags;
         }
@@ -47,16 +79,35 @@ namespace LumiSoft.Net.IMAP.Server
         #region Properties implementation
 
         /// <summary>
-        /// Gets or sets IMAP server response to this operation.
+        /// Gets the IMAP session associated with this event. The session provides
+        /// access to connection state, authentication status, and server-side
+        /// context required to process the current IMAP command.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when null reference value set.</exception>
+        public IMAP_Session Session
+        {
+            get{ return m_pSession; }
+        }
+
+        /// <summary>
+        /// Gets or sets the IMAP server response describing the outcome
+        /// of the STORE operation.
+        /// </summary>
+        /// <remarks>
+        /// Event handlers should assign an appropriate OK or NO response.
+        /// When a successful response is returned, the IMAP server
+        /// automatically generates any required FETCH responses and updates
+        /// the selected mailbox state.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when a null value is assigned.
+        /// </exception>
         public IMAP_r_ServerStatus Response
         {
             get{ return m_pResponse; }
 
             set{ 
                 if(value == null){
-                    throw new ArgumentNullException("value");
+                    throw new ArgumentNullException(nameof(value));
                 }
 
                 m_pResponse = value; 
@@ -64,7 +115,7 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets folder name with optional path.
+        /// Gets the mailbox containing the messages being updated.
         /// </summary>
         public string Folder
         {
@@ -72,27 +123,41 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets IMAP message info.
+        /// Gets the flag modification mode requested by the client.
         /// </summary>
-        public IMAP_MessageInfo MessageInfo
-        {
-            get{ return m_pMsgInfo; }
-        }
-
-        /// <summary>
-        /// Gets flags set type.
-        /// </summary>
+        /// <remarks>
+        /// Specifies whether the supplied flags replace existing flags,
+        /// are added to existing flags, or are removed from existing flags.
+        /// </remarks>
         public IMAP_Flags_SetType FlagsSetType
         {
             get{ return m_SetType; }
         }
 
         /// <summary>
-        /// Gets flags.
+        /// Gets the flags supplied by the client.
         /// </summary>
+        /// <remarks>
+        /// The interpretation of these flags depends on the value of
+        /// <see cref="FlagsSetType"/>.
+        /// </remarks>
         public string[] Flags
         {
             get{ return m_pFlags; }
+        }
+
+        /// <summary>
+        /// Gets the messages affected by the STORE operation.
+        /// </summary>
+        /// <remarks>
+        /// The messages are resolved by the IMAP server before the event is
+        /// raised and contain the cached metadata available to the current
+        /// session, including the application-defined message identifier,
+        /// UID, flags, size, and INTERNALDATE.
+        /// </remarks>
+        public IMAP_MessageInfo[] Messages
+        {
+            get{ return m_pMessages; }
         }
 
         #endregion

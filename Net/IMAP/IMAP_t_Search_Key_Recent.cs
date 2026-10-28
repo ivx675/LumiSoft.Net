@@ -7,15 +7,25 @@ using LumiSoft.Net.IMAP.Client;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// Represents the IMAP <c>RECENT</c> search key, which matches messages
-    /// carrying the <c>\Recent</c> flag.
+    /// Represents the IMAP <c>RECENT</c> search key, which matches
+    /// messages carrying the <c>\Recent</c> flag.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>RECENT</c> search key is defined by RFC 3501 and selects messages
-    /// that the server considers newly delivered to the mailbox. The
-    /// <c>\Recent</c> flag is session‑specific and may vary between clients
-    /// simultaneously accessing the same mailbox.
+    /// The <c>RECENT</c> search key is defined by RFC 3501 and selects
+    /// messages that the server considers newly delivered to the mailbox.
+    /// The <c>\Recent</c> flag is session-specific and may vary between
+    /// clients simultaneously accessing the same mailbox.
+    /// </para>
+    /// <para>
+    /// This search key is obsolete in IMAP4rev2 (RFC 9051) because the
+    /// <c>\Recent</c> message flag has been removed from the protocol.
+    /// New applications should not rely on the presence of the
+    /// <c>RECENT</c> search key.
+    /// </para>
+    /// <para>
+    /// Support for this search key is retained only for compatibility
+    /// with IMAP4rev1 clients.
     /// </para>
     /// </remarks>
     public class IMAP_t_Search_Key_Recent : IMAP_t_Search_Key
@@ -32,10 +42,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>RECENT</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Recent"/> instance representing
@@ -47,13 +57,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>RECENT</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Recent Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Recent Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"RECENT",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'RECENT' key.");
             }

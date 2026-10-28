@@ -2,12 +2,7 @@
 using LumiSoft.Net.IO;
 using LumiSoft.Net.Mail;
 using LumiSoft.Net.MIME;
-using LumiSoft.Net.POP3;
-using LumiSoft.Net.POP3.Server;
 using LumiSoft.Net.TCP;
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Net.Sockets;
 using System.Security.Principal;
 using System.Text;
@@ -15,54 +10,89 @@ using System.Text;
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class implements IMAP server session. Defined RFC 3501.
+    /// This class implements IMAP server session. Defined RFC 9051.
     /// </summary>
     public class IMAP_Session : TCP_ServerSession
     {
         #region class _SelectedFolder
 
         /// <summary>
-        /// This class holds selected folder data.
+        /// Represents mailbox state maintained by an IMAP session for the
+        /// currently selected mailbox.
         /// </summary>
+        /// <remarks>
+        /// This class maintains the session's cached mailbox state
+        /// including mailbox metadata, message information, mailbox
+        /// version, and UID tracking information required for IMAP
+        /// operations such as FETCH, SEARCH, EXPUNGE, and mailbox
+        /// synchronization.
+        /// </remarks>
         private class _SelectedFolder
         {
             private string                 m_Folder;
             private bool                   m_IsReadOnly    = false;
-            private List<IMAP_MessageInfo> m_pMessagesInfo;
+            private List<IMAP_MessageInfo> m_pMessages;
+            private long                   m_MaxUid = 0;
 
             /// <summary>
-            /// Default constructor.
+            /// Initializes a new <see cref="_SelectedFolder"/> instance.
             /// </summary>
-            /// <param name="folder">Folder name with optional path.</param>
-            /// <param name="isReadOnly">Specifies if folder is read only.</param>
-            /// <param name="messagesInfo">Messages info.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>messagesInfo</b> is null reference.</exception>
-            public _SelectedFolder(string folder,bool isReadOnly,List<IMAP_MessageInfo> messagesInfo)
+            /// <param name="folder">
+            /// The selected mailbox name.
+            /// </param>
+            /// <param name="version">
+            /// The mailbox version associated with the selected mailbox.
+            /// </param>
+            /// <param name="isReadOnly">
+            /// Specifies whether the mailbox was selected in read-only mode.
+            /// </param>
+            /// <param name="messages">
+            /// The initial mailbox message information cache.
+            /// </param>
+            /// <exception cref="ArgumentNullException">
+            /// Thrown when <paramref name="folder"/> or
+            /// <paramref name="messages"/> is
+            /// <see langword="null"/>.
+            /// </exception>
+            public _SelectedFolder(string folder,long version,bool isReadOnly,List<IMAP_MessageInfo> messages)
             {
                 if(folder == null){
-                    throw new ArgumentNullException("folder");
+                    throw new ArgumentNullException(nameof(folder));
                 }
-                if(messagesInfo == null){
-                    throw new ArgumentNullException("messagesInfo");
+                if(messages == null){
+                    throw new ArgumentNullException(nameof(messages));
                 }
 
-                m_Folder        = folder;
-                m_IsReadOnly    = isReadOnly;
-                m_pMessagesInfo = messagesInfo;
+                m_Folder     = folder;
+                Version      = version;
+                m_IsReadOnly = isReadOnly;
+                m_pMessages  = messages;
 
-                Reindex();
+                if(messages.Count > 0){
+                    m_MaxUid = messages[messages.Count - 1].UID;
+                }
             }
                         
 
             #region method Filter
 
             /// <summary>
-            /// Gets messages which match to the specified sequence set.
+            /// Gets messages matching the specified sequence set.
             /// </summary>
-            /// <param name="uid">Specifies if sequence set contains UID or sequence numbers.</param>
-            /// <param name="seqSet">Sequence set.</param>
-            /// <returns>Returns messages which match to the specified sequence set.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>seqSet</b> is null reference.</exception>
+            /// <param name="uid">
+            /// Specifies whether the sequence set contains UIDs or IMAP
+            /// sequence numbers.
+            /// </param>
+            /// <param name="seqSet">
+            /// The sequence set to match.
+            /// </param>
+            /// <returns>
+            /// An array containing all matching messages.
+            /// </returns>
+            /// <exception cref="ArgumentNullException">
+            /// Thrown when <paramref name="seqSet"/> is
+            /// <see langword="null"/>.
+            /// </exception>
             internal IMAP_MessageInfo[] Filter(bool uid,IMAP_t_SeqSet seqSet)
             {
                 if(seqSet == null){
@@ -70,8 +100,8 @@ namespace LumiSoft.Net.IMAP.Server
                 }
 
                 List<IMAP_MessageInfo> retVal = new List<IMAP_MessageInfo>();
-                for(int i=0;i<m_pMessagesInfo.Count;i++){
-                    IMAP_MessageInfo msgInfo = m_pMessagesInfo[i];                    
+                for(int i=0;i<m_pMessages.Count;i++){
+                    IMAP_MessageInfo msgInfo = m_pMessages[i];                    
                     if(uid){
                         if(seqSet.Contains(msgInfo.UID)){
                             retVal.Add(msgInfo);
@@ -89,20 +119,75 @@ namespace LumiSoft.Net.IMAP.Server
 
             #endregion
 
+            #region method AddMessage
+
+            /// <summary>
+            /// Adds the specified message to the mailbox cache.
+            /// </summary>
+            /// <param name="message">
+            /// The message information to add.
+            /// </param>
+            /// <exception cref="ArgumentNullException">
+            /// Thrown when <paramref name="message"/> is
+            /// <see langword="null"/>.
+            /// </exception>
+            internal void AddMessage(IMAP_MessageInfo message)
+            {
+                if(message == null){
+                    throw new ArgumentNullException("message");
+                }
+
+                m_MaxUid = message.UID;
+
+                m_pMessages.Add(message);
+            }
+
+            #endregion
+
             #region method RemoveMessage
 
             /// <summary>
-            /// Removes specified message from messages info.
+            /// Removes the specified message from the mailbox cache.
             /// </summary>
-            /// <param name="message">Message info.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>message</b> is null reference.</exception>
+            /// <param name="message">
+            /// The message to remove.
+            /// </param>
+            /// <exception cref="ArgumentNullException">
+            /// Thrown when <paramref name="message"/> is
+            /// <see langword="null"/>.
+            /// </exception>
             internal void RemoveMessage(IMAP_MessageInfo message)
             {
                 if(message == null){
                     throw new ArgumentNullException("message");
                 }
 
-                m_pMessagesInfo.Remove(message);
+                m_pMessages.Remove(message);
+            }
+
+            #endregion
+
+            #region method GetMessage
+
+            /// <summary>
+            /// Gets the message with the specified UID.
+            /// </summary>
+            /// <param name="uid">
+            /// The UID of the message to retrieve.
+            /// </param>
+            /// <returns>
+            /// The matching <see cref="IMAP_MessageInfo"/> instance if found;
+            /// otherwise, <see langword="null"/>.
+            /// </returns>
+            public IMAP_MessageInfo? GetMessage(long uid)
+            {
+                foreach(IMAP_MessageInfo msgInfo in m_pMessages){
+                    if(msgInfo.UID == uid){
+                        return msgInfo;
+                    }
+                }
+                
+                return null;
             }
 
             #endregion
@@ -110,48 +195,48 @@ namespace LumiSoft.Net.IMAP.Server
             #region method GetSeqNo
 
             /// <summary>
-            /// Gets specified message info IMAP 1-based sequence number.
+            /// Gets the IMAP 1-based sequence number of the specified
+            /// message.
             /// </summary>
-            /// <param name="msgInfo">Message info.</param>
-            /// <returns>Returns specified message info IMAP 1-based sequence number.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>msgInfo</b> is null reference.</exception>
+            /// <param name="msgInfo">
+            /// The message whose sequence number is requested.
+            /// </param>
+            /// <returns>
+            /// The IMAP 1-based sequence number.
+            /// </returns>
+            /// <exception cref="ArgumentNullException">
+            /// Thrown when <paramref name="msgInfo"/> is
+            /// <see langword="null"/>.
+            /// </exception>
             internal int GetSeqNo(IMAP_MessageInfo msgInfo)
             {
                 if(msgInfo == null){
                     throw new ArgumentNullException("msgInfo");
                 }
 
-                return m_pMessagesInfo.IndexOf(msgInfo) + 1;
+                return m_pMessages.IndexOf(msgInfo) + 1;
             }
 
             /// <summary>
-            /// Gets specified message IMAP 1-based sequence number.
+            /// Gets the IMAP 1-based sequence number of the specified
+            /// message.
             /// </summary>
-            /// <param name="uid">Message UID.</param>
-            /// <returns>Returns specified message info IMAP 1-based sequence number or -1 if no such message.</returns>
+            /// <param name="uid">
+            /// The UID of the message.
+            /// </param>
+            /// <returns>
+            /// The IMAP 1-based sequence number if the message exists;
+            /// otherwise, -1.
+            /// </returns>
             internal int GetSeqNo(long uid)
             {
-                foreach(IMAP_MessageInfo msgInfo in m_pMessagesInfo){
-                    if(msgInfo.UID == uid){
-                        return msgInfo.SeqNo;
+                for(int i=0;i<m_pMessages.Count;i++){
+                    if(m_pMessages[i].UID == uid){
+                        return i + 1;
                     }
                 }
-                
+
                 return -1;
-            }
-
-            #endregion
-
-            #region method Reindex
-
-            /// <summary>
-            /// Reindexes messages sequence numbers.
-            /// </summary>
-            internal void Reindex()
-            {
-                for(int i=0;i<m_pMessagesInfo.Count;i++){
-                    m_pMessagesInfo[i].SeqNo = i + 1;
-                }
             }
 
             #endregion
@@ -160,7 +245,7 @@ namespace LumiSoft.Net.IMAP.Server
             #region Properties implementation
 
             /// <summary>
-            /// Gets folder name with optional path.
+            /// Gets the name of the selected mailbox.
             /// </summary>
             public string Folder
             {
@@ -168,7 +253,8 @@ namespace LumiSoft.Net.IMAP.Server
             }
 
             /// <summary>
-            /// Gets if folder is read-only.
+            /// Gets a value indicating whether the mailbox is open in
+            /// read-only mode.
             /// </summary>
             public bool IsReadOnly
             {
@@ -176,464 +262,56 @@ namespace LumiSoft.Net.IMAP.Server
             }
 
             /// <summary>
-            /// Gets messages info.
+            /// Gets or sets the mailbox version associated with the selected
+            /// mailbox.
             /// </summary>
-            internal IMAP_MessageInfo[] MessagesInfo
+            /// <remarks>
+            /// The IMAP session uses this value to determine whether the
+            /// mailbox state has changed and requires synchronization.
+            /// </remarks>
+            internal long Version
             {
-                get{ return m_pMessagesInfo.ToArray(); }
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        #region class _CmdReader
-
-        /// <summary>
-        /// This class implements IMAP client command reader.
-        /// </summary>
-        /// <remarks>Because IMAP command can contain literal strings, then command text can be multiline.</remarks>
-        private class _CmdReader
-        {
-            private IMAP_Session m_pSession;
-            private string       m_InitialCmdLine;
-            private Encoding     m_pCharset;
-            private int          m_MaxLiteralCount = 99;
-            private int          m_LiteralCount    = 0;
-            private string       m_CmdLine         = "";
-            private int          m_MaxLiteralSize  = 32000;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="session">Owner IMAP session.</param>
-            /// <param name="initialCmdLine">IMAP client initial command line.</param>
-            /// <param name="charset">IMAP literal strings charset encoding.</param>
-            /// <param name="maxLiteralCount">Maximum count string literal to read.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>session</b>,<b>initialCmdLine</b> or <b>charset</b> is null reference.</exception>
-            public _CmdReader(IMAP_Session session,string initialCmdLine,Encoding charset,int maxLiteralCount)
-            {    
-                if(session == null){
-                    throw new ArgumentNullException("session");
-                }
-                if(initialCmdLine == null){
-                    throw new ArgumentNullException("initialCmdLine");
-                }
-                if(charset == null){
-                    throw new ArgumentNullException("charset");
-                }                
-                if(maxLiteralCount < 1){
-                    throw new ArgumentException("Tere must be at least 1 string literal !","maxLiteralCount");
-                }
-
-                m_pSession        = session;
-                m_InitialCmdLine  = initialCmdLine;
-                m_pCharset        = charset;
-                m_MaxLiteralCount = maxLiteralCount;
-            }
-
-
-            #region method Start
-
-            /// <summary>
-            /// Start operation processing.
-            /// </summary>
-            public void Start()
-            {
-                /* RFC 3501.
-                    literal = "{" number "}" CRLF *CHAR8
-                              ; Number represents the number of CHAR8s
-                */
-                ArgumentNullException.ThrowIfNull(m_pSession.TcpStream);
-
-                // TODO: Async
-                // TODO: Limit total command size. 64k ? 
-
-
-                // If initial command line ends with literal string, read literal string and remaining command text.
-                if (EndsWithLiteralString(m_InitialCmdLine)){
-                    StringBuilder cmdText     = new StringBuilder();
-                    int           literalSize = GetLiteralSize(m_InitialCmdLine);
-
-                    // Add initial command line part to command text.
-                    cmdText.Append(RemoveLiteralSpecifier(m_InitialCmdLine));
-
-                    byte[] lineBuffer = new byte[64000];
-                    while(m_MaxLiteralCount > m_LiteralCount){
-                        #region Read literal string
-
-                        if(literalSize > m_MaxLiteralSize){
-                            throw new DataSizeExceededException();
-                        }
-
-                        // Send "+ Continue".
-                        m_pSession.WriteLine("+ Continue.");
-
-                        // Read literal string.
-                        MemoryStream msLiteral = new MemoryStream();
-                        m_pSession.TcpStream.ReadFixedCount(msLiteral,literalSize);
-                        
-                        // Log
-                        m_pSession.LogAddRead(literalSize,m_pCharset.GetString(msLiteral.ToArray()));
-
-                        // Add to command text as quoted string.
-                        cmdText.Append(TextUtils.QuoteString(m_pCharset.GetString(msLiteral.ToArray())));
-
-                        #endregion
-                        
-                        #region Read continuing command text
-
-                        // Read continuing command text.
-                        var readLineResult = m_pSession.TcpStream.ReadLine(lineBuffer,SizeExceededAction.JunkAndThrowException);
-
-                        string line = readLineResult.LineUtf8 ?? string.Empty;
-
-                        // Log
-                        m_pSession.LogAddRead(readLineResult.BytesInBuffer,line);
-
-                        // Add command line part to command text.
-                        if(EndsWithLiteralString(line)){
-                            cmdText.Append(RemoveLiteralSpecifier(line));
-                        }
-                        else{
-                            cmdText.Append(line);
-                        }
-
-                        // No more literal string, we are done.
-                        if(!EndsWithLiteralString(line)){
-                            break;
-                        }
-                        else{
-                            literalSize = GetLiteralSize(line);
-                        }
-
-                        #endregion
-                    }
-
-                    m_CmdLine = cmdText.ToString();
-                    m_LiteralCount++;
-                }
-                // We have no literal string, so initial cmd line is final.
-                else{
-                    m_CmdLine = m_InitialCmdLine;
-                }                
-            }
-
-            #endregion
-
-
-            #region static method EndsWithLiteralString
-
-            /// <summary>
-            /// Cheks if specified value ends with IMAP literal string.
-            /// </summary>
-            /// <param name="value">Data value.</param>
-            /// <returns>Returns true if value ends with IMAP literal string, otherwise false.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-            public static bool EndsWithLiteralString(string value)
-            {
-                if(value == null){
-                    throw new ArgumentNullException("value");
-                }
-
-                if(value.EndsWith("}")){
-                    int    digitCount = 0;
-                    char[] chars      = value.ToCharArray();
-                    for(int i=chars.Length-2;i>=0;i--){
-                        // We have literal string start tag.
-                        if(chars[i] == '{'){
-                            break;
-                        }
-                        // Literal string length specifier digit.
-                        else if(char.IsDigit(chars[i])){
-                            digitCount++;
-                        }
-                        // Not IMAP literal string char, so we don't have literal string.
-                        else{
-                            return false;
-                        }
-                    }
-
-                    // We must have at least single digit literal string length specifier.
-                    if(digitCount > 0){
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-
-            #endregion
-
-
-            #region method GetLiteralSize
-
-            /// <summary>
-            /// Gets literal string bytes count.
-            /// </summary>
-            /// <param name="cmdLine">Command line with ending literal string.</param>
-            /// <returns>Returns literal string byte count.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>cmdLine</b> is null reference.</exception>
-            private int GetLiteralSize(string cmdLine)
-            {
-                if(cmdLine == null){
-                    throw new ArgumentNullException("cmdLine");
-                }
-
-                return Convert.ToInt32(cmdLine.Substring(cmdLine.LastIndexOf('{') + 1,cmdLine.Length - cmdLine.LastIndexOf('{') - 2));
-            }
-
-            #endregion
-
-            #region method RemoveLiteralSpecifier
-
-            /// <summary>
-            /// Removes literal string specifier({no_bytes}) from the specified string.
-            /// </summary>
-            /// <param name="value">Command line with ending literal string specifier.</param>
-            /// <returns>Returns command line without literal string specifier.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-            private string RemoveLiteralSpecifier(string value)
-            {
-                if(value == null){
-                    throw new ArgumentNullException("value");
-                }
-
-                return value.Substring(0,value.LastIndexOf('{'));
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets command line text.
-            /// </summary>
-            public string CmdLine
-            {
-                get{ return m_CmdLine;}
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        #region class ResponseSender
-
-        /// <summary>
-        /// This class implements IMAP response sender.
-        /// </summary>
-        private class ResponseSender
-        {
-            #region class QueueItem
-
-            /// <summary>
-            /// This class represents queued IMAP response and it's status.
-            /// </summary>
-            private class QueueItem
-            {
-                private bool                                 m_IsSent                  = false;
-                private IMAP_r                               m_pResponse;
-                private EventHandler<EventArgs<Exception?>>? m_pCompletedAsyncCallback = null;
-
-                /// <summary>
-                /// Default constructor.
-                /// </summary>
-                /// <param name="response">IMAP response.</param>
-                /// <param name="completedAsyncCallback">Callback to be called when response sending completes asynchronously.</param>
-                /// <exception cref="ArgumentNullException">Is raised when <b>response</b> is null reference.</exception>
-                public QueueItem(IMAP_r response,EventHandler<EventArgs<Exception?>>? completedAsyncCallback)
-                {
-                    if(response == null){
-                        throw new ArgumentNullException("response");
-                    }
-
-                    m_pResponse               = response;
-                    m_pCompletedAsyncCallback = completedAsyncCallback;
-                }
-
-
-                #region Properties implementation
-
-                /// <summary>
-                /// Gets or sets if IMAP response is sent.
-                /// </summary>
-                public bool IsSent
-                {
-                    get{ return m_IsSent; }
-
-                    set{ m_IsSent = value; }
-                }
-
-                /// <summary>
-                /// Gets IMAP response.
-                /// </summary>
-                public IMAP_r Response
-                {
-                    get{ return m_pResponse; }
-                }
-
-                /// <summary>
-                /// Gets callback to be called when response sending completes asynchronously.
-                /// </summary>
-                public EventHandler<EventArgs<Exception?>>? CompletedAsyncCallback
-                {
-                    get{ return m_pCompletedAsyncCallback; }
-                }
-
-                #endregion
-            }
-
-            #endregion
-
-            private object           m_pLock      = new object();
-            private IMAP_Session     m_pImap;
-            private bool             m_IsSending  = false;
-            private Queue<QueueItem> m_pResponses;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="session">Owner IMAP session.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>session</b> is null reference.</exception>
-            public ResponseSender(IMAP_Session session)
-            {
-                if(session == null){
-                    throw new ArgumentNullException("session");
-                }
-
-                m_pImap = session;
-
-                m_pResponses = new Queue<QueueItem>();
-            }
-
-            #region method Dispose
-
-            /// <summary>
-            /// Cleans up any resources being used.
-            /// </summary>
-            public void Dispose()
-            {
-            }
-
-            #endregion
-
-
-            #region method SendResponseAsync
-
-            /// <summary>
-            /// Starts sending response.
-            /// </summary>
-            /// <param name="response">IMAP response.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>response</b> is null reference.</exception>
-            public void SendResponseAsync(IMAP_r response)
-            {
-                if(response == null){
-                    throw new ArgumentNullException("response");
-                }
-
-                SendResponseAsync(response,null);
+                get;
+                set;
             }
 
             /// <summary>
-            /// Starts sending response.
+            /// Gets the messages currently known to exist in the selected
+            /// mailbox.
             /// </summary>
-            /// <param name="response">IMAP response.</param>
-            /// <param name="completedAsyncCallback">Callback to be called when this method completes asynchronously.</param>
-            /// <returns>Returns true is method completed asynchronously(the completedAsyncCallback is raised upon completion of the operation).
-            /// Returns false if operation completed synchronously.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>response</b> is null reference.</exception>
-            public bool SendResponseAsync(IMAP_r response,EventHandler<EventArgs<Exception?>>? completedAsyncCallback)
+            /// <remarks>
+            /// The returned collection represents the mailbox state
+            /// currently cached by the IMAP session and is used for
+            /// message lookup, sequence number calculation,
+            /// synchronization, and generation of mailbox update
+            /// responses.
+            /// </remarks>
+            internal IMAP_MessageInfo[] Messages
             {
-                if(response == null){
-                    throw new ArgumentNullException("response");
-                }
-
-                QueueItem responseItem = new QueueItem(response,completedAsyncCallback);
-                m_pResponses.Enqueue(responseItem);
-
-                // Start sending response(s).
-                SendResponsesAsync(false);
-
-                return !responseItem.IsSent;
+                get{ return m_pMessages.ToArray(); }
             }
 
-            #endregion
-
-
-            #region method SendResponsesAsync
-
             /// <summary>
-            /// Starts sending queued responses.
+            /// Gets the highest UID ever observed by the selected mailbox
+            /// cache.
             /// </summary>
-            /// <param name="calledFromAsync">Specifies if this methd is called from asynchronous operation.</param>
-            private void SendResponsesAsync(bool calledFromAsync)
+            /// <remarks>
+            /// This value is used to validate mailbox synchronization data
+            /// and detect newly added messages.
+            /// <para>
+            /// A newly discovered message that does not already exist in the
+            /// session cache is generally expected to have a UID greater than
+            /// this value.
+            /// </para>
+            /// <para>
+            /// Unlike sequence numbers, IMAP UIDs are monotonically
+            /// increasing. Consequently, this value is not reduced when
+            /// messages are removed from the mailbox.
+            /// </para>
+            /// </remarks>
+            internal long MaxUid
             {
-                lock(m_pLock){
-                    if(m_IsSending || m_pResponses.Count == 0){
-                        return;
-                    }
-                    m_IsSending = true;
-                }
-
-                QueueItem? responseItem = null;
-
-                // Create callback which is called when SendAsync completes asynchronously.
-                EventHandler<EventArgs<Exception?>> completedAsyncCallback = delegate(object? s,EventArgs<Exception?> e){
-                    try{
-                        // Call callback.
-                        if(responseItem != null && responseItem.CompletedAsyncCallback != null){
-                            responseItem.CompletedAsyncCallback(this,e);
-                        }
-
-                        // We don't need lock here, we don't care if some Thread or our call to SendResponsesAsync continues responses sending.
-                        m_IsSending = false;
-                                                                        
-                        // Continue sending queued responses, if any.
-                        SendResponsesAsync(true);
-                    }
-                    catch(Exception x){                     
-                        m_pImap.OnError(x);
-                        m_IsSending = false;
-                    }
-                };
-
-                try{
-                    // Send responses.
-                    while(m_pResponses.Count > 0){
-                        responseItem = m_pResponses.Dequeue();
-
-                        // Response sending completed asynchronously, completedAsyncCallback will be called when operation completes.
-                        if(responseItem.Response.SendAsync(m_pImap,completedAsyncCallback)){
-                            return;
-                        }
-                        // Response sending completed synchronously.
-                        else{
-                            responseItem.IsSent = true;
-
-                            // This method(SendResponsesAsync) is called from completedAsyncCallback.
-                            // Response sending has completed asynchronously, call callback.
-                            if(calledFromAsync && responseItem.CompletedAsyncCallback != null){
-                                responseItem.CompletedAsyncCallback(this,new EventArgs<Exception?>(null));
-                            }
-                        }
-
-                        lock(m_pLock){
-                            if(m_pResponses.Count == 0){                    
-                                m_IsSending = false;
-
-                                return;
-                            }
-                        }
-                    }
-                }
-                catch(Exception x){
-                    m_pImap.OnError(x);
-                    m_IsSending = false;
-                }                
+                get => m_MaxUid;
             }
 
             #endregion
@@ -648,8 +326,7 @@ namespace LumiSoft.Net.IMAP.Server
         private char                                         m_FolderSeparator  = '/';
         private GenericIdentity?                             m_pUser            = null;
         private _SelectedFolder?                             m_pSelectedFolder  = null;
-        private IMAP_Mailbox_Encoding                        m_MailboxEncoding  = IMAP_Mailbox_Encoding.ImapUtf7;
-        private ResponseSender                               m_pResponseSender;
+        private bool                                         m_Utf8Enabled      = false;
 
         /// <summary>
         /// Default constructor.
@@ -659,9 +336,7 @@ namespace LumiSoft.Net.IMAP.Server
             m_pAuthentications = new Dictionary<string,AUTH_SASL_ServerMechanism>(StringComparer.CurrentCultureIgnoreCase);
 
             m_pCapabilities = new List<string>();
-            m_pCapabilities.AddRange(new string[]{"IMAP4rev1","NAMESPACE","QUOTA","ACL","IDLE","ENABLE",/*"UTF8=ACCEPT",*/"SASL-IR"});
-
-            m_pResponseSender = new ResponseSender(this);
+            m_pCapabilities.AddRange(new string[]{"IMAP4rev2","NAMESPACE","QUOTA","ACL","IDLE","ENABLE","UTF8=ACCEPT","SASL-IR","UIDPLUS"});
         }
 
         #region override method Dispose
@@ -678,36 +353,38 @@ namespace LumiSoft.Net.IMAP.Server
 
             m_pUser = null;
             m_pSelectedFolder = null;
-            if(m_pResponseSender != null){
-                m_pResponseSender.Dispose();
-            }
 
             // Release events
-            this.Started         = null;
-            this.Login           = null;
-            this.Namespace       = null;
-            this.List            = null;
-            this.Create          = null;
-            this.Delete          = null;
-            this.Rename          = null;
-            this.LSub            = null;
-            this.Subscribe       = null;
-            this.Unsubscribe     = null;
-            this.Select          = null;
-            this.GetMessagesInfo = null;
-            this.Append          = null;
-            this.GetQuotaRoot    = null;
-            this.GetQuota        = null;
-            this.GetAcl          = null;
-            this.SetAcl          = null;
-            this.DeleteAcl       = null;
-            this.ListRights      = null;
-            this.MyRights        = null;
-            this.Fetch           = null;
-            this.Search          = null;
-            this.Store           = null;
-            this.Copy            = null;
-            this.Expunge         = null;
+            this.StartedAsync        = null;
+            this.AuthLoginAsync      = null;
+            this.NamespaceAsync      = null;
+            this.ListAsync           = null;
+            this.CreateAsync         = null;
+            this.DeleteAsync         = null;
+            this.RenameAsync         = null;
+            this.LSubAsync           = null;
+            this.SubscribeAsync      = null;
+            this.UnsubscribeAsync    = null;
+            this.StatusAsync         = null;
+            this.SelectAsync         = null;
+            this.ExamineAsync        = null;
+            this.FolderSyncAsync     = null;
+            this.AppendBeginAsync    = null;
+            //this.AppendCancelAsync   = null; // Don't release it, otherwise pending APPEND message can't be canceled.
+            this.AppendCompleteAsync = null;
+            this.GetQuotaRootAsync   = null;
+            this.GetQuotaAsync       = null;
+            this.GetAclAsync         = null;
+            this.SetAclAsync         = null;
+            this.DeleteAclAsync      = null;
+            this.ListRightsAsync     = null;
+            this.MyRightsAsync       = null;
+            this.FetchAsync          = null;
+            this.SearchAsync         = null;
+            this.StoreAsync          = null;
+            this.CopyAsync           = null;
+            this.MoveAsync           = null;
+            this.ExpungeAsync        = null;
         }
 
         #endregion
@@ -724,13 +401,13 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-        #region override method OnError
+        #region override method OnErrorAsync
 
         /// <summary>
         /// Is called when session has processing error.
         /// </summary>
         /// <param name="x">Exception happened.</param>
-        protected override void OnError(Exception x)
+        protected override async Task OnErrorAsync(Exception x)
         {
             if(this.IsDisposed){
                 return;
@@ -739,10 +416,6 @@ namespace LumiSoft.Net.IMAP.Server
                 return;
             }
 
-            /* Error handling:
-                IO and Socket exceptions are permanent, so we must end session.
-            */
-
             try{
                 LogAddText("Exception: " + x.Message);
 
@@ -750,18 +423,19 @@ namespace LumiSoft.Net.IMAP.Server
                 if(x is IOException || x is SocketException){
                     Dispose();
                 }
-                // xxx error, may be temporary.
+                // Unknown error.
                 else{
-                    base.OnError(x);
+                    // Raise IMAP_Server.Error event.
+                    await base.OnErrorAsync(x);
 
                     // Try to send "* BAD Internal server error."
                     try{
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("BAD","Internal server error: " + x.Message));
+                        await SendResponseAsync(new IMAP_r_u_ServerStatus("BAD","Internal server error: " + x.Message),true);
                     }
-                    catch{
-                        // Error is permanent.
-                        Dispose();
+                    catch{                        
                     }
+
+                    Disconnect();
                 }
             }
             catch{
@@ -781,8 +455,9 @@ namespace LumiSoft.Net.IMAP.Server
         /// </remarks>
         protected override async Task OnTimeoutAsync()
         {
-            try{                
-                WriteLine("* BYE Idle timeout, closing connection.");
+            try{
+                var sendTask =  SendResponseAsync(new IMAP_r_u_Bye("Idle timeout, closing connection."),true);
+                await sendTask.WaitAsync(TimeSpan.FromSeconds(5));
             }
             catch{
                 // Skip errors.
@@ -798,34 +473,34 @@ namespace LumiSoft.Net.IMAP.Server
 
         internal async void RunAsync()
         {
-            /* RFC 3501 7.1.1. Greeting text.
+            /* RFC 9051 7.1.1. Greeting text.
                 The untagged form is also used as one of three possible greetings
-                at connection startup.  It indicates that the connection is not
-                yet authenticated and that a LOGIN command is needed.
+                at connection startup.
 
-                Example:    S: * OK IMAP4rev1 server ready
-                            C: A001 LOGIN fred blurdybloop
-                            S: * OK [ALERT] System shutdown in 10 minutes
-                            S: A001 OK LOGIN Completed
+                Example:    S: * OK IMAP4rev2 server ready
             */
 
             try{
                 IMAP_r_u_ServerStatus? response = null;
                 if(string.IsNullOrEmpty(this.Server.GreetingText)){
-                    response = new IMAP_r_u_ServerStatus("OK","<" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> IMAP4rev1 server ready.");
+                    response = new IMAP_r_u_ServerStatus("OK","<" + Net_Utils.GetLocalHostName(this.LocalHostName) + "> IMAP server ready.");
                 }
                 else{
                     response = new IMAP_r_u_ServerStatus("OK",this.Server.GreetingText);
                 }
                 
-                IMAP_e_Started e = OnStarted(response);
-         
-                if(e.Response != null){
-                    m_pResponseSender.SendResponseAsync(e.Response);
-                }
+                // Raise event StartedAsync.
+                if(this.StartedAsync != null){
+                    IMAP_e_Started eArgs = new IMAP_e_Started(this,response);
+                    await this.StartedAsync(eArgs);
 
-                // Setup rejected flag, so we respond "* NO Session rejected." any command except LOGOUT.
-                if(e.Response == null || e.Response.ResponseCode.Equals("NO",StringComparison.InvariantCultureIgnoreCase)){
+                    response = eArgs.Response;
+                }
+                
+                await SendResponseAsync(response,true);
+
+                // Session rejected flag, so we respond "NO Session rejected." any command except LOGOUT.
+                if(!string.Equals(response.ResponseCode,"OK",StringComparison.OrdinalIgnoreCase)){
                     m_SessionRejected = true;
                 }
 
@@ -844,9 +519,9 @@ namespace LumiSoft.Net.IMAP.Server
 
                     string[] cmd_args = line.Split(new char[]{' '},3);
                     if(cmd_args.Length < 2){
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("BAD","Error: Command '" + line + "' not recognized."));
+                        await SendResponseAsync(new IMAP_r_u_ServerStatus("BAD","Error: Command '" + line + "' not recognized."),true);
 
-                        return;
+                        continue;
                     }
                     string   cmdTag   = cmd_args[0];
                     string   cmd      = cmd_args[1].ToUpperInvariant();
@@ -854,129 +529,131 @@ namespace LumiSoft.Net.IMAP.Server
 
                     // Log.
                     if(this.Server.Logger != null){
-                        string responseLine = line ?? "";
+                        bool isDebug = false;
+                        #if DEBUG
+                            isDebug = true;
+                        #endif
+
                         // Hide password from log.
-                        if(cmd == "LOGIN"){                        
-                            this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,responseLine.Substring(0,responseLine.LastIndexOf(' ')) + " <***REMOVED***>",this.LocalEndPoint,this.RemoteEndPoint);
+                        if(!isDebug && cmd == "LOGIN"){  
+                            LogAddRead(readLineResult.BytesInBuffer,line.Substring(0,line.LastIndexOf(' ')) + " <***REMOVED***>");
+                        }
+                        // Hide client initial response from log.
+                        else if (!isDebug && cmd == "AUTHENTICATE" && args.Split(' ').Length > 1){
+                            LogAddRead(readLineResult.BytesInBuffer,line.Substring(0,line.LastIndexOf(' ')) + " <***REMOVED***>");
                         }
                         else{
-                            this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,responseLine,this.LocalEndPoint,this.RemoteEndPoint);
+                            LogAddRead(readLineResult.BytesInBuffer,line);
                         }
-                    }
-
-                    // Command line continues(ends with IMAP literal-string), read while we have full command line.
-                    // Skip APPEND command, we handle it specially.
-                    if(_CmdReader.EndsWithLiteralString(args) && !string.Equals(cmd,"APPEND",StringComparison.InvariantCultureIgnoreCase)){
-                        _CmdReader cmdReader = new _CmdReader(this,args,Encoding.UTF8,99);            
-                        cmdReader.Start();
-
-                        args = cmdReader.CmdLine;
                     }
 
                     if(cmd == "STARTTLS"){                    
-                        STARTTLS(cmdTag,args);
+                        await StartTlsAsync(cmdTag,args);
                     }
                     else if(cmd == "LOGIN"){
-                        LOGIN(cmdTag,args);
+                        await LoginAsync(cmdTag,args);
                     }
                     else if(cmd == "AUTHENTICATE"){
-                        AUTHENTICATE(cmdTag,args);
+                        await AuthenticateAsync(cmdTag,args);
                     }
                     else if(cmd == "NAMESPACE"){
-                        NAMESPACE(cmdTag,args);
+                        await _NamespaceAsync(cmdTag,args);
                     }
                     else if(cmd == "LIST"){
-                        LIST(cmdTag,args);
+                        await _ListAsync(cmdTag,args);
                     }
                     else if(cmd == "CREATE"){
-                        CREATE(cmdTag,args);
+                        await _CreateAsync(cmdTag,args);
                     }
                     else if(cmd == "DELETE"){
-                        DELETE(cmdTag,args);
+                        await _DeleteAsync(cmdTag,args);
                     }
                     else if(cmd == "RENAME"){
-                        RENAME(cmdTag,args);
+                        await _RenameAsync(cmdTag,args);
                     }
                     else if(cmd == "LSUB"){
-                        LSUB(cmdTag,args);
+                        await _LSub(cmdTag,args);
                     }
                     else if(cmd == "SUBSCRIBE"){
-                        SUBSCRIBE(cmdTag,args);
+                        await _SubscribeAsync(cmdTag,args);
                     }
                     else if(cmd == "UNSUBSCRIBE"){
-                        UNSUBSCRIBE(cmdTag,args);
+                        await _UnsubscribeAsync(cmdTag,args);
                     }
                     else if(cmd == "STATUS"){
-                        STATUS(cmdTag,args);
+                        await _StatusAsync(cmdTag,args);
                     }
                     else if(cmd == "SELECT"){
-                        SELECT(cmdTag,args);
+                        await _SelectAsync(cmdTag,args);
                     }
                     else if(cmd == "EXAMINE"){
-                        EXAMINE(cmdTag,args);
+                        await _ExamineAsync(cmdTag,args);
                     }
                     else if(cmd == "APPEND"){
-                        await AppendAsync(cmdTag,args);
+                        await _AppendAsync(cmdTag,args);
                     }
                     else if(cmd == "GETQUOTAROOT"){
-                        GETQUOTAROOT(cmdTag,args);
+                        await _GetQuotaRootAsync(cmdTag,args);
                     }
                     else if(cmd == "GETQUOTA"){
-                        GETQUOTA(cmdTag,args);
+                        await _GetQuotaAsync(cmdTag,args);
                     }
                     else if(cmd == "GETACL"){
-                        GETACL(cmdTag,args);
+                        await _GetAcl(cmdTag,args);
                     }
                     else if(cmd == "SETACL"){
-                        SETACL(cmdTag,args);
+                        await _SetAclAsync(cmdTag,args);
                     }
                     else if(cmd == "DELETEACL"){
-                        DELETEACL(cmdTag,args);
+                        await _DeleteAclAsync(cmdTag,args);
                     }
                     else if(cmd == "LISTRIGHTS"){
-                        LISTRIGHTS(cmdTag,args);
+                        await _ListRightsAsync(cmdTag,args);
                     }
                     else if(cmd == "MYRIGHTS"){
-                        MYRIGHTS(cmdTag,args);
+                        await _MyRightsAsync(cmdTag,args);
                     }
                     else if(cmd == "ENABLE"){
-                        ENABLE(cmdTag,args);
+                        await _EnableAsync(cmdTag,args);
                     }
                     else if(cmd == "CHECK"){
-                        CHECK(cmdTag,args);
+                        await _CheckAsync(cmdTag,args);
                     }
                     else if(cmd == "CLOSE"){
-                        CLOSE(cmdTag,args);
+                        await _CloseAsync(cmdTag,args);
                     }
                     else if(cmd == "FETCH"){
-                        FETCH(false,cmdTag,args);
+                        await _FetchAsync(false,cmdTag,args);
                     }
                     else if(cmd == "SEARCH"){
-                        SEARCH(false,cmdTag,args);
+                        await _SearchAsync(false,cmdTag,args);
                     }
                     else if(cmd == "STORE"){
-                        STORE(false,cmdTag,args);
+                        await _StoreAsync(false,cmdTag,args);
                     }
                     else if(cmd == "COPY"){
-                        COPY(false,cmdTag,args);
+                        await _CopyAsync(false,cmdTag,args);
+                    }
+                    else if(cmd == "MOVE"){
+                        await _MoveAsync(false,cmdTag,args);
                     }
                     else if(cmd == "UID"){
-                        UID(cmdTag,args);
+                        await _UidAsync(cmdTag,args);
                     }
                     else if(cmd == "EXPUNGE"){
-                        EXPUNGE(cmdTag,args);
+                        await _ExpungeAsync(false,cmdTag,args);
                     }
                     else if(cmd == "IDLE"){
-                        await IdleAsync(cmdTag,args);
+                        await _IdleAsync(cmdTag,args);
                     }
                     else if(cmd == "CAPABILITY"){
-                        CAPABILITY(cmdTag,args);
+                        await CapabilityAsync(cmdTag,args);
                     }
                     else if(cmd == "NOOP"){
-                        NOOP(cmdTag,args);
+                        await NoopAsync(cmdTag,args);
                     }
                     else if(cmd == "LOGOUT"){
-                        LOGOUT(cmdTag,args);
+                        await LogoutAsync(cmdTag,args);
                         
                         break;
                     }
@@ -985,97 +662,111 @@ namespace LumiSoft.Net.IMAP.Server
 
                         // Maximum allowed bad commands exceeded.
                         if(this.Server.MaxBadCommands != 0 && m_BadCommands > this.Server.MaxBadCommands){
-                            WriteLine("* BYE Too many bad commands, closing transmission channel.");
-                            Disconnect();
+                            await SendResponseAsync(new IMAP_r_u_ServerStatus("BYE","Too many bad commands, closing transmission channel."),true);
+                            await DisconnectAsync();
 
                             break;
                         }
                    
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error: Command '" + cmd + "' not recognized."));
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error: Command '" + cmd + "' not recognized."),true);
                     }
                 }
             }
             catch(Exception x){
-                OnError(x);
+                await OnErrorAsync(x);
             }
         }
 
         #endregion
 
 
-        #region method STARTTLS
+        #region method StartTlsAsync
 
-        private void STARTTLS(string cmdTag,string cmdText)
+        private async Task StartTlsAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.2.1. STARTTLS Command.
-                Arguments:  none
+            /*
+             RFC 9051 §6.2.1 STARTTLS Command
 
-                Responses:  no specific response for this command
+             Arguments:
+                 none
 
-                Result:     OK - starttls completed, begin TLS negotiation
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 no specific response for this command
 
-                A [TLS] negotiation begins immediately after the CRLF at the end
-                of the tagged OK response from the server.  Once a client issues a
-                STARTTLS command, it MUST NOT issue further commands until a
-                server response is seen and the [TLS] negotiation is complete.
+             Result:
+                 OK  - begin TLS negotiation
+                 BAD - command unknown or arguments invalid
 
-                The server remains in the non-authenticated state, even if client
-                credentials are supplied during the [TLS] negotiation.  This does
-                not preclude an authentication mechanism such as EXTERNAL (defined
-                in [SASL]) from using client identity determined by the [TLS]
-                negotiation.
+             A TLS negotiation begins immediately after the CRLF at the end
+             of the tagged OK response from the server.
 
-                Once [TLS] has been started, the client MUST discard cached
-                information about server capabilities and SHOULD re-issue the
-                CAPABILITY command.  This is necessary to protect against man-in-
-                the-middle attacks which alter the capabilities list prior to
-                STARTTLS.  The server MAY advertise different capabilities after
-                STARTTLS.
+             After issuing STARTTLS, the client MUST NOT send further IMAP
+             commands until TLS negotiation has completed.
 
-                Example:    C: a001 CAPABILITY
-                            S: * CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED
-                            S: a001 OK CAPABILITY completed
-                            C: a002 STARTTLS
-                            S: a002 OK Begin TLS negotiation now
-                            <TLS negotiation, further commands are under [TLS] layer>
-                            C: a003 CAPABILITY
-                            S: * CAPABILITY IMAP4rev1 AUTH=PLAIN
-                            S: a003 OK CAPABILITY completed
-                            C: a004 LOGIN joe password
-                            S: a004 OK LOGIN completed
-            */
+             The server remains in the Not Authenticated state after the TLS
+             negotiation completes. Client certificates exchanged during TLS
+             negotiation may subsequently be used by authentication mechanisms
+             such as SASL EXTERNAL.
+
+             The tagged OK response SHOULD contain a CAPABILITY response code
+             advertising the capabilities available after TLS has been
+             established. Clients SHOULD use these capabilities instead of any
+             capabilities obtained before STARTTLS.
+
+             Example:
+
+                 C: a001 CAPABILITY
+                 S: * CAPABILITY IMAP4rev2 STARTTLS LOGINDISABLED
+                 S: a001 OK CAPABILITY completed
+
+                 C: a002 STARTTLS
+                 S: a002 OK [CAPABILITY IMAP4rev2 AUTH=PLAIN] Begin TLS negotiation
+                 <TLS negotiation>
+
+                 C: a003 LOGIN joe password
+                 S: a003 OK LOGIN completed
+
+             References:
+                 RFC 9051 §6.2.1 STARTTLS Command
+                 RFC 8446 TLS 1.3
+             */
 
             if(m_SessionRejected){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Bad sequence of commands: Session rejected."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command rejected: Session rejected."),true);
 
                 return;
             }
             if(this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","This ommand is only valid in not-authenticated state."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","This command is only valid in the non-authenticated state."),true);
 
                 return;
             }
             if(this.IsSecureConnection){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Bad sequence of commands: Connection is already secure."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","TLS is already active."),true);
 
                 return;
             }
             if(this.Certificate == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","TLS not available: Server has no SSL certificate."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","TLS not available: No server certificate configured."),true);
 
                 return;
             }
 
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","Begin TLS negotiation now."));
+            List<string> capabilities = new List<string>();
+            foreach(string c in m_pCapabilities){
+                capabilities.Add(c);
+            }
+            foreach(AUTH_SASL_ServerMechanism auth in this.Authentications.Values){
+                capabilities.Add("AUTH=" + auth.Name);
+            }
+            
+            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK",new IMAP_t_orc_Capability(capabilities.ToArray()),"Begin TLS negotiation now."),true);
             
             try{
-                DateTime startTime = DateTime.Now;
-
-                SwitchToSecureAsync().GetAwaiter().GetResult();
+                await SwitchToSecureAsync();
 
                 // Log
-                LogAddText("SSL negotiation completed successfully in " + (DateTime.Now - startTime).TotalSeconds.ToString("f2") + " seconds.");
+                LogAddText("TLS negotiation completed successfully.");
             }
             catch(Exception x){
                 LogAddException(x);
@@ -1085,241 +776,232 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-        #region method LOGIN
+        #region method LoginAsync
 
-        private void LOGIN(string cmdTag,string cmdText)
+        private async Task LoginAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.2.3. LOGIN Command.
-                Arguments:  user name
-                            password
+            /*
+             RFC 9051 §6.2.3 LOGIN Command
 
-                Responses:  no specific responses for this command
+             Arguments:
+                 user name
+                 password
 
-                Result:     OK - login completed, now in authenticated state
-                            NO - login failure: user name or password rejected
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 no specific responses for this command
 
-                The LOGIN command identifies the client to the server and carries
-                the plaintext password authenticating this user.
+             Result:
+                 OK - login completed, authenticated state entered
+                 NO - authentication failed
+                 BAD - command unknown or arguments invalid
 
-                A server MAY include a CAPABILITY response code in the tagged OK
-                response to a successful LOGIN command in order to send
-                capabilities automatically.  It is unnecessary for a client to
-                send a separate CAPABILITY command if it recognizes these
-                automatic capabilities.
+             The LOGIN command authenticates a client using a user name and
+             plaintext password supplied as command arguments.
 
-                Example:    C: a001 LOGIN SMITH SESAME
-                            S: a001 OK LOGIN completed
+             A server may include a CAPABILITY response code in the tagged OK
+             response to advertise the capabilities available after successful
+             authentication.
 
-                    Note: Use of the LOGIN command over an insecure network
-                    (such as the Internet) is a security risk, because anyone
-                    monitoring network traffic can obtain plaintext passwords.
-                    The LOGIN command SHOULD NOT be used except as a last
-                    resort, and it is recommended that client implementations
-                    have a means to disable any automatic use of the LOGIN
-                    command.
+             Example:
 
-                Unless either the STARTTLS command has been negotiated or
-                some other mechanism that protects the session from
-                password snooping has been provided, a server
-                implementation MUST implement a configuration in which it
-                advertises the LOGINDISABLED capability and does NOT permit
-                the LOGIN command.  Server sites SHOULD NOT use any
-                configuration which permits the LOGIN command without such
-                a protection mechanism against password snooping.  A client
-                implementation MUST NOT send a LOGIN command if the
-                LOGINDISABLED capability is advertised.
+                 C: A001 LOGIN SMITH SESAME
+                 S: A001 OK LOGIN completed
+
+             Security Considerations:
+
+                 The LOGIN command transmits credentials in plaintext within the
+                 IMAP protocol stream. Use of TLS is strongly recommended to
+                 protect credentials from disclosure.
+
+                 Server implementations may restrict or disable LOGIN on
+                 unprotected connections as a local security policy.
+
+             References:
+
+                 RFC 9051 §6.2.3 LOGIN Command
             */
+            
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(m_SessionRejected){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Bad sequence of commands: Session rejected."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command rejected: Session rejected."),true);
 
                 return;
             }
             if(this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Re-authentication error."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Already authenticated."),true);
 
                 return;
             }
             if(SupportsCap("LOGINDISABLED")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command 'LOGIN' is disabled, use AUTHENTICATE instead."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","LOGIN command disabled. Use AUTHENTICATE instead."),true);
 
                 return;
             }
             if(string.IsNullOrEmpty(cmdText)){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            string[] user_pass = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(user_pass.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+            string userName;
+            string password;
+            try{
+                userName = await imapReader.ReadStringAsync() ?? "";
+
+                if(imapReader.PeekIs('{')){
+                    bool log = false;
+                    #if DEBUG
+                        log = true;
+                    #endif
+
+                    password = Encoding.UTF8.GetString(await imapReader.ReadLiteralAsync(log));
+                }
+                else{
+                    password = await imapReader.ReadStringAsync() ?? "";
+                }
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            IMAP_e_Login e = OnLogin(user_pass[0],user_pass[1]);
-            if(e.IsAuthenticated){
-                m_pUser = new GenericIdentity(user_pass[0],"IMAP-LOGIN");
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Authentication failed.");
 
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","LOGIN completed."));
+            // Raise AuthLoginAsync event.
+            if(this.AuthLoginAsync != null){
+                IMAP_e_AuthLogin eArgs = new IMAP_e_AuthLogin(this,userName,password,response);
+                await this.AuthLoginAsync(eArgs);
+
+                response = eArgs.Response;
             }
-            else{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","LOGIN failed."));
+
+            if(response.IsSuccess){
+                m_pUser = new GenericIdentity(userName,"IMAP-LOGIN");
             }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method AUTHENTICATE
+        #region method AuthenticateAsync
 
-        private void AUTHENTICATE(string cmdTag,string cmdText)
+        private async Task AuthenticateAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.2.2. AUTHENTICATE Command.
-                Arguments:  authentication mechanism name
+            /*
+             RFC 9051 §6.2.2 AUTHENTICATE Command
 
-                Responses:  continuation data can be requested
+             Arguments:
+                 SASL authentication mechanism name
 
-                Result:     OK - authenticate completed, now in authenticated state
-                            NO - authenticate failure: unsupported authentication
-                                 mechanism, credentials rejected
-                            BAD - command unknown or arguments invalid,
-                                  authentication exchange cancelled
+             Responses:
+                 continuation request ("+") during authentication exchange
 
-                The AUTHENTICATE command indicates a [SASL] authentication
-                mechanism to the server.  If the server supports the requested
-                authentication mechanism, it performs an authentication protocol
-                exchange to authenticate and identify the client.  It MAY also
-                negotiate an OPTIONAL security layer for subsequent protocol
-                interactions.  If the requested authentication mechanism is not
-                supported, the server SHOULD reject the AUTHENTICATE command by
-                sending a tagged NO response.
+             Result:
+                 OK  - authentication completed, authenticated state entered
+                 NO  - authentication failed or mechanism unsupported
+                 BAD - command unknown, arguments invalid, or authentication
+                       exchange cancelled
 
-                The AUTHENTICATE command does not support the optional "initial
-                response" feature of [SASL].  Section 5.1 of [SASL] specifies how
-                to handle an authentication mechanism which uses an initial
-                response.
+             The AUTHENTICATE command initiates a SASL authentication exchange
+             between the client and server using the specified authentication
+             mechanism.
 
-                The service name specified by this protocol's profile of [SASL] is
-                "imap".
+             If the server supports the requested mechanism, authentication data
+             is exchanged using server continuation requests and client responses.
+             Authentication data is transmitted as Base64-encoded strings.
 
-                The authentication protocol exchange consists of a series of
-                server challenges and client responses that are specific to the
-                authentication mechanism.  A server challenge consists of a
-                command continuation request response with the "+" token followed
-                by a BASE64 encoded string.  The client response consists of a
-                single line consisting of a BASE64 encoded string.  If the client
-                wishes to cancel an authentication exchange, it issues a line
-                consisting of a single "*".  If the server receives such a
-                response, it MUST reject the AUTHENTICATE command by sending a
-                tagged BAD response.
+             A client may cancel an authentication exchange by sending a line
+             containing a single '*'. The server then rejects the AUTHENTICATE
+             command.
 
-                If a security layer is negotiated through the [SASL]
-                authentication exchange, it takes effect immediately following the
-                CRLF that concludes the authentication exchange for the client,
-                and the CRLF of the tagged OK response for the server.
+             The SASL service name for IMAP is:
 
-                While client and server implementations MUST implement the
-                AUTHENTICATE command itself, it is not required to implement any
-                authentication mechanisms other than the PLAIN mechanism described
-                in [IMAP-TLS].  Also, an authentication mechanism is not required
-                to support any security layers.
+                 "imap"
 
-                    Note: a server implementation MUST implement a
-                    configuration in which it does NOT permit any plaintext
-                    password mechanisms, unless either the STARTTLS command
-                    has been negotiated or some other mechanism that
-                    protects the session from password snooping has been
-                    provided.  Server sites SHOULD NOT use any configuration
-                    which permits a plaintext password mechanism without
-                    such a protection mechanism against password snooping.
-                    Client and server implementations SHOULD implement
-                    additional [SASL] mechanisms that do not use plaintext
-                    passwords, such the GSSAPI mechanism described in [SASL]
-                    and/or the [DIGEST-MD5] mechanism.
+             SASL Initial Response
+             ---------------------
 
-                Servers and clients can support multiple authentication
-                mechanisms.  The server SHOULD list its supported authentication
-                mechanisms in the response to the CAPABILITY command so that the
-                client knows which authentication mechanisms to use.
+             If the server advertises the SASL-IR capability, mechanisms that
+             support an initial client response may include that response in the
+             AUTHENTICATE command itself, avoiding an extra challenge/response
+             round trip.
 
-                A server MAY include a CAPABILITY response code in the tagged OK
-                response of a successful AUTHENTICATE command in order to send
-                capabilities automatically.  It is unnecessary for a client to
-                send a separate CAPABILITY command if it recognizes these
-                automatic capabilities.  This should only be done if a security
-                layer was not negotiated by the AUTHENTICATE command, because the
-                tagged OK response as part of an AUTHENTICATE command is not
-                protected by encryption/integrity checking.  [SASL] requires the
-                client to re-issue a CAPABILITY command in this case.
-                            
-                The authorization identity passed from the client to the server
-                during the authentication exchange is interpreted by the server as
-                the user name whose privileges the client is requesting.
+             Security Layers
+             ---------------
 
-                Example:    S: * OK IMAP4rev1 Server
-                            C: A001 AUTHENTICATE GSSAPI
-                            S: +
-                            C: YIIB+wYJKoZIhvcSAQICAQBuggHqMIIB5qADAgEFoQMCAQ6iBw
-                               MFACAAAACjggEmYYIBIjCCAR6gAwIBBaESGxB1Lndhc2hpbmd0
-                               b24uZWR1oi0wK6ADAgEDoSQwIhsEaW1hcBsac2hpdmFtcy5jYW
-                               Mud2FzaGluZ3Rvbi5lZHWjgdMwgdCgAwIBAaEDAgEDooHDBIHA
-                               cS1GSa5b+fXnPZNmXB9SjL8Ollj2SKyb+3S0iXMljen/jNkpJX
-                               AleKTz6BQPzj8duz8EtoOuNfKgweViyn/9B9bccy1uuAE2HI0y
-                               C/PHXNNU9ZrBziJ8Lm0tTNc98kUpjXnHZhsMcz5Mx2GR6dGknb
-                               I0iaGcRerMUsWOuBmKKKRmVMMdR9T3EZdpqsBd7jZCNMWotjhi
-                               vd5zovQlFqQ2Wjc2+y46vKP/iXxWIuQJuDiisyXF0Y8+5GTpAL
-                               pHDc1/pIGmMIGjoAMCAQGigZsEgZg2on5mSuxoDHEA1w9bcW9n
-                               FdFxDKpdrQhVGVRDIzcCMCTzvUboqb5KjY1NJKJsfjRQiBYBdE
-                               NKfzK+g5DlV8nrw81uOcP8NOQCLR5XkoMHC0Dr/80ziQzbNqhx
-                               O6652Npft0LQwJvenwDI13YxpwOdMXzkWZN/XrEqOWp6GCgXTB
-                               vCyLWLlWnbaUkZdEYbKHBPjd8t/1x5Yg==
-                            S: + YGgGCSqGSIb3EgECAgIAb1kwV6ADAgEFoQMCAQ+iSzBJoAMC
-                               AQGiQgRAtHTEuOP2BXb9sBYFR4SJlDZxmg39IxmRBOhXRKdDA0
-                                uHTCOT9Bq3OsUTXUlk0CsFLoa8j+gvGDlgHuqzWHPSQg==
-                            C:
-                            S: + YDMGCSqGSIb3EgECAgIBAAD/////6jcyG4GE3KkTzBeBiVHe
-                               ceP2CWY0SR0fAQAgAAQEBAQ=
-                            C: YDMGCSqGSIb3EgECAgIBAAD/////3LQBHXTpFfZgrejpLlLImP
-                               wkhbfa2QteAQAgAG1yYwE=
-                            S: A001 OK GSSAPI authentication successful
+             Some SASL mechanisms can negotiate a security layer. If a security
+             layer is negotiated, it takes effect immediately following
+             completion of the authentication exchange.
 
-                            Note: The line breaks within server challenges and client
-                            responses are for editorial clarity and are not in real
-                            authenticators.
-            */
+             Capability Advertisement
+             -------------------------
 
-            /* RFC 4959.l7 SASL-IR 7.
-                The following syntax specification uses the Augmented Backus-Naur
-                Form [RFC4234] notation.  [RFC3501] defines the non-terminals
-                capability, auth-type, and base64.
+             Supported SASL mechanisms are advertised using CAPABILITY response
+             entries of the form:
 
-                capability    =/ "SASL-IR"
+                 AUTH=<mechanism>
 
-                authenticate  = "AUTHENTICATE" SP auth-type [SP (base64 / "=")]
-                                *(CRLF base64)
-                                ;;redefine AUTHENTICATE from [RFC3501]
-            
+             Examples:
+
+                 AUTH=PLAIN
+                 AUTH=SCRAM-SHA-256
+                 AUTH=EXTERNAL
+
+             A server may include a CAPABILITY response code in the tagged OK
+             response of a successful AUTHENTICATE command to advertise the
+             capabilities available after authentication.
+
+             Authorization Identity
+             ----------------------
+
+             Any authorization identity supplied by the SASL mechanism is
+             interpreted by the server as the identity whose privileges the
+             client is requesting.
+
+             Example:
+
+                 C: A001 AUTHENTICATE PLAIN
+                 S: +
+                 C: AHNtaXRoAHNlY3JldA==
+                 S: A001 OK AUTHENTICATE completed
+
+             References:
+
+                 RFC 9051 §6.2.2 AUTHENTICATE Command
+                 RFC 4422 SASL
             */
 
             if(m_SessionRejected){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Bad sequence of commands: Session rejected."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command rejected: Session rejected."),true);
 
                 return;
             }
             if(this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Re-authentication error."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Already authenticated."),true);
 
                 return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
             #region Parse parameters
 
             string[] arguments = cmdText.Split(' ');
             if(arguments.Length > 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
@@ -1333,7 +1015,7 @@ namespace LumiSoft.Net.IMAP.Server
                         initialClientResponse = Convert.FromBase64String(arguments[1]);
                     }
                     catch{
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Syntax error: Parameter 'initial-response' value must be BASE64 or contain a single character '='."));
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Syntax error: Parameter 'initial-response' value must be BASE64 or contain a single character '='."),true);
 
                         return;
                     }
@@ -1344,7 +1026,7 @@ namespace LumiSoft.Net.IMAP.Server
             #endregion
                         
             if(!this.Authentications.ContainsKey(mechanism)){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Not supported authentication mechanism."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication mechanism is not supported."),true);
 
                 return;
             }
@@ -1358,12 +1040,13 @@ namespace LumiSoft.Net.IMAP.Server
                 if(auth.IsCompleted){
                     if(auth.IsAuthenticated){
                         m_pUser = new GenericIdentity(auth.UserName,"SASL-" + auth.Name);
-                              
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","Authentication succeeded."));
+                        
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","Authentication succeeded."),true);
                     }
                     else{
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication credentials invalid."));
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication failed."),true);
                     }
+
                     break;
                 }
                 // Authentication continues.
@@ -1372,10 +1055,10 @@ namespace LumiSoft.Net.IMAP.Server
 
                     // Send server challenge.
                     if (serverResponse.Length == 0){
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus("+",""));
+                        await SendResponseAsync(new IMAP_r_ServerStatus("+",""),true);
                     }
                     else{
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus("+",Convert.ToBase64String(serverResponse)));
+                        await SendResponseAsync(new IMAP_r_ServerStatus("+",Convert.ToBase64String(serverResponse)),true);
                     }
 
                     // Read client response. 
@@ -1385,25 +1068,29 @@ namespace LumiSoft.Net.IMAP.Server
 
                         throw new IOException("Client closed connection.");
                     }
+                    string clientResponseStr = readLineResult.LineUtf8 ?? "";
 
                     // Log
-                    if(this.Server.Logger != null){
-                        this.Server.Logger.AddRead(this.ID,this.AuthenticatedUserIdentity,readLineResult.BytesInBuffer,"base64 auth-data",this.LocalEndPoint,this.RemoteEndPoint);
-                    }
+                    #if DEBUG
+                        LogAddRead(readLineResult.BytesInBuffer,clientResponseStr);
+                    #else
+                        LogAddRead(readLineResult.BytesInBuffer,"Client response recieved.");
+                    #endif
+
 
                     // Client canceled authentication.
-                    if(readLineResult.LineUtf8 == "*"){
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication canceled."));
+                    if(clientResponseStr == "*"){
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication canceled."),true);
 
                         return;
                     }
                     // We have base64 client response, decode it.
                     else{
                         try{
-                            clientResponse = Convert.FromBase64String(readLineResult.LineUtf8 ?? "");
+                            clientResponse = Convert.FromBase64String(clientResponseStr);
                         }
                         catch{
-                            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Invalid client response '" + clientResponse + "'."));
+                            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Invalid client response."),true);
 
                             return;
                         }
@@ -1415,906 +1102,942 @@ namespace LumiSoft.Net.IMAP.Server
         #endregion
 
 
-        #region method NAMESPACE
+        #region method _NamespaceAsync
 
-        private void NAMESPACE(string cmdTag,string cmdText)
+        private async Task _NamespaceAsync(string cmdTag,string cmdText)
         {
-            /* RFC 2342 5. NAMESPACE Command.
-                Arguments: none
+            /* RFC 9051 6.3.10. NAMESPACE Command
 
-                Response:  an untagged NAMESPACE response that contains the prefix
-                           and hierarchy delimiter to the server's Personal
-                           Namespace(s), Other Users' Namespace(s), and Shared
-                           Namespace(s) that the server wishes to expose. The
-                           response will contain a NIL for any namespace class
-                           that is not available. Namespace_Response_Extensions
-                           MAY be included in the response.
-                           Namespace_Response_Extensions which are not on the IETF
-                           standards track, MUST be prefixed with an "X-".
+                Arguments:  none
 
-                Result:    OK - Command completed
-                           NO - Error: Can't complete command
-                           BAD - argument invalid
-                
+                Responses:  REQUIRED untagged response:
+                                NAMESPACE
+
+                Result:     OK  - command completed
+                            NO  - can't complete command
+                            BAD - arguments invalid
+
+                The NAMESPACE command causes a single untagged NAMESPACE
+                response to be returned. The response contains the prefix and
+                hierarchy delimiter for the server's Personal Namespace(s),
+                Other Users' Namespace(s), and Shared Namespace(s).
+
+                The response contains NIL for any namespace class that is not
+                available.
+
                 Example:
-                    < A server that contains a Personal Namespace and a single Shared Namespace. >
 
                     C: A001 NAMESPACE
                     S: * NAMESPACE (("" "/")) NIL (("Public Folders/" "/"))
                     S: A001 OK NAMESPACE command completed
             */
 
-            if(!SupportsCap("NAMESPACE")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
-
-                return;
-            }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+            if(cmdText.Length > 0) {
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            IMAP_e_Namespace e = OnNamespace(new IMAP_r_ServerStatus(cmdTag,"OK","NAMESPACE command completed."));
-            if(e.NamespaceResponse != null){
-                m_pResponseSender.SendResponseAsync(e.NamespaceResponse);
-            }
-            m_pResponseSender.SendResponseAsync(e.Response);
-        }
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","NAMESPACE command completed.");
+            
+            // Raise NamespaceAsync event.
+            if(this.NamespaceAsync != null){
+                IMAP_e_Namespace eArgs = new IMAP_e_Namespace(this,response);
+                await NamespaceAsync(eArgs);
 
-        #endregion
+                response = eArgs.Response;
 
-        #region method LIST
-
-        private void LIST(string cmdTag,string cmdText)
-        {
-            /* RFC 3501 6.3.8. LIST Command.
-                Arguments:  reference name
-                            mailbox name with possible wildcards
-
-                Responses:  untagged responses: LIST
-
-                Result:     OK - list completed
-                            NO - list failure: can't list that reference or name
-                            BAD - command unknown or arguments invalid
-
-                The LIST command returns a subset of names from the complete set
-                of all names available to the client.  Zero or more untagged LIST
-                replies are returned, containing the name attributes, hierarchy
-                delimiter, and name; see the description of the LIST reply for
-                more detail.
-
-                The LIST command SHOULD return its data quickly, without undue
-                delay.  For example, it SHOULD NOT go to excess trouble to
-                calculate the \Marked or \Unmarked status or perform other
-                processing; if each name requires 1 second of processing, then a
-                list of 1200 names would take 20 minutes!
-
-                An empty ("" string) reference name argument indicates that the
-                mailbox name is interpreted as by SELECT.  The returned mailbox
-                names MUST match the supplied mailbox name pattern.  A non-empty
-                reference name argument is the name of a mailbox or a level of
-                mailbox hierarchy, and indicates the context in which the mailbox
-                name is interpreted.
-
-                An empty ("" string) mailbox name argument is a special request to
-                return the hierarchy delimiter and the root name of the name given
-                in the reference.  The value returned as the root MAY be the empty
-                string if the reference is non-rooted or is an empty string.  In
-                all cases, a hierarchy delimiter (or NIL if there is no hierarchy)
-                is returned.  This permits a client to get the hierarchy delimiter
-                (or find out that the mailbox names are flat) even when no
-                mailboxes by that name currently exist.
-
-                The reference and mailbox name arguments are interpreted into a
-                canonical form that represents an unambiguous left-to-right
-                hierarchy.  The returned mailbox names will be in the interpreted
-                form.
-
-                    Note: The interpretation of the reference argument is
-                    implementation-defined.  It depends upon whether the
-                    server implementation has a concept of the "current
-                    working directory" and leading "break out characters",
-                    which override the current working directory.
-
-                    For example, on a server which exports a UNIX or NT
-                    filesystem, the reference argument contains the current
-                    working directory, and the mailbox name argument would
-                    contain the name as interpreted in the current working
-                    directory.
-
-                    If a server implementation has no concept of break out
-                    characters, the canonical form is normally the reference
-                    name appended with the mailbox name.  Note that if the
-                    server implements the namespace convention (section
-                    5.1.2), "#" is a break out character and must be treated
-                    as such.
-
-                    If the reference argument is not a level of mailbox
-                    hierarchy (that is, it is a \NoInferiors name), and/or
-                    the reference argument does not end with the hierarchy
-                    delimiter, it is implementation-dependent how this is
-                    interpreted.  For example, a reference of "foo/bar" and
-                    mailbox name of "rag/baz" could be interpreted as
-                    "foo/bar/rag/baz", "foo/barrag/baz", or "foo/rag/baz".
-                    A client SHOULD NOT use such a reference argument except
-                    at the explicit request of the user.  A hierarchical
-                    browser MUST NOT make any assumptions about server
-                    interpretation of the reference unless the reference is
-                    a level of mailbox hierarchy AND ends with the hierarchy
-                    delimiter.
-
-                Any part of the reference argument that is included in the
-                interpreted form SHOULD prefix the interpreted form.  It SHOULD
-                also be in the same form as the reference name argument.  This
-                rule permits the client to determine if the returned mailbox name
-                is in the context of the reference argument, or if something about
-                the mailbox argument overrode the reference argument.  Without
-                this rule, the client would have to have knowledge of the server's
-                naming semantics including what characters are "breakouts" that
-                override a naming context.
-
-                    For example, here are some examples of how references
-                    and mailbox names might be interpreted on a UNIX-based
-                    server:
-
-                        Reference     Mailbox Name  Interpretation
-                        ------------  ------------  --------------
-                        ~smith/Mail/  foo.*         ~smith/Mail/foo.*
-                        archive/      %             archive/%
-                        #news.        comp.mail.*   #news.comp.mail.*
-                        ~smith/Mail/  /usr/doc/foo  /usr/doc/foo
-                        archive/      ~fred/Mail/*  ~fred/Mail/*
-
-                    The first three examples demonstrate interpretations in
-                    the context of the reference argument.  Note that
-                    "~smith/Mail" SHOULD NOT be transformed into something
-                    like "/u2/users/smith/Mail", or it would be impossible
-                    for the client to determine that the interpretation was
-                    in the context of the reference.
-
-                The character "*" is a wildcard, and matches zero or more
-                characters at this position.  The character "%" is similar to "*",
-                but it does not match a hierarchy delimiter.  If the "%" wildcard
-                is the last character of a mailbox name argument, matching levels
-                of hierarchy are also returned.  If these levels of hierarchy are
-                not also selectable mailboxes, they are returned with the
-                \Noselect mailbox name attribute (see the description of the LIST
-                response for more details).
-
-                Server implementations are permitted to "hide" otherwise
-                accessible mailboxes from the wildcard characters, by preventing
-                certain characters or names from matching a wildcard in certain
-                situations.  For example, a UNIX-based server might restrict the
-                interpretation of "*" so that an initial "/" character does not
-                match.
-
-                The special name INBOX is included in the output from LIST, if
-                INBOX is supported by this server for this user and if the
-                uppercase string "INBOX" matches the interpreted reference and
-                mailbox name arguments with wildcards as described above.  The
-                criteria for omitting INBOX is whether SELECT INBOX will return
-                failure; it is not relevant whether the user's real INBOX resides
-                on this or some other server.
-
-                Example:    C: A101 LIST "" ""
-                            S: * LIST (\Noselect) "/" ""
-                            S: A101 OK LIST Completed
-                            C: A102 LIST #news.comp.mail.misc ""
-                            S: * LIST (\Noselect) "." #news.
-                            S: A102 OK LIST Completed
-                            C: A103 LIST /usr/staff/jones ""
-                            S: * LIST (\Noselect) "/" /
-                            S: A103 OK LIST Completed
-                            C: A202 LIST ~/Mail/ %
-                            S: * LIST (\Noselect) "/" ~/Mail/foo
-                            S: * LIST () "/" ~/Mail/meetings
-                            S: A202 OK LIST completed
-            */
-
-            if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
-
-                return;
-            }
-
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                return;
-            }
-
-            string refName = IMAP_Utils.DecodeMailbox(parts[0]);
-            string folder  = IMAP_Utils.DecodeMailbox(parts[1]);
-
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
-
-            // Folder separator request.
-            if(folder == string.Empty){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_List(m_FolderSeparator));
-            }
-            else{
-                IMAP_e_List e = OnList(refName,folder);
-                foreach(IMAP_r_u_List r in e.Folders){
-                    m_pResponseSender.SendResponseAsync(r);
+                if(response.IsSuccess){
+                    await SendResponseAsync(eArgs.NamespaceResponse,true);
                 }
             }
 
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","LIST Completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds."));
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method CREATE
+        #region method _ListAsync
 
-        private void CREATE(string cmdTag,string cmdText)
+        private async Task _ListAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.3. CREATE Command.
-                Arguments:  mailbox name
+            /* RFC 9051 7.2.2. LIST Command
 
-                Responses:  no specific responses for this command
+                Arguments:  reference name
+                            mailbox pattern
 
-                Result:     OK - create completed
-                            NO - create failure: can't create mailbox with that name
+                Responses:  untagged LIST responses
+
+                Result:     OK  - LIST completed
+                            NO  - unable to perform LIST operation
                             BAD - command unknown or arguments invalid
 
-                The CREATE command creates a mailbox with the given name.  An OK
-                response is returned only if a new mailbox with that name has been
-                created.  It is an error to attempt to create INBOX or a mailbox
-                with a name that refers to an extant mailbox.  Any error in
-                creation will return a tagged NO response.
+                The LIST command returns information about mailboxes matching
+                the supplied reference name and mailbox pattern.
 
-                If the mailbox name is suffixed with the server's hierarchy
-                separator character (as returned from the server by a LIST
-                command), this is a declaration that the client intends to create
-                mailbox names under this name in the hierarchy.  Server
-                implementations that do not require this declaration MUST ignore
-                the declaration.  In any case, the name created is without the
-                trailing hierarchy delimiter.
+                Response format:
 
-                If the server's hierarchy separator character appears elsewhere in
-                the name, the server SHOULD create any superior hierarchical names
-                that are needed for the CREATE command to be successfully
-                completed.  In other words, an attempt to create "foo/bar/zap" on
-                a server in which "/" is the hierarchy separator character SHOULD
-                create foo/ and foo/bar/ if they do not already exist.
+                    * LIST (<attributes>) <hierarchy-delimiter> <mailbox-name>
 
-                If a new mailbox is created with the same name as a mailbox which
-                was deleted, its unique identifiers MUST be greater than any
-                unique identifiers used in the previous incarnation of the mailbox
-                UNLESS the new incarnation has a different unique identifier
-                validity value.  See the description of the UID command for more
-                detail.
+                Mailbox names are returned as IMAP strings:
 
-                Example:    C: A003 CREATE owatagusiam/
-                            S: A003 OK CREATE completed
-                            C: A004 CREATE owatagusiam/blurdybloop
-                            S: A004 OK CREATE completed
+                    - quoted string, when representable
+                    - literal, when required
 
-                    Note: The interpretation of this example depends on whether
-                    "/" was returned as the hierarchy separator from LIST.  If
-                    "/" is the hierarchy separator, a new level of hierarchy
-                    named "owatagusiam" with a member called "blurdybloop" is
-                    created.  Otherwise, two mailboxes at the same hierarchy
-                    level are created.
+                UTF-8 mailbox names are supported natively by IMAP4rev2.
+                However, mailbox-name encoding in LIST responses depends on the
+                session's negotiated UTF-8 capabilities:
+
+                    UTF-8 enabled:
+                        Return mailbox names as UTF-8.
+
+                    UTF-8 not enabled:
+                        Return non-ASCII mailbox names using modified UTF-7 for
+                        interoperability with legacy clients.
+
+                Common mailbox attributes:
+
+                    \HasChildren
+                    \HasNoChildren
+                    \Marked
+                    \Unmarked
+                    \Noselect
+                    \Subscribed
+                    \Remote
+
+                Wildcards:
+
+                    '%' matches a single hierarchy level.
+
+                    '*' matches zero or more hierarchy levels.
+
+                Examples:
+
+                    C: A001 LIST "" "*"
+                    S: * LIST (\HasNoChildren) "/" INBOX
+                    S: * LIST (\HasChildren) "/" Archive
+                    S: A001 OK LIST completed
+
+                    C: A002 LIST "" "%"
+                    S: * LIST (\HasNoChildren) "/" INBOX
+                    S: * LIST (\HasChildren) "/" Archive
+                    S: A002 OK LIST completed
             */
 
-            if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
-
-                return;
-            }
-
-            string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
-            
-            IMAP_e_Folder e = OnCreate(cmdTag,folder,new IMAP_r_ServerStatus(cmdTag,"OK","CREATE command completed."));
-
-            m_pResponseSender.SendResponseAsync(e.Response);
-        }
-
-        #endregion
-
-        #region method DELETE
-
-        private void DELETE(string cmdTag,string cmdText)
-        {
-            /* RFC 3501 6.3.4. DELETE Command.
-                Arguments:  mailbox name
-
-                Responses:  no specific responses for this command
-
-                Result:     OK - delete completed
-                            NO - delete failure: can't delete mailbox with that name
-                            BAD - command unknown or arguments invalid
-
-                The DELETE command permanently removes the mailbox with the given
-                name.  A tagged OK response is returned only if the mailbox has
-                been deleted.  It is an error to attempt to delete INBOX or a
-                mailbox name that does not exist.
-
-                The DELETE command MUST NOT remove inferior hierarchical names.
-                For example, if a mailbox "foo" has an inferior "foo.bar"
-                (assuming "." is the hierarchy delimiter character), removing
-                "foo" MUST NOT remove "foo.bar".  It is an error to attempt to
-                delete a name that has inferior hierarchical names and also has
-                the \Noselect mailbox name attribute (see the description of the
-                LIST response for more details).
-
-                It is permitted to delete a name that has inferior hierarchical
-                names and does not have the \Noselect mailbox name attribute.  In
-                this case, all messages in that mailbox are removed, and the name
-                will acquire the \Noselect mailbox name attribute.
-
-                The value of the highest-used unique identifier of the deleted
-                mailbox MUST be preserved so that a new mailbox created with the
-                same name will not reuse the identifiers of the former
-                incarnation, UNLESS the new incarnation has a different unique
-                identifier validity value.  See the description of the UID command
-                for more detail.
-
-                Examples:   C: A682 LIST "" *
-                            S: * LIST () "/" blurdybloop
-                            S: * LIST (\Noselect) "/" foo
-                            S: * LIST () "/" foo/bar
-                            S: A682 OK LIST completed
-                            C: A683 DELETE blurdybloop
-                            S: A683 OK DELETE completed
-                            C: A684 DELETE foo
-                            S: A684 NO Name "foo" has inferior hierarchical names
-                            C: A685 DELETE foo/bar
-                            S: A685 OK DELETE Completed
-                            C: A686 LIST "" *
-                            S: * LIST (\Noselect) "/" foo
-                            S: A686 OK LIST completed
-                            C: A687 DELETE foo
-                            S: A687 OK DELETE Completed
-            */
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
 
-            string folder = IMAP_Utils.DecodeMailbox(cmdText);
-            
-            IMAP_e_Folder e = OnDelete(cmdTag,folder,new IMAP_r_ServerStatus(cmdTag,"OK","DELETE command completed."));
+            string refName;
+            string folder;            
+            try{
+                refName = await imapReader.ReadMailboxAsync() ?? "";
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
 
-            m_pResponseSender.SendResponseAsync(e.Response);
-        }
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
-        #endregion
-
-        #region method RENAME
-
-        private void RENAME(string cmdTag,string cmdText)
-        {
-            /* RFC 3501 6.3.5. RENAME Command.
-                Arguments:  existing mailbox name
-                            new mailbox name
-
-                Responses:  no specific responses for this command
-
-                Result:     OK - rename completed
-                            NO - rename failure: can't rename mailbox with that name,
-                                 can't rename to mailbox with that name
-                            BAD - command unknown or arguments invalid
-
-                The RENAME command changes the name of a mailbox.  A tagged OK
-                response is returned only if the mailbox has been renamed.  It is
-                an error to attempt to rename from a mailbox name that does not
-                exist or to a mailbox name that already exists.  Any error in
-                renaming will return a tagged NO response.
-
-                If the name has inferior hierarchical names, then the inferior
-                hierarchical names MUST also be renamed.  For example, a rename of
-                "foo" to "zap" will rename "foo/bar" (assuming "/" is the
-                hierarchy delimiter character) to "zap/bar".
-
-                If the server's hierarchy separator character appears in the name,
-                the server SHOULD create any superior hierarchical names that are
-                needed for the RENAME command to complete successfully.  In other
-                words, an attempt to rename "foo/bar/zap" to baz/rag/zowie on a
-                server in which "/" is the hierarchy separator character SHOULD
-                create baz/ and baz/rag/ if they do not already exist.
-
-                The value of the highest-used unique identifier of the old mailbox
-                name MUST be preserved so that a new mailbox created with the same
-                name will not reuse the identifiers of the former incarnation,
-                UNLESS the new incarnation has a different unique identifier
-                validity value.  See the description of the UID command for more
-                detail.
-
-                Renaming INBOX is permitted, and has special behavior.  It moves
-                all messages in INBOX to a new mailbox with the given name,
-                leaving INBOX empty.  If the server implementation supports
-                inferior hierarchical names of INBOX, these are unaffected by a
-                rename of INBOX.
-
-                Examples:   C: A682 LIST "" *
-                            S: * LIST () "/" blurdybloop
-                            S: * LIST (\Noselect) "/" foo
-                            S: * LIST () "/" foo/bar
-                            S: A682 OK LIST completed
-                            C: A683 RENAME blurdybloop sarasoop
-                            S: A683 OK RENAME completed
-                            C: A684 RENAME foo zowie
-                            S: A684 OK RENAME Completed
-                            C: A685 LIST "" *
-                            S: * LIST () "/" sarasoop
-                            S: * LIST (\Noselect) "/" zowie
-                            S: * LIST () "/" zowie/bar
-                            S: A685 OK LIST completed
-            */
-
-            if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                    return;
+                }
+            }
+            catch(ParseException){                
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
-            
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
 
-                return;
-            }
-            
-            IMAP_e_Rename e = OnRename(cmdTag,IMAP_Utils.DecodeMailbox(parts[0]),IMAP_Utils.DecodeMailbox(parts[1]));
-            if(e.Response == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Internal server error: IMAP Server application didn't return any resposne."));
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","LIST Completed.");
+
+            // Folder separator request.
+            if(folder == string.Empty){
+                await SendResponseAsync(new IMAP_r_u_List(m_FolderSeparator),true);
             }
             else{
-                m_pResponseSender.SendResponseAsync(e.Response);
+                // Raise ListAsync event.
+                if(this.ListAsync != null){
+                    IMAP_e_List eArgs = new IMAP_e_List(this,refName,folder,response);
+                    await ListAsync(eArgs);
+
+                    response = eArgs.Response;
+
+                    if(response.IsSuccess){
+                        foreach(IMAP_r_u_List r in eArgs.Folders){
+                            await SendResponseAsync(r,true);
+                        }
+                    }
+                }
             }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method LSUB
+        #region method _CreateAsync
 
-        private void LSUB(string cmdTag,string cmdText)
+        private async Task _CreateAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.9. LSUB Command.
-                Arguments:  reference name
-                            mailbox name with possible wildcards
+            /*
+             RFC 9051 §6.3.3 CREATE Command
 
-                Responses:  untagged responses: LSUB
+             Arguments:
+                 mailbox name
 
-                Result:     OK - lsub completed
-                            NO - lsub failure: can't list that reference or name
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 no specific responses for this command
 
-                The LSUB command returns a subset of names from the set of names
-                that the user has declared as being "active" or "subscribed".
-                Zero or more untagged LSUB replies are returned.  The arguments to
-                LSUB are in the same form as those for LIST.
+             Result:
+                 OK - mailbox created
+                 NO - mailbox cannot be created
+                 BAD - command unknown or arguments invalid
 
-                The returned untagged LSUB response MAY contain different mailbox
-                flags from a LIST untagged response.  If this should happen, the
-                flags in the untagged LIST are considered more authoritative.
+             The CREATE command creates a mailbox with the specified name.
 
-                A special situation occurs when using LSUB with the % wildcard.
-                Consider what happens if "foo/bar" (with a hierarchy delimiter of
-                "/") is subscribed but "foo" is not.  A "%" wildcard to LSUB must
-                return foo, not foo/bar, in the LSUB response, and it MUST be
-                flagged with the \Noselect attribute.
+             An OK response is returned only if a new mailbox is successfully
+             created. Attempting to create an existing mailbox or INBOX fails
+             with a tagged NO response.
 
-                The server MUST NOT unilaterally remove an existing mailbox name
-                from the subscription list even if a mailbox by that name no
-                longer exists.
+             If the mailbox name ends with the hierarchy delimiter, the client
+             indicates its intention to create child mailboxes beneath that
+             mailbox. Servers that do not require this declaration MUST ignore
+             the trailing delimiter. The mailbox is created without the trailing
+             delimiter.
 
-                Example:    C: A002 LSUB "#news." "comp.mail.*"
-                            S: * LSUB () "." #news.comp.mail.mime
-                            S: * LSUB () "." #news.comp.mail.misc
-                            S: A002 OK LSUB completed
-                            C: A003 LSUB "#news." "comp.%"
-                            S: * LSUB (\NoSelect) "." #news.comp.mail
-                            S: A003 OK LSUB completed
+             If the hierarchy delimiter appears within the mailbox name,
+             the server MAY create any required superior hierarchy names
+             automatically.
+
+             Examples:
+
+                 C: A003 CREATE Projects/
+                 S: A003 OK CREATE completed
+
+                 C: A004 CREATE Projects/IMAP
+                 S: A004 OK CREATE completed
+
+             If a mailbox is recreated after deletion, UID assignment rules
+             and UIDVALIDITY requirements apply as described by RFC 9051.
+
+             References:
+
+                 RFC 9051 §6.3.3 CREATE Command
+                 RFC 9051 §2.3.1.1 UIDVALIDITY
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
 
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+            string folder;            
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            string refName = IMAP_Utils.DecodeMailbox(parts[0]);
-            string folder  = IMAP_Utils.DecodeMailbox(parts[1]);
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise CreateAsync event.
+            if(this.CreateAsync != null){
+                IMAP_e_Create eArgs = new IMAP_e_Create(this,folder,response);
+                await CreateAsync(eArgs);
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
-            
-            IMAP_e_LSub e = OnLSub(refName,folder);
-            foreach(IMAP_r_u_LSub r in e.Folders){
-                m_pResponseSender.SendResponseAsync(r);
+                response = eArgs.Response;
             }
-            
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","LSUB Completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds.")); 
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method SUBSCRIBE
+        #region method _DeleteAsync
 
-        private void SUBSCRIBE(string cmdTag,string cmdText)
+        private async Task _DeleteAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.6. SUBSCRIBE Command.
-                Arguments:  mailbox
+            /*
+             RFC 9051 §6.3.4 DELETE Command
 
-                Responses:  no specific responses for this command
+             Arguments:
+                 mailbox name
 
-                Result:     OK - subscribe completed
-                            NO - subscribe failure: can't subscribe to that name
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 no specific responses for this command
 
-                The SUBSCRIBE command adds the specified mailbox name to the
-                server's set of "active" or "subscribed" mailboxes as returned by
-                the LSUB command.  This command returns a tagged OK response only
-                if the subscription is successful.
+             Result:
+                 OK - mailbox deleted
+                 NO - mailbox cannot be deleted
+                 BAD - command unknown or arguments invalid
 
-                A server MAY validate the mailbox argument to SUBSCRIBE to verify
-                that it exists.  However, it MUST NOT unilaterally remove an
-                existing mailbox name from the subscription list even if a mailbox
-                by that name no longer exists.
+             The DELETE command permanently removes the specified mailbox.
 
-                    Note: This requirement is because a server site can
-                    choose to routinely remove a mailbox with a well-known
-                    name (e.g., "system-alerts") after its contents expire,
-                    with the intention of recreating it when new contents
-                    are appropriate.
+             An OK response is returned only if the mailbox is successfully
+             deleted. Attempting to delete a mailbox that does not exist or
+             attempting to delete INBOX results in a tagged NO response.
 
-                Example:    C: A002 SUBSCRIBE #news.comp.mail.mime
-                S: A002 OK SUBSCRIBE completed
+             Deleting a mailbox does not delete any inferior mailboxes. A server
+             MUST NOT remove child mailboxes when processing a DELETE command.
+
+             If the deleted mailbox has child mailboxes, the server may preserve
+             the mailbox name as a non-selectable hierarchy node as required by
+             its mailbox hierarchy implementation.
+
+             UID assignment and UIDVALIDITY requirements apply if a mailbox with
+             the same name is subsequently recreated.
+
+             Examples:
+
+                 C: A005 DELETE Projects
+                 S: A005 OK DELETE completed
+
+                 C: A006 DELETE INBOX
+                 S: A006 NO DELETE failed
+
+             References:
+
+                 RFC 9051 §6.3.4 DELETE Command
+                 RFC 9051 §2.3.1.1 UIDVALIDITY
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
-
-                return;
-            }            
-
-            string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
-
-            if(string.IsNullOrEmpty(folder)){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Mailbox name must be specified."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
+
+            string folder;            
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
             
-            IMAP_e_Folder e = OnSubscribe(cmdTag,folder,new IMAP_r_ServerStatus(cmdTag,"OK","SUBSCRIBE command completed."));
-            
-            m_pResponseSender.SendResponseAsync(e.Response);
+            // Raise DeleteAsync event.
+            if(this.DeleteAsync != null){
+                IMAP_e_Delete eArgs = new IMAP_e_Delete(this,folder,response);
+                await DeleteAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method UNSUBSCRIBE
+        #region method _RenameAsync
 
-        private void UNSUBSCRIBE(string cmdTag,string cmdText)
+        private async Task _RenameAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.7. UNSUBSCRIBE Command.
+            /*
+             RFC 9051 §6.3.5 RENAME Command
+
+             Arguments:
+                 existing mailbox name
+                 new mailbox name
+
+             Responses:
+                 no specific responses for this command
+
+             Result:
+                 OK - mailbox renamed
+                 NO - mailbox cannot be renamed
+                 BAD - command unknown or arguments invalid
+
+             The RENAME command changes the name of an existing mailbox.
+
+             An OK response is returned only if the mailbox is renamed
+             successfully. It is an error to rename a mailbox that does not
+             exist or to rename a mailbox to a name that already exists.
+
+             If the mailbox has child mailboxes, those child mailboxes MUST
+             also be renamed to preserve the mailbox hierarchy.
+
+             If required by the mailbox hierarchy, the server MAY create any
+             superior hierarchy names needed to complete the operation.
+
+             Renaming INBOX is permitted and has special semantics. Messages in
+             INBOX are moved to the new mailbox and a new, empty INBOX remains
+             available. Child mailboxes of INBOX are unaffected.
+
+             UID assignment and UIDVALIDITY requirements apply if the original
+             mailbox name is subsequently recreated.
+
+             Examples:
+
+                 C: A007 RENAME Projects ArchivedProjects
+                 S: A007 OK RENAME completed
+
+                 C: A008 RENAME INBOX OldInbox
+                 S: A008 OK RENAME completed
+
+             References:
+
+                 RFC 9051 §6.3.5 RENAME Command
+                 RFC 9051 §2.3.1.1 UIDVALIDITY
+            */
+            
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
+            if(!this.IsAuthenticated){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+
+            string currentFolder;
+            string newFolder;
+            try{
+                currentFolder  = await imapReader.ReadMailboxAsync() ?? "";
+                newFolder      = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise DeleteAsync event.
+            if(this.RenameAsync != null){
+                IMAP_e_Rename eArgs = new IMAP_e_Rename(this,currentFolder,newFolder,response);
+                await RenameAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
+        }
+
+        #endregion
+
+        #region method _LSub
+
+        private async Task _LSub(string cmdTag,string cmdText)
+        {
+            /*
+             RFC 9051 §6.3.9 LSUB Command
+
+             Arguments:
+                 reference name
+                 mailbox pattern
+
+             Responses:
+                 untagged LSUB responses
+
+             Result:
+                 OK - LSUB completed
+                 NO - unable to list subscriptions
+                 BAD - command unknown or arguments invalid
+
+             The LSUB command returns the set of subscribed mailboxes that
+             match the supplied reference name and mailbox pattern.
+
+             Zero or more untagged LSUB responses are returned. The arguments
+             have the same meaning as those used by the LIST command.
+
+             A server may return mailbox attributes that differ from those
+             returned by LIST. If mailbox attributes differ, LIST responses are
+             considered authoritative for mailbox state.
+
+             A subscription may exist for a mailbox that no longer exists.
+             Servers MUST NOT automatically remove such subscriptions.
+
+             Wildcards:
+
+                 '%' matches a single hierarchy level.
+                 '*' matches zero or more hierarchy levels.
+
+             Examples:
+
+                 C: A002 LSUB "#news." "comp.mail.*"
+                 S: * LSUB () "." #news.comp.mail.mime
+                 S: * LSUB () "." #news.comp.mail.misc
+                 S: A002 OK LSUB completed
+
+                 C: A003 LSUB "#news." "comp.%"
+                 S: * LSUB (\Noselect) "." #news.comp.mail
+                 S: A003 OK LSUB completed
+            */
+
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
+            if(!this.IsAuthenticated){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+
+            string refName;
+            string folder;
+            try{
+                refName = await imapReader.ReadMailboxAsync() ?? "";
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","LSUB Completed.");
+
+            // Raise LSubAsync event.
+            if(this.LSubAsync != null){
+                IMAP_e_LSub eArgs = new IMAP_e_LSub(this,refName,folder,response);
+                await LSubAsync(eArgs);
+
+                response = eArgs.Response;
+
+                if(response.IsSuccess){
+                    foreach(IMAP_r_u_LSub r in eArgs.Folders){
+                        await SendResponseAsync(r,true);
+                    }
+                }
+            }
+
+            await SendResponseAsync(response,true);
+        }
+
+        #endregion
+
+        #region method _SubscribeAsync
+
+        private async Task _SubscribeAsync(string cmdTag,string cmdText)
+        {
+            /*
+             RFC 9051 §6.3.6 SUBSCRIBE Command
+
+             Arguments:
+                 mailbox name
+
+             Responses:
+                 no specific responses for this command
+
+             Result:
+                 OK - subscription created
+                 NO - unable to subscribe to mailbox
+                 BAD - command unknown or arguments invalid
+
+             The SUBSCRIBE command adds the specified mailbox to the user's
+             subscription list. Subscribed mailboxes are returned by the LSUB
+             command.
+
+             An OK response is returned only if the subscription operation
+             succeeds.
+
+             A server may validate whether the specified mailbox exists before
+             creating the subscription. However, a subscription may remain even
+             if the corresponding mailbox no longer exists.
+
+             Servers MUST NOT automatically remove an existing subscription
+             solely because the mailbox does not currently exist.
+
+             Example:
+
+                 C: A002 SUBSCRIBE #news.comp.mail.mime
+                 S: A002 OK SUBSCRIBE completed
+
+             References:
+
+                 RFC 9051 §6.3.6 SUBSCRIBE Command
+            */
+
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
+            if(!this.IsAuthenticated){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+
+            string folder;
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise SubscribeAsync event.
+            if(this.SubscribeAsync != null){
+                IMAP_e_Subscribe eArgs = new IMAP_e_Subscribe(this,folder,response);
+                await SubscribeAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
+        }
+
+        #endregion
+
+        #region method _UnsubscribeAsync
+
+        private async Task _UnsubscribeAsync(string cmdTag,string cmdText)
+        {
+            /* RFC 9051 6.3.8. UNSUBSCRIBE Command
+
                 Arguments:  mailbox name
 
                 Responses:  no specific responses for this command
 
-                Result:     OK - unsubscribe completed
-                            NO - unsubscribe failure: can't unsubscribe that name
+                Result:     OK  - unsubscribe completed
+                            NO  - unsubscribe failure: can't unsubscribe that name
                             BAD - command unknown or arguments invalid
 
                 The UNSUBSCRIBE command removes the specified mailbox name from
                 the server's set of "active" or "subscribed" mailboxes as returned
-                by the LSUB command.  This command returns a tagged OK response
-                only if the unsubscription is successful.
+                by the LIST (SUBSCRIBED) command.
 
-                Example:    C: A002 UNSUBSCRIBE #news.comp.mail.mime
-                            S: A002 OK UNSUBSCRIBE completed
+                This command returns a tagged OK response if the unsubscription
+                is successful or if the mailbox is not subscribed.
+
+                Example:
+
+                    C: A002 UNSUBSCRIBE #news.comp.mail.mime
+                    S: A002 OK UNSUBSCRIBE completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
 
-            string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
+            string folder;
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
             
-            IMAP_e_Folder e = OnUnsubscribe(cmdTag,folder,new IMAP_r_ServerStatus(cmdTag,"OK","UNSUBSCRIBE command completed."));
-            
-            m_pResponseSender.SendResponseAsync(e.Response);
+            // Raise UnsubscribeAsync event.
+            if(this.UnsubscribeAsync != null){
+                IMAP_e_Unsubscribe eArgs = new IMAP_e_Unsubscribe(this,folder,response);
+                await UnsubscribeAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method STATUS
+        #region method _StatusAsync
 
-        private void STATUS(string cmdTag,string cmdText)
+        private async Task _StatusAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.10.STATUS Command.
+            /* RFC 9051 6.3.11. STATUS Command
+
                 Arguments:  mailbox name
                             status data item names
 
-                Responses:  untagged responses: STATUS
+                Responses:  untagged STATUS response
 
-                Result:     OK - status completed
-                            NO - status failure: no status for that name
+                Result:     OK  - STATUS completed
+                            NO  - STATUS failure: no status for that mailbox
                             BAD - command unknown or arguments invalid
 
-                The STATUS command requests the status of the indicated mailbox.
-                It does not change the currently selected mailbox, nor does it
-                affect the state of any messages in the queried mailbox (in
-                particular, STATUS MUST NOT cause messages to lose the \Recent
-                flag).
+                The STATUS command requests the status of the specified mailbox
+                without selecting it. The command does not change the currently
+                selected mailbox and does not affect the state of any messages in
+                the queried mailbox.
 
-                The STATUS command provides an alternative to opening a second
-                IMAP4rev1 connection and doing an EXAMINE command on a mailbox to
-                query that mailbox's status without deselecting the current
-                mailbox in the first IMAP4rev1 connection.
+                Unlike the LIST command, the STATUS command does not accept
+                wildcards and is not guaranteed to be fast. Some implementations
+                may need to perform additional mailbox access in order to obtain
+                the requested status information.
 
-                Unlike the LIST command, the STATUS command is not guaranteed to
-                be fast in its response.  Under certain circumstances, it can be
-                quite slow.  In some implementations, the server is obliged to
-                open the mailbox read-only internally to obtain certain status
-                information.  Also unlike the LIST command, the STATUS command
-                does not accept wildcards.
+                IMAP4rev2 (RFC 9051) defines the following status data items:
 
-                Note: The STATUS command is intended to access the
-                status of mailboxes other than the currently selected
-                mailbox.  Because the STATUS command can cause the
-                mailbox to be opened internally, and because this
-                information is available by other means on the selected
-                mailbox, the STATUS command SHOULD NOT be used on the
-                currently selected mailbox.
+                    MESSAGES
+                        The number of messages in the mailbox.
 
-                The STATUS command MUST NOT be used as a "check for new
-                messages in the selected mailbox" operation (refer to
-                sections 7, 7.3.1, and 7.3.2 for more information about
-                the proper method for new message checking).
+                    UIDNEXT
+                        The next unique identifier value of the mailbox.
 
-                Because the STATUS command is not guaranteed to be fast
-                in its results, clients SHOULD NOT expect to be able to
-                issue many consecutive STATUS commands and obtain
-                reasonable performance.
+                    UIDVALIDITY
+                        The unique identifier validity value of the mailbox.
 
-                The currently defined status data items that can be requested are:
+                    UNSEEN
+                        The number of messages that do not have the \Seen flag.
 
-                MESSAGES
-                    The number of messages in the mailbox.
+                    DELETED
+                        The number of messages that have the \Deleted flag.
 
-                RECENT
-                    The number of messages with the \Recent flag set.
+                    SIZE
+                        The total size, in bytes, of all messages in the mailbox.
 
-                UIDNEXT
-                    The next unique identifier value of the mailbox.  Refer to
-                    section 2.3.1.1 for more information.
+                For compatibility with IMAP4rev1 (RFC 3501), clients may also
+                request:
 
-                UIDVALIDITY
-                    The unique identifier validity value of the mailbox.  Refer to
-                    section 2.3.1.1 for more information.
+                    RECENT
+                        The number of messages with the \Recent flag set.
+                        This status data item is obsolete in IMAP4rev2.
 
-                UNSEEN
-                    The number of messages which do not have the \Seen flag set.
+                Servers MUST return only the status data items requested by the
+                client.
 
-                Example:    C: A042 STATUS blurdybloop (UIDNEXT MESSAGES)
-                            S: * STATUS blurdybloop (MESSAGES 231 UIDNEXT 44292)
-                            S: A042 OK STATUS completed
+                Example:
+
+                    C: A042 STATUS blurdybloop (UIDNEXT MESSAGES)
+                    S: * STATUS blurdybloop (MESSAGES 231 UIDNEXT 44292)
+                    S: A042 OK STATUS completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
 
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',false,2);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                return;
-            }
-
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
-
+            string   folder;
+            string[] statusItems;
             try{
-                string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(parts[0]));
-                if(!(parts[1].StartsWith("(") && parts[1].EndsWith(")"))){
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-                }
-                else{
-                    IMAP_e_Select eSelect = OnSelect(cmdTag,folder);
-                    if(eSelect.ErrorResponse != null){
-                        m_pResponseSender.SendResponseAsync(eSelect.ErrorResponse);
+                folder = await imapReader.ReadMailboxAsync() ?? "";
+
+                statusItems = imapReader.ReadParenthesized().Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
+                foreach(string statusItem in statusItems){
+                    if(string.Equals("MESSAGES",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else if(string.Equals("UIDNEXT",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else if(string.Equals("UIDVALIDITY",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else if(string.Equals("UNSEEN",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else if(string.Equals("DELETED",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else if(string.Equals("SIZE",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else if(string.Equals("RECENT",statusItem,StringComparison.OrdinalIgnoreCase)){
+                        continue;
+                    }
+                    else{
+                        await imapReader.DrainRemainingCommandAsync();
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                         return;
                     }
+                }
 
-                    IMAP_e_MessagesInfo eMessagesInfo = OnGetMessagesInfo(folder);
-                   
-                    int  msgCount    = -1;
-                    int  recentCount = -1;
-                    long uidNext     = -1;
-                    long folderUid   = -1;
-                    int  unseenCount = -1;
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
-                    string[] statusItems = parts[1].Substring(1,parts[1].Length - 2).Split(' ');
-                    for(int i=0;i<statusItems.Length;i++){
-                        string statusItem = statusItems[i];
-                        if(string.Equals(statusItem,"MESSAGES",StringComparison.InvariantCultureIgnoreCase)){
-                            msgCount = eMessagesInfo.Exists;
-                        }
-                        else if(string.Equals(statusItem,"RECENT",StringComparison.InvariantCultureIgnoreCase)){
-                            recentCount = eMessagesInfo.Recent;
-                        }
-                        else if(string.Equals(statusItem,"UIDNEXT",StringComparison.InvariantCultureIgnoreCase)){
-                            uidNext = eMessagesInfo.UidNext;
-                        }
-                        else if(string.Equals(statusItem,"UIDVALIDITY",StringComparison.InvariantCultureIgnoreCase)){
-                            folderUid = eSelect.FolderUID;
-                        }
-                        else if(string.Equals(statusItem,"UNSEEN",StringComparison.InvariantCultureIgnoreCase)){
-                            unseenCount = eMessagesInfo.Unseen;
-                        }
-                        // Invalid status item.
-                        else{
-                            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                            return;
-                        }
-                    }
-                                
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_Status(folder,msgCount,recentCount,uidNext,folderUid,unseenCount));
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","STATUS completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds."));
+                    return;
                 }
             }
-            catch(Exception x){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: " + x.Message));
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
             }
+            
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","STATUS information unavailable");
+            
+            // Raise StatusAsync event.
+            IMAP_e_Status eArgs = new IMAP_e_Status(this,folder,response);
+            if(this.StatusAsync != null){
+                
+                await StatusAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            if(response.IsSuccess){
+                await SendResponseAsync(
+                    new IMAP_r_u_Status(
+                        folder,
+                        statusItems.Contains("MESSAGES",StringComparer.OrdinalIgnoreCase) ? eArgs.MessagesCount : null,
+                        statusItems.Contains("UIDNEXT",StringComparer.OrdinalIgnoreCase) ? eArgs.UidNext : null,
+                        statusItems.Contains("UIDVALIDITY",StringComparer.OrdinalIgnoreCase) ? eArgs.UidValidity : null,
+                        statusItems.Contains("UNSEEN",StringComparer.OrdinalIgnoreCase) ? eArgs.UnseenCount : null,
+                        statusItems.Contains("DELETED",StringComparer.OrdinalIgnoreCase) ? eArgs.DeletedCount : null,
+                        statusItems.Contains("SIZE",StringComparer.OrdinalIgnoreCase) ? eArgs.Size : null,
+                        statusItems.Contains("RECENT",StringComparer.OrdinalIgnoreCase) ? 0 : null
+                    ),
+                    true
+                );
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method SELECT
+        #region method _SelectAsync
 
-        private void SELECT(string cmdTag,string cmdText)
+        private async Task _SelectAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.1. SELECT Command.
+            /* RFC 9051 6.3.1. SELECT Command
+
                 Arguments:  mailbox name
+                            optional SELECT parameters
 
-                Responses:  REQUIRED untagged responses: FLAGS, EXISTS, RECENT
-                            REQUIRED OK untagged responses:  UNSEEN,  PERMANENTFLAGS,
-                            UIDNEXT, UIDVALIDITY
+                Responses:  REQUIRED untagged responses:
+                                FLAGS
+                                EXISTS
 
-                Result:     OK - select completed, now in selected state
-                            NO - select failure, now in authenticated state: no
-                                 such mailbox, can't access mailbox
+                            REQUIRED OK response codes:
+                                UIDVALIDITY
+                                UIDNEXT
+
+                Result:     OK  - mailbox selected, now in selected state
+                            NO  - mailbox cannot be selected
                             BAD - command unknown or arguments invalid
 
                 The SELECT command selects a mailbox so that messages in the
-                mailbox can be accessed.  Before returning an OK to the client,
-                the server MUST send the following untagged data to the client.
-                Note that earlier versions of this protocol only required the
-                FLAGS, EXISTS, and RECENT untagged data; consequently, client
-                implementations SHOULD implement default behavior for missing data
-                as discussed with the individual item.
+                mailbox can be accessed. Before returning a tagged OK response,
+                the server sends mailbox state information describing the selected
+                mailbox.
 
-                    FLAGS       Defined flags in the mailbox.  See the description
-                                of the FLAGS response for more detail.
+                    FLAGS
+                        The flags defined in the mailbox.
 
-                    <n> EXISTS  The number of messages in the mailbox.  See the
-                                description of the EXISTS response for more detail.
-
-                    <n> RECENT  The number of messages with the \Recent flag set.
-                                See the description of the RECENT response for more
-                                detail.
-
-                    OK [UNSEEN <n>]
-                                The message sequence number of the first unseen
-                                message in the mailbox.  If this is missing, the
-                                client can not make any assumptions about the first
-                                unseen message in the mailbox, and needs to issue a
-                                SEARCH command if it wants to find it.
-
-                    OK [PERMANENTFLAGS (<list of flags>)]
-                                A list of message flags that the client can change
-                                permanently.  If this is missing, the client should
-                                assume that all flags can be changed permanently.
-
-                    OK [UIDNEXT <n>]
-                                The next unique identifier value.  Refer to section
-                                2.3.1.1 for more information.  If this is missing,
-                                the client can not make any assumptions about the
-                                next unique identifier value.
+                    <n> EXISTS
+                        The number of messages in the mailbox.
 
                     OK [UIDVALIDITY <n>]
-                                The unique identifier validity value.  Refer to
-                                section 2.3.1.1 for more information.  If this is
-                                missing, the server does not support unique
-                                identifiers.
+                        The unique identifier validity value of the mailbox.
 
-                Only one mailbox can be selected at a time in a connection;
-                simultaneous access to multiple mailboxes requires multiple
-                connections.  The SELECT command automatically deselects any
-                currently selected mailbox before attempting the new selection.
-                Consequently, if a mailbox is selected and a SELECT command that
-                fails is attempted, no mailbox is selected.
+                    OK [UIDNEXT <n>]
+                        The next unique identifier value.
 
-                If the client is permitted to modify the mailbox, the server
-                SHOULD prefix the text of the tagged OK response with the
-                "[READ-WRITE]" response code.
+                The server SHOULD also return:
 
-                If the client is not permitted to modify the mailbox but is
-                permitted read access, the mailbox is selected as read-only, and
-                the server MUST prefix the text of the tagged OK response to
-                SELECT with the "[READ-ONLY]" response code.  Read-only access
-                through SELECT differs from the EXAMINE command in that certain
-                read-only mailboxes MAY permit the change of permanent state on a
-                per-user (as opposed to global) basis.  Netnews messages marked in
-                a server-based .newsrc file are an example of such per-user
-                permanent state that can be modified with read-only mailboxes.
+                    OK [PERMANENTFLAGS (<flags>)]
+                        The set of flags that the client may change permanently.
 
-                Example:    C: A142 SELECT INBOX
-                            S: * 172 EXISTS
-                            S: * 1 RECENT
-                            S: * OK [UNSEEN 12] Message 12 is first unseen
-                            S: * OK [UIDVALIDITY 3857529045] UIDs valid
-                            S: * OK [UIDNEXT 4392] Predicted next UID
-                            S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
-                            S: * OK [PERMANENTFLAGS (\Deleted \Seen \*)] Limited
-                            S: A142 OK [READ-WRITE] SELECT completed
-            */
+                Only one mailbox can be selected at a time on a connection.
+                Selecting a mailbox automatically deselects any previously
+                selected mailbox.
 
-            /* 5738 3.2.  UTF8 Parameter to SELECT and EXAMINE
-                The "UTF8=ACCEPT" capability also indicates that the server supports
-                the "UTF8" parameter to SELECT and EXAMINE.  When a mailbox is
-                selected with the "UTF8" parameter, it alters the behavior of all
-                IMAP commands related to message sizes, message headers, and MIME
-                body headers so they refer to the message with UTF-8 headers.  If the
-                mailstore is not UTF-8 header native and the SELECT or EXAMINE
-                command with UTF-8 header modifier succeeds, then the server MUST
-                return results as if the mailstore were UTF-8 header native with
-                upconversion requirements as described in Section 8.  The server MAY
-                reject the SELECT or EXAMINE command with the [NOT-UTF-8] response
-                code, unless the "UTF8=ALL" or "UTF8=ONLY" capability is advertised.
+                If the mailbox permits modifications, the tagged OK response
+                SHOULD contain the READ-WRITE response code.
 
-                Servers MAY include mailboxes that can only be selected or examined
-                if the "UTF8" parameter is provided.  However, such mailboxes MUST
-                NOT be included in the output of an unextended LIST, LSUB, or
-                equivalent command.  If a client attempts to SELECT or EXAMINE such
-                mailboxes without the "UTF8" parameter, the server MUST reject the
-                command with a [UTF-8-ONLY] response code.  As a result, such
-                mailboxes will not be accessible by IMAP clients written prior to
-                this specification and are discouraged unless the server advertises
-                "UTF8=ONLY" or the server implements IMAP4 LIST Command Extensions
-   
-                    utf8-select-param = "UTF8"
-                        ;; Conforms to <select-param> from RFC 4466
+                If the mailbox is selected read-only, the tagged OK response
+                MUST contain the READ-ONLY response code.
 
-                    C: a SELECT newmailbox (UTF8)
-                    S: ...
-                    S: a OK SELECT completed
-                    C: b FETCH 1 (SIZE ENVELOPE BODY)
-                    S: ... < UTF-8 header native results >
-                    S: b OK FETCH completed
+                Example:
 
-                    C: c EXAMINE legacymailbox (UTF8)
-                    S: c NO [NOT-UTF-8] Mailbox does not support UTF-8 access
-            */
+                    C: A142 SELECT INBOX
+                    S: * 172 EXISTS
+                    S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+                    S: * OK [UIDVALIDITY 3857529045] UIDs valid
+                    S: * OK [UIDNEXT 4392] Predicted next UID
+                    S: * OK [PERMANENTFLAGS (\Deleted \Seen \*)]
+                    S: A142 OK [READ-WRITE] SELECT completed
+            */            
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
@@ -2324,1454 +2047,1488 @@ namespace LumiSoft.Net.IMAP.Server
                 m_pSelectedFolder = null;
             }
 
-            string[] args = TextUtils.SplitQuotedString(cmdText,' ');
-            if(args.Length >= 2){
-                // At moment we don't support UTF-8 mailboxes.
-                if(string.Equals(args[1],"(UTF8)",StringComparison.InvariantCultureIgnoreCase)){
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO",new IMAP_t_orc_Unknown("NOT-UTF-8"),"Mailbox does not support UTF-8 access."));
+            string folder;
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
                 }
-                else{
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            try{
-                string folder = TextUtils.UnQuoteString(IMAP_Utils.DecodeMailbox(cmdText));
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","SELECT not implemented.");
+            
+            // Raise SelectAsync event.
+            if(this.SelectAsync != null){
+                IMAP_e_Select eArgs = new IMAP_e_Select(this,folder,response);
+                await SelectAsync(eArgs);
 
-                IMAP_e_Select e = OnSelect(cmdTag,folder);
-                if(e.ErrorResponse == null){
-                    IMAP_e_MessagesInfo eMessagesInfo = OnGetMessagesInfo(folder);
+                response = eArgs.Response;
 
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_Exists(eMessagesInfo.Exists));
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_Recent(eMessagesInfo.Recent));
-                    if(eMessagesInfo.FirstUnseen > -1){
-                        m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_Unseen(eMessagesInfo.FirstUnseen),"Message " + eMessagesInfo.FirstUnseen + " is the first unseen."));
-                    }
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidNext((int)eMessagesInfo.UidNext),"Predicted next message UID."));
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidValidity(e.FolderUID),"Folder UID value."));
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_Flags(e.Flags.ToArray()));
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_PermanentFlags(e.PermanentFlags.ToArray()),"Avaliable permanent flags."));
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK",new IMAP_t_orc_Unknown(e.IsReadOnly ? "READ-ONLY" : "READ-WRITE"),"SELECT completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds."));
+                if(response.IsSuccess){
+                    await SendResponseAsync(new IMAP_r_u_Exists(eArgs.MessagesInfo.Count),true);
+                    await SendResponseAsync(new IMAP_r_u_Flags(eArgs.Flags),true);
+                    await SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidValidity(eArgs.UidValidity),""),true);
+                    await SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidNext(eArgs.UidNext),""),true);
+                    await SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_PermanentFlags(eArgs.PermanentFlags),""),true);
 
-                    m_pSelectedFolder = new _SelectedFolder(folder,e.IsReadOnly,eMessagesInfo.MessagesInfo);
-                    m_pSelectedFolder.Reindex();
-                }
-                else{
-                    m_pResponseSender.SendResponseAsync(e.ErrorResponse);
+                    m_pSelectedFolder = new _SelectedFolder(folder,eArgs.Version,response.OptionalResponse is IMAP_t_orc_ReadOnly,eArgs.MessagesInfo);                    
                 }
             }
-            catch(Exception x){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: " + x.Message));
-            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method EXAMINE
+        #region method _ExamineAsync
 
-        private void EXAMINE(string cmdTag,string cmdText)
+        private async Task _ExamineAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.2. EXAMINE Command.
+            /* RFC 9051 6.3.2. EXAMINE Command
+
                 Arguments:  mailbox name
 
-                Responses:  REQUIRED untagged responses: FLAGS, EXISTS, RECENT
-                            REQUIRED OK untagged responses:  UNSEEN,  PERMANENTFLAGS,
-                            UIDNEXT, UIDVALIDITY
+                Responses:  REQUIRED untagged responses:
+                                FLAGS
+                                EXISTS
 
-                Result:     OK - examine completed, now in selected state
-                            NO - examine failure, now in authenticated state: no
-                                 such mailbox, can't access mailbox
+                            REQUIRED OK response codes:
+                                UIDVALIDITY
+                                UIDNEXT
+
+                Result:     OK  - mailbox examined, now in selected state
+                            NO  - mailbox cannot be examined
                             BAD - command unknown or arguments invalid
 
-                The EXAMINE command is identical to SELECT and returns the same
-                output; however, the selected mailbox is identified as read-only.
-                No changes to the permanent state of the mailbox, including
-                per-user state, are permitted; in particular, EXAMINE MUST NOT
-                cause messages to lose the \Recent flag.
+                The EXAMINE command is identical to SELECT except that the mailbox
+                is selected in read-only mode.
 
-                The text of the tagged OK response to the EXAMINE command MUST
-                begin with the "[READ-ONLY]" response code.
+                No changes to the permanent state of the mailbox are permitted
+                through an EXAMINE session.
 
-                Example:    C: A932 EXAMINE blurdybloop
-                            S: * 17 EXISTS
-                            S: * 2 RECENT
-                            S: * OK [UNSEEN 8] Message 8 is first unseen
-                            S: * OK [UIDVALIDITY 3857529045] UIDs valid
-                            S: * OK [UIDNEXT 4392] Predicted next UID
-                            S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
-                            S: * OK [PERMANENTFLAGS ()] No permanent flags permitted
-                            S: A932 OK [READ-ONLY] EXAMINE completed
+                Before returning a tagged OK response, the server sends mailbox
+                state information describing the selected mailbox.
+
+                    FLAGS
+                        The flags defined in the mailbox.
+
+                    <n> EXISTS
+                        The number of messages in the mailbox.
+
+                    OK [UIDVALIDITY <n>]
+                        The unique identifier validity value of the mailbox.
+
+                    OK [UIDNEXT <n>]
+                        The next unique identifier value.
+
+                The server SHOULD also return:
+
+                    OK [PERMANENTFLAGS (<flags>)]
+                        The set of flags that can be changed permanently. For a
+                        read-only mailbox this will typically be empty.
+
+                The tagged OK response to a successful EXAMINE command MUST
+                contain the [READ-ONLY] response code.
+
+                Example:
+
+                    C: A932 EXAMINE blurdybloop
+                    S: * 17 EXISTS
+                    S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+                    S: * OK [UIDVALIDITY 3857529045] UIDs valid
+                    S: * OK [UIDNEXT 4392] Predicted next UID
+                    S: * OK [PERMANENTFLAGS ()]
+                    S: A932 OK [READ-ONLY] EXAMINE completed
             */
 
-            /* 5738 3.2.  UTF8 Parameter to SELECT and EXAMINE
-                The "UTF8=ACCEPT" capability also indicates that the server supports
-                the "UTF8" parameter to SELECT and EXAMINE.  When a mailbox is
-                selected with the "UTF8" parameter, it alters the behavior of all
-                IMAP commands related to message sizes, message headers, and MIME
-                body headers so they refer to the message with UTF-8 headers.  If the
-                mailstore is not UTF-8 header native and the SELECT or EXAMINE
-                command with UTF-8 header modifier succeeds, then the server MUST
-                return results as if the mailstore were UTF-8 header native with
-                upconversion requirements as described in Section 8.  The server MAY
-                reject the SELECT or EXAMINE command with the [NOT-UTF-8] response
-                code, unless the "UTF8=ALL" or "UTF8=ONLY" capability is advertised.
-
-                Servers MAY include mailboxes that can only be selected or examined
-                if the "UTF8" parameter is provided.  However, such mailboxes MUST
-                NOT be included in the output of an unextended LIST, LSUB, or
-                equivalent command.  If a client attempts to SELECT or EXAMINE such
-                mailboxes without the "UTF8" parameter, the server MUST reject the
-                command with a [UTF-8-ONLY] response code.  As a result, such
-                mailboxes will not be accessible by IMAP clients written prior to
-                this specification and are discouraged unless the server advertises
-                "UTF8=ONLY" or the server implements IMAP4 LIST Command Extensions
-   
-                    utf8-select-param = "UTF8"
-                        ;; Conforms to <select-param> from RFC 4466
-
-                    C: a SELECT newmailbox (UTF8)
-                    S: ...
-                    S: a OK SELECT completed
-                    C: b FETCH 1 (SIZE ENVELOPE BODY)
-                    S: ... < UTF-8 header native results >
-                    S: b OK FETCH completed
-
-                    C: c EXAMINE legacymailbox (UTF8)
-                    S: c NO [NOT-UTF-8] Mailbox does not support UTF-8 access
-            */
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
-            
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
-
+                        
             // Unselect folder if any selected.
             if(m_pSelectedFolder != null){
                 m_pSelectedFolder = null;
             }
 
-            string[] args = TextUtils.SplitQuotedString(cmdText,' ');
-            if(args.Length >= 2){
-                // At moment we don't support UTF-8 mailboxes.
-                if(string.Equals(args[1],"(UTF8)",StringComparison.InvariantCultureIgnoreCase)){
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO",new IMAP_t_orc_Unknown("NOT-UTF-8"),"Mailbox does not support UTF-8 access."));
+            string folder;
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
                 }
-                else{
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            string folder = TextUtils.UnQuoteString(IMAP_Utils.DecodeMailbox(cmdText));
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","EXAMINE not implemented.");
+            
+            // Raise ExamineAsync event.
+            if(this.ExamineAsync != null){
+                IMAP_e_Examine eArgs = new IMAP_e_Examine(this,folder,response);
+                await ExamineAsync(eArgs);
 
-            IMAP_e_Select e = OnSelect(cmdTag,folder);
-            if(e.ErrorResponse == null){                 
-                IMAP_e_MessagesInfo eMessagesInfo = OnGetMessagesInfo(folder);
+                response = eArgs.Response;
 
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_Exists(eMessagesInfo.Exists));
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_Recent(eMessagesInfo.Recent));
-                if(eMessagesInfo.FirstUnseen > -1){
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_Unseen(eMessagesInfo.FirstUnseen),"Message " + eMessagesInfo.FirstUnseen + " is the first unseen."));
+                if(response.IsSuccess){
+                    await SendResponseAsync(new IMAP_r_u_Exists(eArgs.MessagesInfo.Count),true);
+                    await SendResponseAsync(new IMAP_r_u_Flags(eArgs.Flags),true);
+                    await SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidValidity(eArgs.UidValidity),""),true);
+                    await SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidNext(eArgs.UidNext),""),true);
+                    await SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_PermanentFlags([]),""),true);
+
+                    m_pSelectedFolder = new _SelectedFolder(folder,eArgs.Version,response.OptionalResponse is IMAP_t_orc_ReadOnly,eArgs.MessagesInfo);
                 }
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidNext((int)eMessagesInfo.UidNext),"Predicted next message UID."));
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_UidValidity(e.FolderUID),"Folder UID value."));
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_Flags(e.Flags.ToArray()));
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_ServerStatus("OK",new IMAP_t_orc_PermanentFlags(e.PermanentFlags.ToArray()),"Avaliable permanent flags."));
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK",new IMAP_t_orc_ReadOnly(),"EXAMINE completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds."));
+            }
 
-                m_pSelectedFolder = new _SelectedFolder(folder,e.IsReadOnly,eMessagesInfo.MessagesInfo);
-                m_pSelectedFolder.Reindex();
-            }
-            else{
-                m_pResponseSender.SendResponseAsync(e.ErrorResponse);
-            }
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method AppendAsync
+        #region method _AppendAsync
 
-        private async Task AppendAsync(string cmdTag,string cmdText)
+        private async Task _AppendAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.3.11. APPEND Command.
+            /* RFC 9051 6.3.12. APPEND Command
+
                 Arguments:  mailbox name
-                            OPTIONAL flag parenthesized list
-                            OPTIONAL date/time string
+                            OPTIONAL flag list
+                            OPTIONAL date-time string
                             message literal
 
                 Responses:  no specific responses for this command
 
-                Result:     OK - append completed
-                            NO - append error: can't append to that mailbox, error
-                                 in flags or date/time or message text
+                Result:     OK  - APPEND completed
+                            NO  - unable to append the message
                             BAD - command unknown or arguments invalid
 
-                The APPEND command appends the literal argument as a new message
-                to the end of the specified destination mailbox.  This argument
-                SHOULD be in the format of an [RFC-2822] message.  8-bit
-                characters are permitted in the message.  A server implementation
-                that is unable to preserve 8-bit data properly MUST be able to
-                reversibly convert 8-bit APPEND data to 7-bit using a [MIME-IMB]
-                content transfer encoding.
+                The APPEND command appends the specified message to the end of the
+                destination mailbox.
 
-                    Note: There MAY be exceptions, e.g., draft messages, in
-                    which required [RFC-2822] header lines are omitted in
-                    the message literal argument to APPEND.  The full
-                    implications of doing so MUST be understood and
-                    carefully weighed.
+                The message literal should contain a valid RFC 5322 message.
+                The server may accept messages that do not contain all required
+                header fields, for example draft messages.
 
-                If a flag parenthesized list is specified, the flags SHOULD be set
-                in the resulting message; otherwise, the flag list of the
-                resulting message is set to empty by default.  In either case, the
-                Recent flag is also set.
+                If a flag list is supplied, the specified flags are assigned to the
+                appended message. Otherwise, the message is created with no flags
+                set unless server policy specifies otherwise.
 
-                If a date-time is specified, the internal date SHOULD be set in
-                the resulting message; otherwise, the internal date of the
-                resulting message is set to the current date and time by default.
+                If a date-time value is supplied, it becomes the INTERNALDATE of
+                the appended message. Otherwise, the current date and time are used.
 
-                If the append is unsuccessful for any reason, the mailbox MUST be
-                restored to its state before the APPEND attempt; no partial
-                appending is permitted.
+                If APPEND fails for any reason, the mailbox must remain unchanged;
+                partial appends are not permitted.
 
-                If the destination mailbox does not exist, a server MUST return an
-                error, and MUST NOT automatically create the mailbox.  Unless it
-                is certain that the destination mailbox can not be created, the
-                server MUST send the response code "[TRYCREATE]" as the prefix of
-                the text of the tagged NO response.  This gives a hint to the
-                client that it can attempt a CREATE command and retry the APPEND
-                if the CREATE is successful.
+                If the destination mailbox does not exist, the server MUST return
+                a NO response. If mailbox creation might succeed, the server SHOULD
+                include the [TRYCREATE] response code.
 
-                If the mailbox is currently selected, the normal new message
-                actions SHOULD occur.  Specifically, the server SHOULD notify the
-                client immediately via an untagged EXISTS response.  If the server
-                does not do so, the client MAY issue a NOOP command (or failing
-                that, a CHECK command) after one or more APPEND commands.
+                If the destination mailbox is currently selected, the server SHOULD
+                notify connected clients of the new message using the appropriate
+                untagged mailbox update responses.
 
-                Example:    C: A003 APPEND saved-messages (\Seen) {310}
-                            S: + Ready for literal data
-                            C: Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)
-                            C: From: Fred Foobar <foobar@Blurdybloop.COM>
-                            C: Subject: afternoon meeting
-                            C: To: mooch@owatagu.siam.edu
-                            C: Message-Id: <B27397-0100000@Blurdybloop.COM>
-                            C: MIME-Version: 1.0
-                            C: Content-Type: TEXT/PLAIN; CHARSET=US-ASCII
-                            C:
-                            C: Hello Joe, do you think we can meet at 3:30 tomorrow?
-                            C:
-                            S: A003 OK APPEND completed
+                Servers supporting UIDPLUS (RFC 4315) may include an APPENDUID
+                response code in the tagged OK response.
 
-                    Note: The APPEND command is not used for message delivery,
-                    because it does not provide a mechanism to transfer [SMTP]
-                    envelope information.
+                Example:
+
+                    C: A003 APPEND saved-messages (\Seen) "07-Feb-1994 21:52:25 -0800" {310}
+                    S: + Ready for literal data
+                    C: Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)
+                    C: From: Fred Foobar <foobar@Blurdybloop.COM>
+                    C: Subject: afternoon meeting
+                    C: To: mooch@owatagu.siam.edu
+                    C: Message-Id: <B27397-0100000@Blurdybloop.COM>
+                    C: MIME-Version: 1.0
+                    C: Content-Type: text/plain; charset=US-ASCII
+                    C:
+                    C: Hello Joe, do you think we can meet at 3:30 tomorrow?
+                    C:
+                    S: A003 OK APPEND completed
+
+                Note: APPEND is not a message delivery mechanism because it does
+                not provide a way to supply SMTP envelope information.
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
 
-            // Store start time
-            long startTime = DateTime.Now.Ticks;
-
-            #region Parse arguments
-
-            StringReader r = new StringReader(cmdText);
-            r.ReadToFirstChar();
-            string? folder = null;
-            if(r.StartsWith("\"")){
-                folder = IMAP_Utils.DecodeMailbox(r.ReadWord() ?? string.Empty);
-            }
-            // Mailbox name as string-literal.
-            else if(r.StartsWith("{")){
-                _CmdReader cmdReader = new _CmdReader(this,cmdText,Encoding.UTF8,1);            
-                cmdReader.Start();
-
-                r = new StringReader(cmdReader.CmdLine);
-
-                if(r.StartsWith("\"")){
-                    folder = IMAP_Utils.DecodeMailbox(r.ReadWord() ?? string.Empty);
+            string    folder;
+            string[]  flags         = [];
+            DateTime? dateTime      = null;
+            int       size          = 0;
+            Stream?   messageStream = null;
+            try{
+                folder = await imapReader.ReadMailboxAsync() ?? "";
+                
+                // We have optional flag list.
+                if(imapReader.PeekIs('(')){
+                    flags = imapReader.ReadParenthesized().Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
                 }
-                else{
-                    folder = IMAP_Utils.DecodeMailbox(r.QuotedReadToDelimiter(' '));
-                }
-            }
-            else{
-                folder = IMAP_Utils.DecodeMailbox(r.QuotedReadToDelimiter(' '));
-            }
-            r.ReadToFirstChar();
-            List<string> flags = new List<string>();
-            if(r.StartsWith("(")){                
-                foreach(string f in r.ReadParenthesized().Split(' ')){
-                    if(f.Length > 0 && !flags.Contains(f.Substring(1))){
-                        flags.Add(f.Substring(1));
+                // We have optional date-time.
+                if(!imapReader.PeekIs('{')){
+                    try{
+                        dateTime = IMAP_Utils.ParseDate(await imapReader.ReadStringAsync() ?? "");
+                    }
+                    catch{
+                        throw new ParseException("Invalid date-time.");
                     }
                 }
-            }
-            r.ReadToFirstChar();
-            DateTime date = DateTime.MinValue;
-            if(!r.StartsWith("{")){
-                try{
-                    date = IMAP_Utils.ParseDate(r.ReadWord() ?? string.Empty);
-                } 
-                catch{
+                size = imapReader.PeekLiteralSize();
+                                
+                // Raise AppendBeginAsync event.
+                if(this.AppendBeginAsync != null){
+                    IMAP_e_AppendBegin eArgs = new IMAP_e_AppendBegin(this,folder,flags,dateTime,size);
+                    await AppendBeginAsync(eArgs);
+
+                    if(eArgs.RejectResponse != null){
+                        await imapReader.DrainRemainingCommandAsync();
+                        await SendResponseAsync(eArgs.RejectResponse,true);
+
+                        return;
+                    }                    
+
+                    messageStream = eArgs.Stream;
                 }
+
+                if(messageStream == null){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Unable to append message."),true);
+
+                    return;
+                }
+                                
+                await imapReader.ReadLiteralAsync(messageStream);
+
+                if(imapReader.HasMore){
+                    throw new ParseException("Error in arguments.");
+                }                
             }
-            int size = Convert.ToInt32(r.ReadParenthesized());
-            if(r.Available > 0){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+            catch(Exception x){
+                if(messageStream != null && this.AppendCancelAsync != null){
+                    IMAP_e_AppendCancel eArgs = new IMAP_e_AppendCancel(this,messageStream);
+                    await AppendCancelAsync(eArgs);
+                }
+
+                if(x is ParseException){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+                }
 
                 return;
             }
 
-            #endregion
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","APPEND completed.");
 
-            IMAP_e_Append e = OnAppend(folder,flags.ToArray(),date,size,new IMAP_r_ServerStatus(cmdTag,"OK","APPEND command completed in %exectime seconds."));
-            
-            if(e.Response.IsError){
-                m_pResponseSender.SendResponseAsync(e.Response);
+            // Raise AppendCompleteAsync event.
+            if(this.AppendCompleteAsync != null){
+                IMAP_e_AppendComplete eArgs = new IMAP_e_AppendComplete(this,folder,flags,dateTime,size,messageStream,response);
+                await AppendCompleteAsync(eArgs);
+
+                response = eArgs.Response;
             }
-            else if(e.Stream == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Internal server error: No storage stream available."));
-            }
-            else{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus("+","Ready for literal data."));
 
-                // Read message.
-                await this.TcpStream.ReadFixedCountAsync(e.Stream,size);
-
-                // Log.
-                LogAddRead(size,"Readed literal " + size + " bytes.");
-
-                // Read command line terminating CRLF.
-                var readLineResult = this.TcpStream.ReadLine(new byte[32000],SizeExceededAction.JunkAndThrowException);
-                if(readLineResult.BytesInBuffer == 0){
-                    LogAddText("Client closed connection.");
-
-                    throw new IOException("Client closed connection.");
-                }
-                // Read command line terminating CRLF succeeded.
-                else{
-                    LogAddRead(readLineResult.BytesInBuffer,readLineResult.LineUtf8 ?? string.Empty);
-
-                    // Raise Completed event.
-                    e.OnCompleted();
-
-                    m_pResponseSender.SendResponseAsync(IMAP_r_ServerStatus.Parse(e.Response.ToString().TrimEnd().Replace("%exectime",((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2"))));
-                }
-            }
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method GETQUOTAROOT
+        #region method _GetQuotaRootAsync
 
-        private void GETQUOTAROOT(string cmdTag,string cmdText)
+        private async Task _GetQuotaRootAsync(string cmdTag,string cmdText)
         {
-            /* RFC 2087 4.3. GETQUOTAROOT
-				Arguments:  mailbox name
+            /* RFC 9208 4.1.2. GETQUOTAROOT Command
 
-                Data:       untagged responses: QUOTAROOT, QUOTA
+                Arguments:  mailbox name
 
-                Result:     OK - getquota completed
-                            NO - getquota error: no such mailbox, permission denied
+                Responses:  untagged QUOTAROOT response
+                            untagged QUOTA response(s)
+
+                Result:     OK  - GETQUOTAROOT completed
+                            NO  - mailbox doesn't exist or access denied
                             BAD - command unknown or arguments invalid
 
-                The GETQUOTAROOT command takes the name of a mailbox and returns the
-                list of quota roots for the mailbox in an untagged QUOTAROOT
-                response.  For each listed quota root, it also returns the quota
-                root's resource usage and limits in an untagged QUOTA response.
+                The GETQUOTAROOT command takes a mailbox name and returns the list
+                of quota roots associated with that mailbox in a QUOTAROOT response.
+                For each returned quota root, the server also returns a QUOTA
+                response containing the current resource usage and limits.
 
-                Example:    C: A003 GETQUOTAROOT INBOX
-                            S: * QUOTAROOT INBOX ""
-                            S: * QUOTA "" (STORAGE 10 512)
-                            S: A003 OK Getquota completed
-							
-			*/
+                Example:
+
+                    C: A003 GETQUOTAROOT INBOX
+                    S: * QUOTAROOT INBOX ""
+                    S: * QUOTA "" (STORAGE 10 512)
+                    S: A003 OK GETQUOTAROOT completed
+            */
+
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(!SupportsCap("QUOTA")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
-
-                return;
-            }
-            if(string.IsNullOrEmpty(cmdText)){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             
-            string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
+            string folder;
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
 
-            IMAP_e_GetQuotaRoot e = OnGetGuotaRoot(folder,new IMAP_r_ServerStatus(cmdTag,"OK","GETQUOTAROOT command completed."));
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
-            if(e.QuotaRootResponses.Count > 0){
-                foreach(IMAP_r_u_QuotaRoot r in e.QuotaRootResponses){
-                    m_pResponseSender.SendResponseAsync(r);
-                }                
+                    return;
+                }
             }
-            if(e.QuotaResponses.Count > 0){
-                foreach(IMAP_r_u_Quota r in e.QuotaResponses){
-                    m_pResponseSender.SendResponseAsync(r);
-                }                
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
             }
-            m_pResponseSender.SendResponseAsync(e.Response);
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise GetQuotaRootAsync event.
+            if(this.GetQuotaRootAsync != null){
+                IMAP_e_GetQuotaRoot eArgs = new IMAP_e_GetQuotaRoot(this,folder,response);
+                await GetQuotaRootAsync(eArgs);
+
+                response = eArgs.Response;
+
+                if(response.IsSuccess){
+                    if(eArgs.QuotaRootResponse == null){
+                        response = new IMAP_r_ServerStatus(cmdTag,"NO","Mailbox has no quota root.");
+                    }
+                    else{
+                        await SendResponseAsync(eArgs.QuotaRootResponse,true);
+                        foreach(IMAP_r_u_Quota r in eArgs.QuotaResponses){
+                            await SendResponseAsync(r,true);
+                        }
+                    }
+                }
+            }            
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method GETQUOTA
+        #region method _GetQuotaAsync
 
-        private void GETQUOTA(string cmdTag,string cmdText)
+        private async Task _GetQuotaAsync(string cmdTag,string cmdText)
         {
-            /* RFC 2087 4.2. GETQUOTA
-				Arguments:  quota root
+            /* RFC 9208 4.1.1. GETQUOTA Command
 
-                Data:       untagged responses: QUOTA
+                Arguments:  quota root
 
-                Result:     OK - getquota completed
-                            NO - getquota  error:  no  such  quota  root,  permission denied
+                Responses:  untagged QUOTA response
+
+                Result:     OK  - GETQUOTA completed
+                            NO  - no such quota root or access denied
                             BAD - command unknown or arguments invalid
 
                 The GETQUOTA command takes the name of a quota root and returns the
-                quota root's resource usage and limits in an untagged QUOTA response.
+                current resource usage and limits associated with that quota root in
+                an untagged QUOTA response.
 
-                Example:    C: A003 GETQUOTA ""
-                            S: * QUOTA "" (STORAGE 10 512)
-                            S: A003 OK Getquota completed
-							
-			*/
+                A server may support one or more quota resources, such as STORAGE,
+                MESSAGE, MAILBOX, or ANNOTATION-STORAGE.
 
-            if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                Example:
 
-                return;
-            }            
+                    C: A003 GETQUOTA ""
+                    S: * QUOTA "" (STORAGE 10 512)
+                    S: A003 OK GETQUOTA completed
 
-            string quotaRoot = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
-
-            IMAP_e_GetQuota e = OnGetQuota(quotaRoot,new IMAP_r_ServerStatus(cmdTag,"OK","QUOTA command completed."));
-            if(e.QuotaResponses.Count > 0){
-                foreach(IMAP_r_u_Quota r in e.QuotaResponses){
-                    m_pResponseSender.SendResponseAsync(r);
-                }                
-            }
-            m_pResponseSender.SendResponseAsync(e.Response);
-        }
-
-        #endregion
-
-        #region method GETACL
-
-        private void GETACL(string cmdTag,string cmdText)
-        {
-            /* RFC 4314 3.3. GETACL Command.
-                Arguments:  mailbox name
-
-                Data:       untagged responses: ACL
-
-                Result:     OK - getacl completed
-                            NO - getacl failure: can't get acl
-                            BAD - arguments invalid
-
-                The GETACL command returns the access control list for mailbox in an
-                untagged ACL response.
-
-                Some implementations MAY permit multiple forms of an identifier to
-                reference the same IMAP account.  Usually, such implementations will
-                have a canonical form that is stored internally.  An ACL response
-                caused by a GETACL command MAY include a canonicalized form of the
-                identifier that might be different from the one used in the
-                corresponding SETACL command.
-
-                Example:    C: A002 GETACL INBOX
-							S: * ACL INBOX Fred rwipslda
-							S: A002 OK Getacl complete
-							
-							.... Multiple users
-							S: * ACL INBOX Fred rwipslda test rwipslda
-							
-							.... No acl flags for Fred
-							S: * ACL INBOX Fred "" test rwipslda         
             */
 
-            if(!SupportsCap("ACL")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
+            if(!SupportsCap("QUOTA")){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
+            }
+
+            string quotaRoot;
+            try{
+                quotaRoot  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise GetQuotaAsync event.
+            if(this.GetQuotaAsync != null){
+                IMAP_e_GetQuota eArgs = new IMAP_e_GetQuota(this,quotaRoot,response);
+                await GetQuotaAsync(eArgs);
+
+                response = eArgs.Response;
+
+                if(response.IsSuccess){
+                    foreach(IMAP_r_u_Quota r in eArgs.QuotaResponses){
+                        await SendResponseAsync(r,true);
+                    }
+                }
             }            
 
-            string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
-
-            IMAP_e_GetAcl e = OnGetAcl(folder,new IMAP_r_ServerStatus(cmdTag,"OK","GETACL command completed."));
-            if(e.AclResponses.Count > 0){
-                foreach(IMAP_r_u_Acl r in e.AclResponses){
-                    m_pResponseSender.SendResponseAsync(r);
-                }                
-            }
-            m_pResponseSender.SendResponseAsync(e.Response);
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method SETACL
+        #region method _GetAcl
 
-        private void SETACL(string cmdTag,string cmdText)
+        private async Task _GetAcl(string cmdTag,string cmdText)
         {
-            /* RFC 4314 3.1. SETACL Command.
+            /* RFC 4314 3.3. GETACL Command
+
+                Arguments:  mailbox name
+
+                Responses:  untagged ACL response
+
+                Result:     OK  - GETACL completed
+                            NO  - unable to retrieve ACL information
+                            BAD - arguments invalid
+
+                The GETACL command returns the access control list of the
+                specified mailbox in an untagged ACL response.
+
+                Some implementations may permit multiple forms of an identifier
+                to refer to the same IMAP account. Such implementations often
+                store identifiers in a canonical form. Consequently, an ACL
+                response returned by GETACL may contain an identifier that differs
+                from the one originally supplied in a corresponding SETACL command.
+
+                Example:
+
+                    C: A002 GETACL INBOX
+                    S: * ACL INBOX Fred rwipslda
+                    S: A002 OK GETACL completed
+
+                    ... Multiple users
+
+                    S: * ACL INBOX Fred rwipslda test rwipslda
+
+                    ... No rights for Fred
+
+                    S: * ACL INBOX Fred "" test rwipslda
+            */
+
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
+            if(!SupportsCap("ACL")){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
+
+                return;
+            }
+            if(!this.IsAuthenticated){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+
+            string folder;
+            try{
+                folder  = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise GetAclAsync event.
+            if(this.GetAclAsync != null){
+                IMAP_e_GetAcl eArgs = new IMAP_e_GetAcl(this,folder,response);
+                await GetAclAsync(eArgs);
+
+                response = eArgs.Response;
+
+                if(response.IsSuccess){
+                    if(eArgs.AclResponse == null){
+                        response = new IMAP_r_ServerStatus(cmdTag,"NO","ACL information unavailable.");
+                    }
+                    else{
+                        await SendResponseAsync(eArgs.AclResponse,true);
+                    }
+                }
+            }            
+
+            await SendResponseAsync(response,true);
+        }
+
+        #endregion
+
+        #region method _SetAclAsync
+
+        private async Task _SetAclAsync(string cmdTag,string cmdText)
+        {
+            /* RFC 4314 3.1. SETACL Command
+
                 Arguments:  mailbox name
                             identifier
                             access right modification
 
-                Data:       no specific data for this command
+                Responses:  no specific responses for this command
 
-                Result:     OK - setacl completed
-                            NO - setacl failure: can't set acl
+                Result:     OK  - SETACL completed
+                            NO  - unable to modify the ACL
                             BAD - arguments invalid
 
-                The SETACL command changes the access control list on the specified
-                mailbox so that the specified identifier is granted permissions as
-                specified in the third argument.
+                The SETACL command modifies the access control list of the
+                specified mailbox for the specified identifier.
 
-                The third argument is a string containing an optional plus ("+") or
-                minus ("-") prefix, followed by zero or more rights characters.  If
-                the string starts with a plus, the following rights are added to any
-                existing rights for the identifier.  If the string starts with a
-                minus, the following rights are removed from any existing rights for
-                the identifier.  If the string does not start with a plus or minus,
-                the rights replace any existing rights for the identifier.
+                The access right modification argument consists of an optional
+                plus ("+") or minus ("-") prefix followed by zero or more rights
+                characters.
 
-                Note that an unrecognized right MUST cause the command to return the
-                BAD response.  In particular, the server MUST NOT silently ignore
+                    +rights
+                        Adds the specified rights to the identifier's existing
+                        rights.
+
+                    -rights
+                        Removes the specified rights from the identifier's existing
+                        rights.
+
+                    rights
+                        Replaces any existing rights for the identifier.
+
+                An unrecognized right MUST cause the command to fail with a BAD
+                response. Servers MUST NOT silently ignore unsupported or
                 unrecognized rights.
 
-                Example:    C: A035 SETACL INBOX/Drafts John lrQswicda
-                            S: A035 BAD Uppercase rights are not allowed
-            
-                            C: A036 SETACL INBOX/Drafts John lrqswicda
-                            S: A036 BAD The q right is not supported
+                Example:
+
+                    C: A035 SETACL INBOX/Drafts John lrQswicda
+                    S: A035 BAD Uppercase rights are not allowed
+
+                    C: A036 SETACL INBOX/Drafts John lrqswicda
+                    S: A036 BAD The q right is not supported
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!SupportsCap("ACL")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
-
-                return;
-            }            
-
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(parts.Length != 3){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
 
-            string rights = parts[2];
-            IMAP_Flags_SetType setType = IMAP_Flags_SetType.Replace;
-            if(rights.StartsWith("+")){
-                setType = IMAP_Flags_SetType.Add;
-                rights = rights.Substring(1);
+            string folder;
+            string identifier;
+            string rights;
+            try{
+                folder     = await imapReader.ReadMailboxAsync() ?? "";
+                identifier = await imapReader.ReadStringAsync() ?? "";
+                rights     = await imapReader.ReadStringAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
             }
-            else if(rights.StartsWith("-")){
-                setType = IMAP_Flags_SetType.Remove;
-                rights = rights.Substring(1);
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
             }
 
-            IMAP_e_SetAcl e = OnSetAcl(
-                IMAP_Utils.DecodeMailbox(parts[0]),
-                IMAP_Utils.DecodeMailbox(parts[1]),
-                setType,
-                rights,
-                new IMAP_r_ServerStatus(cmdTag,"OK","SETACL command completed.")
-            );
-            m_pResponseSender.SendResponseAsync(e.Response);
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise SetAclAsync event.
+            if(this.SetAclAsync != null){
+                IMAP_e_SetAcl eArgs = new IMAP_e_SetAcl(this,folder,identifier,rights,response);
+                await SetAclAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method DELETEACL
+        #region method _DeleteAclAsync
 
-        private void DELETEACL(string cmdTag,string cmdText)
+        private async Task _DeleteAclAsync(string cmdTag,string cmdText)
         {
-            /* RFC 4314 3.2. DELETEACL Command.
+                        /* RFC 4314 3.2. DELETEACL Command
+
                 Arguments:  mailbox name
                             identifier
 
-                Data:       no specific data for this command
+                Responses:  no specific responses for this command
 
-                Result:     OK - deleteacl completed
-                            NO - deleteacl failure: can't delete acl
+                Result:     OK  - DELETEACL completed
+                            NO  - unable to delete the ACL entry
                             BAD - arguments invalid
 
-                The DELETEACL command removes any <identifier,rights> pair for the
-                specified identifier from the access control list for the specified
-                mailbox.
+                The DELETEACL command removes any <identifier, rights> pair for
+                the specified identifier from the access control list of the
+                specified mailbox.
 
-                Example:    C: B001 getacl INBOX
-                            S: * ACL INBOX Fred rwipslxetad -Fred wetd $team w
-                            S: B001 OK Getacl complete
-                            C: B002 DeleteAcl INBOX Fred
-                            S: B002 OK Deleteacl complete
+                If the identifier does not have an ACL entry for the mailbox,
+                the server MAY treat the operation as successful.
+
+                Example:
+
+                    C: B001 GETACL INBOX
+                    S: * ACL INBOX Fred rwipslxetad -Fred wetd $team w
+                    S: B001 OK GETACL completed
+
+                    C: B002 DELETEACL INBOX Fred
+                    S: B002 OK DELETEACL completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!SupportsCap("ACL")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+            string folder;
+            string identifier;
+            try{
+                folder     = await imapReader.ReadMailboxAsync() ?? "";
+                identifier = await imapReader.ReadStringAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            IMAP_e_DeleteAcl e = OnDeleteAcl(
-                IMAP_Utils.DecodeMailbox(parts[0]),
-                IMAP_Utils.DecodeMailbox(parts[1]),
-                new IMAP_r_ServerStatus(cmdTag,"OK","DELETEACL command completed.")
-            );
-            m_pResponseSender.SendResponseAsync(e.Response);
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise DeleteAclAsync event.
+            if(this.DeleteAclAsync != null){
+                IMAP_e_DeleteAcl eArgs = new IMAP_e_DeleteAcl(this,folder,identifier,response);
+                await DeleteAclAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method LISTRIGHTS
+        #region method _ListRightsAsync
 
-        private void LISTRIGHTS(string cmdTag,string cmdText)
+        private async Task _ListRightsAsync(string cmdTag,string cmdText)
         {
-            /* RFC 4314 3.4. LISTRIGHTS Command.
+            /* RFC 4314 3.4. LISTRIGHTS Command
+
                 Arguments:  mailbox name
                             identifier
 
-                Data:       untagged responses: LISTRIGHTS
+                Responses:  untagged LISTRIGHTS response
 
-                Result:     OK - listrights completed
-                            NO - listrights failure: can't get rights list
+                Result:     OK  - LISTRIGHTS completed
+                            NO  - unable to retrieve rights information
                             BAD - arguments invalid
 
                 The LISTRIGHTS command takes a mailbox name and an identifier and
-                returns information about what rights can be granted to the
-                identifier in the ACL for the mailbox.
+                returns information about the rights that may be granted to the
+                identifier in the mailbox ACL.
 
-                Some implementations MAY permit multiple forms of an identifier to
-                reference the same IMAP account.  Usually, such implementations will
-                have a canonical form that is stored internally.  A LISTRIGHTS
-                response caused by a LISTRIGHTS command MUST always return the same
-                form of an identifier as specified by the client.  This is to allow
-                the client to correlate the response with the command.
+                Some implementations may permit multiple forms of an identifier to
+                refer to the same IMAP account. A LISTRIGHTS response MUST return
+                the identifier exactly as supplied by the client, allowing the
+                client to correlate the response with the command.
 
-                Example:    C: a001 LISTRIGHTS ~/Mail/saved smith
-                            S: * LISTRIGHTS ~/Mail/saved smith la r swicdkxte
-                            S: a001 OK Listrights completed
+                The LISTRIGHTS response contains:
 
-                Example:    C: a005 listrights archive/imap anyone
-                            S: * LISTRIGHTS archive.imap anyone ""
-                               l r s w i p k x t e c d a 0 1 2 3 4 5 6 7 8 9
-                            S: a005 Listrights successful
+                    mailbox-name
+                        The mailbox whose rights are being queried.
+
+                    identifier
+                        The identifier supplied by the client.
+
+                    required-rights
+                        Rights that are always granted to the identifier and cannot
+                        be removed.
+
+                    optional-rights...
+                        Rights that may be granted to the identifier.
+
+                Example:
+
+                    C: A001 LISTRIGHTS ~/Mail/saved smith
+                    S: * LISTRIGHTS ~/Mail/saved smith la r swicdkxte
+                    S: A001 OK LISTRIGHTS completed
+
+                Example:
+
+                    C: A005 LISTRIGHTS archive/imap anyone
+                    S: * LISTRIGHTS archive/imap anyone ""
+                       l r s w i p k x t e c d a 0 1 2 3 4 5 6 7 8 9
+                    S: A005 OK LISTRIGHTS completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!SupportsCap("ACL")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
-
-                return;
-            }
-
-            string[] parts = TextUtils.SplitQuotedString(cmdText,' ',true);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             
+            string folder;
+            string identifier;
+            try{
+                folder     = await imapReader.ReadMailboxAsync() ?? "";
+                identifier = await imapReader.ReadStringAsync() ?? "";
 
-            IMAP_e_ListRights e = OnListRights(
-                IMAP_Utils.DecodeMailbox(parts[0]),
-                IMAP_Utils.DecodeMailbox(parts[1]),
-                new IMAP_r_ServerStatus(cmdTag,"OK","LISTRIGHTS command completed.")
-            );
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
-            
-            if(e.ListRightsResponse != null){
-                m_pResponseSender.SendResponseAsync(e.ListRightsResponse);
+                    return;
+                }
             }
-            m_pResponseSender.SendResponseAsync(e.Response);
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise ListRightsAsync event.
+            if(this.ListRightsAsync != null){
+                IMAP_e_ListRights eArgs = new IMAP_e_ListRights(this,folder,identifier,response);
+                await ListRightsAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method MYRIGHTS
+        #region method _MyRightsAsync
 
-        private void MYRIGHTS(string cmdTag,string cmdText)
+        private async Task _MyRightsAsync(string cmdTag,string cmdText)
         {
-            /* RFC 4314 3.5. MYRIGHTS Command.
+            /* RFC 4314 3.5. MYRIGHTS Command
+
                 Arguments:  mailbox name
 
-                Data:       untagged responses: MYRIGHTS
+                Responses:  untagged MYRIGHTS response
 
-                Result:     OK - myrights completed
-                            NO - myrights failure: can't get rights
+                Result:     OK  - MYRIGHTS completed
+                            NO  - unable to determine mailbox rights
                             BAD - arguments invalid
 
-                The MYRIGHTS command returns the set of rights that the user has to
-                mailbox in an untagged MYRIGHTS reply.
+                The MYRIGHTS command returns the set of rights that the
+                authenticated user has for the specified mailbox in an
+                untagged MYRIGHTS response.
 
-                Example:    C: A003 MYRIGHTS INBOX
-                            S: * MYRIGHTS INBOX rwiptsldaex
-                            S: A003 OK Myrights complete
+                The rights returned in the response represent the effective
+                rights available to the user for the mailbox.
+
+                Example:
+
+                    C: A003 MYRIGHTS INBOX
+                    S: * MYRIGHTS INBOX rwiptsldaex
+                    S: A003 OK MYRIGHTS completed
             */
 
+            
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!SupportsCap("ACL")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported."),true);
 
                 return;
             }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             
-            string folder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(cmdText));
+            string folder;
+            try{
+                folder = await imapReader.ReadMailboxAsync() ?? "";
 
-            IMAP_e_MyRights e = OnMyRights(folder,new IMAP_r_ServerStatus(cmdTag,"OK","MYRIGHTS command completed."));
-            if(e.MyRightsResponse != null){
-                m_pResponseSender.SendResponseAsync(e.MyRightsResponse);
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
             }
-            m_pResponseSender.SendResponseAsync(e.Response);
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise MyRightsAsync event.
+            if(this.MyRightsAsync != null){
+                IMAP_e_MyRights eArgs = new IMAP_e_MyRights(this,folder,response);
+                await MyRightsAsync(eArgs);
+
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method ENABLE
+        #region method _EnableAsync
 
-        private void ENABLE(string cmdTag,string cmdText)
+        private async Task _EnableAsync(string cmdTag,string cmdText)
         {            
-            /* RFC 5161 3.1. The ENABLE Command.
-                Arguments: capability names
+            /* RFC 5161 3.1. ENABLE Command
 
-                Result: OK: Relevant capabilities enabled
-                        BAD: No arguments, or syntax error in an argument
+                Arguments:  capability names
 
-                The ENABLE command takes a list of capability names, and requests the
-                server to enable the named extensions.  Once enabled using ENABLE,
-                each extension remains active until the IMAP connection is closed.
-                For each argument, the server does the following:
+                Responses:  untagged ENABLED response
 
-                    - If the argument is not an extension known to the server, the server
-                      MUST ignore the argument.
+                Result:     OK  - requested capabilities enabled
+                            BAD - no arguments or invalid syntax
 
-                    - If the argument is an extension known to the server, and it is not
-                      specifically permitted to be enabled using ENABLE, the server MUST
-                      ignore the argument.  (Note that knowing about an extension doesn't
-                      necessarily imply supporting that extension.)
+                The ENABLE command requests activation of one or more capabilities
+                that require explicit client opt-in. Once enabled, a capability
+                remains enabled for the lifetime of the IMAP connection and cannot
+                be disabled.
 
-                    - If the argument is an extension that is supported by the server and
-                      that needs to be enabled, the server MUST enable the extension for
-                      the duration of the connection.  At present, this applies only to
-                      CONDSTORE ([RFC4551]).  Note that once an extension is enabled,
-                      there is no way to disable it.
+                For each requested capability:
 
-                If the ENABLE command is successful, the server MUST send an untagged
-                ENABLED response (see Section 3.2).
+                    - If the capability is unknown to the server, it is ignored.
 
-                Clients SHOULD only include extensions that need to be enabled by the
-                server.  At the time of publication, CONDSTORE is the only such
-                extension (i.e., ENABLE CONDSTORE is an additional "CONDSTORE
-                enabling command" as defined in [RFC4551]).  Future RFCs may add to
-                this list.
+                    - If the capability is known but cannot be enabled using the
+                      ENABLE command, it is ignored.
 
-                The ENABLE command is only valid in the authenticated state (see
-                [RFC3501]), before any mailbox is selected.  Clients MUST NOT issue
-                ENABLE once they SELECT/EXAMINE a mailbox; however, server
-                implementations don't have to check that no mailbox is selected or
-                was previously selected during the duration of a connection.
+                    - If the capability is supported and can be enabled, it is
+                      activated for the duration of the connection.
 
-                The ENABLE command can be issued multiple times in a session.  It is
-                additive; i.e., "ENABLE a b", followed by "ENABLE c" is the same as a
-                single command "ENABLE a b c".  When multiple ENABLE commands are
-                issued, each corresponding ENABLED response SHOULD only contain
-                extensions enabled by the corresponding ENABLE command.
+                If one or more capabilities are successfully enabled, the server
+                MUST return an untagged ENABLED response listing the capabilities
+                enabled by the command.
 
-                There are no limitations on pipelining ENABLE.  For example, it is
-                possible to send ENABLE and then immediately SELECT, or a LOGIN
-                immediately followed by ENABLE.
+                The ENABLE command is only valid in the authenticated state before
+                a mailbox has been selected.
 
-                The server MUST NOT change the CAPABILITY list as a result of
-                executing ENABLE; i.e., a CAPABILITY command issued right after an
-                ENABLE command MUST list the same capabilities as a CAPABILITY
-                command issued before the ENABLE command.  This is demonstrated in
-                the following example:
-             
-                    C: t1 CAPABILITY
-                    S: * CAPABILITY IMAP4rev1 ID LITERAL+ ENABLE X-GOOD-IDEA
-                    S: t1 OK foo
-                    C: t2 ENABLE CONDSTORE X-GOOD-IDEA
-                    S: * ENABLED X-GOOD-IDEA
-                    S: t2 OK foo
-                    C: t3 CAPABILITY
-                    S: * CAPABILITY IMAP4rev1 ID LITERAL+ ENABLE X-GOOD-IDEA
-                    S: t3 OK foo again
+                Multiple ENABLE commands may be issued during a session. The effect
+                is additive; capabilities enabled by previous ENABLE commands remain
+                enabled.
 
-                In the following example, the client enables CONDSTORE:
+                Executing ENABLE does not alter the server's CAPABILITY response.
+                A CAPABILITY command issued after ENABLE returns the same capability
+                list as one issued before ENABLE.
 
-                    C: a1 ENABLE CONDSTORE
+                Example:
+
+                    C: A1 ENABLE UTF8=ACCEPT
+                    S: * ENABLED UTF8=ACCEPT
+                    S: A1 OK ENABLE completed
+
+                Example:
+
+                    C: A2 ENABLE CONDSTORE
                     S: * ENABLED CONDSTORE
-                    S: a1 OK Conditional Store enabled
+                    S: A2 OK ENABLE completed
             */
 
-            // Capability disabled.
-            if(!SupportsCap("ENABLE")){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Command 'ENABLE' not supported."));
-
-                return;
-            }
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(string.IsNullOrEmpty(cmdText)){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","No arguments, or syntax error in an argument."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
             foreach(string capa in cmdText.Split(' ')){
-                if(string.Equals("UTF8=ACCEPT",capa,StringComparison.InvariantCultureIgnoreCase)){
-                    //m_MailboxEncoding = IMAP_Mailbox_Encoding.ImapUtf8;
-                    //m_pResponseSender.SendResponseAsync(new IMAP_r_u_Enable(new string[]{"UTF8=ACCEPT"}));
+                if(string.Equals("UTF8=ACCEPT",capa,StringComparison.OrdinalIgnoreCase)){
+                    m_Utf8Enabled = true;
+                    await SendResponseAsync(new IMAP_r_u_Enabled(new string[]{"UTF8=ACCEPT"}),true);
                 }
                 // Ignore as specification says.
                 //else{
                 //}
             }
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","ENABLE command completed."));
+
+            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","ENABLE command completed."),true);
         }
 
         #endregion
 
 
-        #region method CHECK
+        #region method _CheckAsync
 
-        private void CHECK(string cmdTag,string cmdText)
+        private async Task _CheckAsync(string cmdTag,string cmdText)
         {
-            /* 6.4.1.  CHECK Command
+            /* RFC 9051 6.4.1. CHECK Command
+
                 Arguments:  none
 
                 Responses:  no specific responses for this command
 
-                Result:     OK - check completed
+                Result:     OK  - CHECK completed
                             BAD - command unknown or arguments invalid
 
                 The CHECK command requests a checkpoint of the currently selected
-                mailbox.  A checkpoint refers to any implementation-dependent
-                housekeeping associated with the mailbox (e.g., resolving the
-                server's in-memory state of the mailbox with the state on its
-                disk) that is not normally executed as part of each command.  A
-                checkpoint MAY take a non-instantaneous amount of real time to
-                complete.  If a server implementation has no such housekeeping
-                considerations, CHECK is equivalent to NOOP.
+                mailbox. A checkpoint refers to any implementation-dependent
+                housekeeping associated with the mailbox that is not normally
+                performed as part of each command.
 
-                There is no guarantee that an EXISTS untagged response will happen
-                as a result of CHECK.  NOOP, not CHECK, SHOULD be used for new
-                message polling.
+                A checkpoint may require a non-trivial amount of time to complete.
+                If a server implementation has no such housekeeping requirements,
+                CHECK is equivalent to NOOP.
 
-                Example:    C: FXXZ CHECK
-                            S: FXXZ OK CHECK Completed
+                There is no guarantee that an EXISTS untagged response will be sent
+                as a result of CHECK. Clients should use NOOP, IDLE, or other
+                appropriate mechanisms to check for mailbox changes.
+
+                Example:
+
+                    C: FXXZ CHECK
+                    S: FXXZ OK CHECK completed
             */
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
+
+                return;
+            }
+            if(cmdText.Length > 0) {
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
-
-           
-            UpdateSelectedFolderAndSendChanges();
-            
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","CHECK Completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds."));
+            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","CHECK completed."),true);
         }
 
         #endregion
 
-        #region method CLOSE
+        #region method _CloseAsync
 
-        private void CLOSE(string cmdTag,string cmdText)
+        private async Task _CloseAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.4.2. CLOSE Command.
+            /* RFC 9051 6.4.4. CLOSE Command
+
                 Arguments:  none
 
                 Responses:  no specific responses for this command
 
-                Result:     OK - close completed, now in authenticated state
+                Result:     OK  - CLOSE completed; session returned to the
+                                 authenticated state
                             BAD - command unknown or arguments invalid
 
-                The CLOSE command permanently removes all messages that have the
-                \Deleted flag set from the currently selected mailbox, and returns
-                to the authenticated state from the selected state.  No untagged
-                EXPUNGE responses are sent.
+                The CLOSE command removes all messages marked with the
+                \Deleted flag from the currently selected mailbox and returns
+                the session from the selected state to the authenticated state.
 
-                No messages are removed, and no error is given, if the mailbox is
-                selected by an EXAMINE command or is otherwise selected read-only.
+                No untagged EXPUNGE responses are sent.
 
-                Even if a mailbox is selected, a SELECT, EXAMINE, or LOGOUT
-                command MAY be issued without previously issuing a CLOSE command.
-                The SELECT, EXAMINE, and LOGOUT commands implicitly close the
-                currently selected mailbox without doing an expunge.  However,
-                when many messages are deleted, a CLOSE-LOGOUT or CLOSE-SELECT
-                sequence is considerably faster than an EXPUNGE-LOGOUT or
-                EXPUNGE-SELECT because no untagged EXPUNGE responses (which the
-                client would probably ignore) are sent.
+                If the mailbox was opened in read-only mode (for example using
+                EXAMINE), no messages are removed and the command succeeds.
 
-                Example:    C: A341 CLOSE
-                            S: A341 OK CLOSE completed
+                SELECT, EXAMINE, and LOGOUT implicitly close the currently
+                selected mailbox without performing an expunge.
+
+                CLOSE is typically more efficient than issuing EXPUNGE before
+                SELECT or LOGOUT because no untagged EXPUNGE responses need to
+                be generated.
+
+                Example:
+
+                    C: A341 CLOSE
+                    S: A341 OK CLOSE completed
             */
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
+
+                return;
+            }
+            if(cmdText.Length > 0) {
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            if(m_pSelectedFolder != null && !m_pSelectedFolder.IsReadOnly){
-                foreach(IMAP_MessageInfo msgInfo in m_pSelectedFolder.MessagesInfo){
-                    if(msgInfo.ContainsFlag("Deleted")){
-                        OnExpunge(msgInfo,new IMAP_r_ServerStatus("dummy","OK","This is CLOSE command expunge, so this response is not used."));
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","Close completed.");
+            
+            // Raise CloseAsync event.
+            if(this.CloseAsync != null){
+                var deletedMessages = new List<IMAP_MessageInfo>();
+                foreach(var msgInfo in m_pSelectedFolder.Messages){
+                    if(msgInfo.ContainsFlag("\\Deleted")){
+                        deletedMessages.Add(msgInfo);
                     }
                 }
+
+                IMAP_e_Close eArgs = new IMAP_e_Close(this,m_pSelectedFolder.Folder,m_pSelectedFolder.IsReadOnly,deletedMessages.ToArray(),response);
+                await CloseAsync(eArgs);
+
+                response = eArgs.Response;
             }
-            m_pSelectedFolder = null;
-            
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","CLOSE completed."));
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
-//
-        #region method FETCH
 
-        private void FETCH(bool uid,string cmdTag,string cmdText)
+        #region method _FetchAsync
+
+        private async Task _FetchAsync(bool uid,string cmdTag,string cmdText)
         {
-            /* RFC 3501. 6.4.5. FETCH Command.
+            /* RFC 9051 6.4.5. FETCH Command
+
                 Arguments:  sequence set
-                            message data item names or macro
+                            message data items or macro
 
-                Responses:  untagged responses: FETCH
+                Responses:  untagged FETCH responses
 
-                Result:     OK - fetch completed
-                            NO - fetch error: can't fetch that data
+                Result:     OK  - FETCH completed
+                            NO  - unable to fetch the requested data
                             BAD - command unknown or arguments invalid
 
-                The FETCH command retrieves data associated with a message in the
-                mailbox.  The data items to be fetched can be either a single atom
-                or a parenthesized list.
+                The FETCH command retrieves message data from the selected
+                mailbox.
 
-                Most data items, identified in the formal syntax under the
-                msg-att-static rule, are static and MUST NOT change for any
-                particular message.  Other data items, identified in the formal
-                syntax under the msg-att-dynamic rule, MAY change, either as a
-                result of a STORE command or due to external events.
+                Data items may be specified either individually or as a
+                parenthesized list.
 
-                    For example, if a client receives an ENVELOPE for a
-                    message when it already knows the envelope, it can
-                    safely ignore the newly transmitted envelope.
+                IMAP4rev2 defines the following FETCH macros:
 
-                There are three macros which specify commonly-used sets of data
-                items, and can be used instead of data items.  A macro must be
-                used by itself, and not in conjunction with other macros or data
-                items.
+                    ALL
+                        Equivalent to:
+                        (FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)
 
-                ALL
-                    Macro equivalent to: (FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)
+                    FAST
+                        Equivalent to:
+                        (FLAGS INTERNALDATE RFC822.SIZE)
 
-                FAST
-                    Macro equivalent to: (FLAGS INTERNALDATE RFC822.SIZE)
+                    FULL
+                        Equivalent to:
+                        (FLAGS INTERNALDATE RFC822.SIZE
+                         ENVELOPE BODYSTRUCTURE)
 
-                FULL
-                    Macro equivalent to: (FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY)
+                Defined FETCH data items:
 
-                The currently defined data items that can be fetched are:
+                    BODY
+                        Non-extensible body structure.
 
-                BODY
-                    Non-extensible form of BODYSTRUCTURE.
+                    BODY[<section>]
 
-                BODY[<section>]<<partial>>
-                    The text of a particular body section.  The section
-                    specification is a set of zero or more part specifiers
-                    delimited by periods.  A part specifier is either a part number
-                    or one of the following: HEADER, HEADER.FIELDS,
-                    HEADER.FIELDS.NOT, MIME, and TEXT.  An empty section
-                    specification refers to the entire message, including the
-                    header.
+                    BODY[<section>]<offset.length>
 
-                    Every message has at least one part number.  Non-[MIME-IMB]
-                    messages, and non-multipart [MIME-IMB] messages with no
-                    encapsulated message, only have a part 1.
+                    BODY.PEEK[<section>]
 
-                    Multipart messages are assigned consecutive part numbers, as
-                    they occur in the message.  If a particular part is of type
-                    message or multipart, its parts MUST be indicated by a period
-                    followed by the part number within that nested multipart part.
+                    BODYSTRUCTURE
+                        MIME body structure.
 
-                    A part of type MESSAGE/RFC822 also has nested part numbers,
-                    referring to parts of the MESSAGE part's body.
+                    ENVELOPE
+                        Parsed message envelope.
 
-                    The HEADER, HEADER.FIELDS, HEADER.FIELDS.NOT, and TEXT part
-                    specifiers can be the sole part specifier or can be prefixed by
-                    one or more numeric part specifiers, provided that the numeric
-                    part specifier refers to a part of type MESSAGE/RFC822.  The
-                    MIME part specifier MUST be prefixed by one or more numeric
-                    part specifiers.
+                    FLAGS
+                        Message flags.
 
-                    The HEADER, HEADER.FIELDS, and HEADER.FIELDS.NOT part
-                    specifiers refer to the [RFC-2822] header of the message or of
-                    an encapsulated [MIME-IMT] MESSAGE/RFC822 message.
-                    HEADER.FIELDS and HEADER.FIELDS.NOT are followed by a list of
-                    field-name (as defined in [RFC-2822]) names, and return a
-                    subset of the header.  The subset returned by HEADER.FIELDS
-                    contains only those header fields with a field-name that
-                    matches one of the names in the list; similarly, the subset
-                    returned by HEADER.FIELDS.NOT contains only the header fields
-                    with a non-matching field-name.  The field-matching is
-                    case-insensitive but otherwise exact.  Subsetting does not
-                    exclude the [RFC-2822] delimiting blank line between the header
-                    and the body; the blank line is included in all header fetches,
-                    except in the case of a message which has no body and no blank
-                    line.
+                    INTERNALDATE
+                        Message internal date.
 
-                    The MIME part specifier refers to the [MIME-IMB] header for
-                    this part.
+                    RFC822
+                        Complete message.
 
-                    The TEXT part specifier refers to the text body of the message,
-                    omitting the [RFC-2822] header.
+                    RFC822.HEADER
+                        Message header.
 
-                        Here is an example of a complex message with some of its
-                        part specifiers:
+                    RFC822.SIZE
+                        Message size in octets.
 
-                    HEADER     ([RFC-2822] header of the message)
-                    TEXT       ([RFC-2822] text body of the message) MULTIPART/MIXED
-                    1          TEXT/PLAIN
-                    2          APPLICATION/OCTET-STREAM
-                    3          MESSAGE/RFC822
-                    3.HEADER   ([RFC-2822] header of the message)
-                    3.TEXT     ([RFC-2822] text body of the message) MULTIPART/MIXED
-                    3.1        TEXT/PLAIN
-                    3.2        APPLICATION/OCTET-STREAM
-                    4          MULTIPART/MIXED
-                    4.1        IMAGE/GIF
-                    4.1.MIME   ([MIME-IMB] header for the IMAGE/GIF)
-                    4.2        MESSAGE/RFC822
-                    4.2.HEADER ([RFC-2822] header of the message)
-                    4.2.TEXT   ([RFC-2822] text body of the message) MULTIPART/MIXED
-                    4.2.1      TEXT/PLAIN
-                    4.2.2      MULTIPART/ALTERNATIVE
-                    4.2.2.1    TEXT/PLAIN
-                    4.2.2.2    TEXT/RICHTEXT
-            
-                    It is possible to fetch a substring of the designated text.
-                    This is done by appending an open angle bracket ("<"), the
-                    octet position of the first desired octet, a period, the
-                    maximum number of octets desired, and a close angle bracket
-                    (">") to the part specifier.  If the starting octet is beyond
-                    the end of the text, an empty string is returned.
-                    Any partial fetch that attempts to read beyond the end of the
-                    text is truncated as appropriate.  A partial fetch that starts
-                    at octet 0 is returned as a partial fetch, even if this
-                    truncation happened.
+                    RFC822.TEXT
+                        Message text body.
 
-                        Note: This means that BODY[]<0.2048> of a 1500-octet message
-                        will return BODY[]<0> with a literal of size 1500, not
-                        BODY[].
+                    UID
+                        Message UID.
 
-                        Note: A substring fetch of a HEADER.FIELDS or
-                        HEADER.FIELDS.NOT part specifier is calculated after
-                        subsetting the header.
+                Common BODY section specifiers:
 
-                    The \Seen flag is implicitly set; if this causes the flags to
-                    change, they SHOULD be included as part of the FETCH responses.
+                    HEADER
+                    HEADER.FIELDS
+                    HEADER.FIELDS.NOT
+                    MIME
+                    TEXT
 
-                BODY.PEEK[<section>]<<partial>>
-                    An alternate form of BODY[<section>] that does not implicitly
-                    set the \Seen flag.
+                Section specifiers may be prefixed by one or more MIME part
+                numbers such as:
 
-                BODYSTRUCTURE
-                    The [MIME-IMB] body structure of the message.  This is computed
-                    by the server by parsing the [MIME-IMB] header fields in the
-                    [RFC-2822] header and [MIME-IMB] headers.
+                    1
+                    2
+                    3.1
+                    4.2.TEXT
+                    4.1.MIME
 
-                ENVELOPE
-                    The envelope structure of the message.  This is computed by the
-                    server by parsing the [RFC-2822] header into the component
-                    parts, defaulting various fields as necessary.
+                BODY[] and BODY.PEEK[] support retrieval of the complete
+                message, specific MIME parts, MIME headers, message headers,
+                and message text bodies.
 
-                FLAGS
-                    The flags that are set for this message.
+                Partial fetches are supported using the syntax:
 
-                INTERNALDATE
-                    The internal date of the message.
+                    BODY[<section>]<offset.length>
 
-                RFC822
-                    Functionally equivalent to BODY[], differing in the syntax of
-                    the resulting untagged FETCH data (RFC822 is returned).
+                BODY.PEEK does not implicitly set the \Seen flag.
 
-                RFC822.HEADER
-                    Functionally equivalent to BODY.PEEK[HEADER], differing in the
-                    syntax of the resulting untagged FETCH data (RFC822.HEADER is
-                    returned).
+                For UID FETCH commands, all generated FETCH responses must
+                include the UID data item, even when UID was not explicitly
+                requested.
 
-                RFC822.SIZE
-                    The [RFC-2822] size of the message.
+                Note that the number appearing immediately after "*" in an
+                untagged FETCH response is always a message sequence number,
+                not a UID.
 
-                RFC822.TEXT
-                    Functionally equivalent to BODY[TEXT], differing in the syntax
-                    of the resulting untagged FETCH data (RFC822.TEXT is returned).
-                UID
-                    The unique identifier for the message.
+                Example:
 
+                    C: A654 FETCH 2:4
+                       (FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM)])
+                    S: * 2 FETCH (...)
+                    S: * 3 FETCH (...)
+                    S: * 4 FETCH (...)
+                    S: A654 OK FETCH completed
 
-                Example:    C: A654 FETCH 2:4 (FLAGS BODY[HEADER.FIELDS (DATE FROM)])
-                            S: * 2 FETCH ....
-                            S: * 3 FETCH ....
-                            S: * 4 FETCH ....
-                            S: A654 OK FETCH completed
+                Example:
+
+                    C: A655 UID FETCH 100:102 FLAGS
+                    S: * 2 FETCH (FLAGS (\Seen) UID 100)
+                    S: * 3 FETCH (FLAGS (\Seen) UID 101)
+                    S: * 4 FETCH (FLAGS (\Seen) UID 102)
+                    S: A655 OK UID FETCH completed
             */
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
-
-                return;
-            }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
-
-            string[] parts = cmdText.Split(new char[]{' '},2);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
 
                 return;
             }
 
             IMAP_t_SeqSet? seqSet = null;
             try{                
-                seqSet = IMAP_t_SeqSet.Parse(parts[0]);
+                seqSet = IMAP_t_SeqSet.Parse(imapReader.ReadAtom());
             }
             catch{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments: Invalid 'sequence-set' value."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
             #region Parse data-items
 
-            List<IMAP_t_Fetch_i> dataItems     = new List<IMAP_t_Fetch_i>();
-            bool                 msgDataNeeded = false;
+            var dataItems            = new Dictionary<string,IMAP_t_Fetch_i>();
+            var requireMessage       = false;
+            var requireEnvelope      = false;
+            var requireBodyStructure = false;
+            var setSeen              = false;
 
-            // Remove parenthesizes.
-            string dataItemsString = parts[1].Trim();
-            if(dataItemsString.StartsWith("(") && dataItemsString.EndsWith(")")){
-                dataItemsString = dataItemsString.Substring(1,dataItemsString.Length - 2).Trim();
+            if(!imapReader.PeekIs('(')){
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
             }
-
-            // Replace macros.
-            dataItemsString = dataItemsString.Replace("ALL","FLAGS INTERNALDATE RFC822.SIZE ENVELOPE");
-            dataItemsString = dataItemsString.Replace("FAST","FLAGS INTERNALDATE RFC822.SIZE"); 
-            dataItemsString = dataItemsString.Replace("FULL","FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY");
-
-            StringReader r = new StringReader(dataItemsString);
-
-            IMAP_Fetch_DataType fetchDataType = IMAP_Fetch_DataType.MessageHeader;
+            imapReader.ReadChar();
 
             // Parse data-items.
-            while(r.Available > 0){
-                r.ReadToFirstChar();
+            while(true){
+                // Unterminated fetch data items list.
+                if(!imapReader.HasMore){
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+                if(imapReader.PeekIs(')')){
+                    imapReader.ReadChar();
+
+                    break;
+                }
+
+                #region ALL
+
+                if(imapReader.PeekIs("ALL")){
+                    dataItems.TryAdd("FLAGS",new IMAP_t_Fetch_i_Flags());
+                    dataItems.TryAdd("INTERNALDATE",new IMAP_t_Fetch_i_InternalDate());
+                    dataItems.TryAdd("RFC822.SIZE",new IMAP_t_Fetch_i_Rfc822Size());
+                    dataItems.TryAdd("ENVELOPE",new IMAP_t_Fetch_i_Envelope());
+                }
+
+                #endregion
+
+                #region FAST
+
+                else if(imapReader.PeekIs("FAST")){
+                    dataItems.TryAdd("FLAGS",new IMAP_t_Fetch_i_Flags());
+                    dataItems.TryAdd("INTERNALDATE",new IMAP_t_Fetch_i_InternalDate());
+                    dataItems.TryAdd("RFC822.SIZE",new IMAP_t_Fetch_i_Rfc822Size());
+                }
+
+                #endregion
+
+                #region FULL
+
+                else if(imapReader.PeekIs("FULL")){                    
+                    dataItems.TryAdd("FLAGS",new IMAP_t_Fetch_i_Flags());
+                    dataItems.TryAdd("INTERNALDATE",new IMAP_t_Fetch_i_InternalDate());
+                    dataItems.TryAdd("RFC822.SIZE",new IMAP_t_Fetch_i_Rfc822Size());
+                    dataItems.TryAdd("ENVELOPE",new IMAP_t_Fetch_i_Envelope());
+                    dataItems.TryAdd("BODYSTRUCTURE",new IMAP_t_Fetch_i_BodyStructure());
+                }
+
+                #endregion
 
                 #region BODYSTRUCTURE
 
-                if(r.StartsWith("BODYSTRUCTURE",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_BodyStructure());
-                    msgDataNeeded = true;
-                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage){
-                        fetchDataType = IMAP_Fetch_DataType.MessageStructure;
-                    }
+                else if(imapReader.PeekIs("BODYSTRUCTURE")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("BODYSTRUCTURE",new IMAP_t_Fetch_i_BodyStructure());
+                    requireBodyStructure = true;
                 }
 
                 #endregion
 
                 #region BODY[<section>]<<partial>> and BODY.PEEK[<section>]<<partial>>
 
-                else if(r.StartsWith("BODY[",false) || r.StartsWith("BODY.PEEK[",false)){
-                    bool peek = r.StartsWith("BODY.PEEK[",false);
-                    r.ReadWord();
-
-                    #region Parse <section>
-
-                    string section = r.ReadParenthesized();
-                                                                            
-                    // Full message wanted.
-                    if(string.IsNullOrEmpty(section)){
-                        fetchDataType = IMAP_Fetch_DataType.FullMessage;
-                    }
-                    else{
-                        // Left-side part-items must be numbers, only last one may be (HEADER,HEADER.FIELDS,HEADER.FIELDS.NOT,MIME,TEXT).
-                    
-                        StringReader rSection = new StringReader(section);
-                        string remainingSection = rSection.ReadWord() ?? string.Empty;
-                        while(remainingSection.Length > 0){
-                            string[] section_parts = remainingSection.Split(new char[]{'.'},2);
-                            // Not part number.
-                            if(!Net_Utils.IsInteger(section_parts[0])){
-                                // We must have one of the following values here (HEADER,HEADER.FIELDS,HEADER.FIELDS.NOT,MIME,TEXT).
-                                if(remainingSection.Equals("HEADER",StringComparison.InvariantCultureIgnoreCase)){
-                                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage && fetchDataType != IMAP_Fetch_DataType.MessageStructure){
-                                        fetchDataType = IMAP_Fetch_DataType.MessageHeader;
-                                    }
-                                }
-                                else if(remainingSection.Equals("HEADER.FIELDS",StringComparison.InvariantCultureIgnoreCase)){
-                                    rSection.ReadToFirstChar();
-                                    if(!rSection.StartsWith("(")){
-                                        WriteLine(cmdTag + " BAD Error in arguments.");
-
-                                        return;
-                                    }
-                                    rSection.ReadParenthesized();
-
-                                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage && fetchDataType != IMAP_Fetch_DataType.MessageStructure){
-                                        fetchDataType = IMAP_Fetch_DataType.MessageHeader;
-                                    }
-                                }
-                                else if(remainingSection.Equals("HEADER.FIELDS.NOT",StringComparison.InvariantCultureIgnoreCase)){
-                                    rSection.ReadToFirstChar();
-                                    if(!rSection.StartsWith("(")){
-                                        WriteLine(cmdTag + " BAD Error in arguments.");
-
-                                        return;
-                                    }
-                                    rSection.ReadParenthesized();
-
-                                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage && fetchDataType != IMAP_Fetch_DataType.MessageStructure){
-                                        fetchDataType = IMAP_Fetch_DataType.MessageHeader;
-                                    }
-                                }
-                                else if(remainingSection.Equals("MIME",StringComparison.InvariantCultureIgnoreCase)){
-                                    fetchDataType = IMAP_Fetch_DataType.FullMessage;
-                                }
-                                else if(remainingSection.Equals("TEXT",StringComparison.InvariantCultureIgnoreCase)){
-                                    fetchDataType = IMAP_Fetch_DataType.FullMessage;
-                                }
-                                // Unknown parts specifier.
-                                else{
-                                    WriteLine(cmdTag + " BAD Error in arguments.");
-
-                                    return;
-                                }
-
-                                break;
-                            }
-                            else{
-                                // For parts specifier, minimum is message structure.
-                                if(fetchDataType != IMAP_Fetch_DataType.FullMessage){
-                                    fetchDataType = IMAP_Fetch_DataType.MessageStructure;
-                                }
-                            }
-
-                            if(section_parts.Length == 2){
-                                remainingSection = section_parts[1];
-                            }
-                            else{
-                                remainingSection = "";
-                            }
-                        }
+                else if(imapReader.PeekIs("BODY[") || imapReader.PeekIs("BODY.PEEK[")){
+                    if(imapReader.PeekIs("BODY[")){
+                        setSeen = true;
                     }
 
-                    #endregion
-
-                    #region Parse <partial>
-
-                    int offset   = -1;
-                    int maxCount = -1;
-                    // Partial data wanted.
-                    if(r.StartsWith("<")){
-                        string[] origin = r.ReadParenthesized().Split('.');
-                        if(origin.Length > 2){
-                            WriteLine(cmdTag + " BAD Error in arguments.");
-
-                            return;
-                        }
-
-                        if(!int.TryParse(origin[0],out offset)){
-                            WriteLine(cmdTag + " BAD Error in arguments.");
-
-                            return;
-                        }
-                        if(origin.Length == 2){
-                            if(!int.TryParse(origin[1],out maxCount)){
-                                WriteLine(cmdTag + " BAD Error in arguments.");
-
-                                return;
-                            }
-                        }
+                    try{
+                        IMAP_t_Fetch_i_Body item = await IMAP_t_Fetch_i_Body.ParseAsync(imapReader);
+                        dataItems.TryAdd(item.GetBodySignature(),item);
                     }
+                    catch(ParseException x){
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments." + x.Message),true);
 
-                    #endregion
-
-                    if(peek){
-                        dataItems.Add(new IMAP_t_Fetch_i_BodyPeek(section,offset,maxCount));
+                        return;
                     }
-                    else{
-                        dataItems.Add(new IMAP_t_Fetch_i_Body(section,offset,maxCount));
-                    }
-                    msgDataNeeded = true;
+                    requireMessage = true;
                 }
 
                 #endregion
                 
                 #region BODY
 
-                else if(r.StartsWith("BODY",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_BodyStructure());
-                    msgDataNeeded = true;
-                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage){
-                        fetchDataType = IMAP_Fetch_DataType.MessageStructure;
-                    }
+                else if(imapReader.PeekIs("BODY")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("BODYSTRUCTURE",new IMAP_t_Fetch_i_BodyStructure());
+                    requireBodyStructure = true;
                 }
 
                 #endregion
 
                 #region ENVELOPE
 
-                else if(r.StartsWith("ENVELOPE",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Envelope());
-                    msgDataNeeded = true;
-                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage && fetchDataType != IMAP_Fetch_DataType.MessageStructure){
-                        fetchDataType = IMAP_Fetch_DataType.MessageHeader;
-                    }
+                else if(imapReader.PeekIs("ENVELOPE")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("ENVELOPE",new IMAP_t_Fetch_i_Envelope());
+                    requireEnvelope = true;
                 }
 
                 #endregion
                 
                 #region FLAGS
 
-                else if(r.StartsWith("FLAGS",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Flags());
+                else if(imapReader.PeekIs("FLAGS")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("FLAGS",new IMAP_t_Fetch_i_Flags());
                 }
 
                 #endregion
 
                 #region INTERNALDATE
 
-                else if(r.StartsWith("INTERNALDATE",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_InternalDate());
+                else if(imapReader.PeekIs("INTERNALDATE")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("INTERNALDATE",new IMAP_t_Fetch_i_InternalDate());
                 }
 
                 #endregion
 
                 #region RFC822.HEADER
 
-                else if(r.StartsWith("RFC822.HEADER",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Rfc822Header());
-                    msgDataNeeded = true;
-                    if(fetchDataType != IMAP_Fetch_DataType.FullMessage && fetchDataType != IMAP_Fetch_DataType.MessageStructure){
-                        fetchDataType = IMAP_Fetch_DataType.MessageHeader;
-                    }
+                else if(imapReader.PeekIs("RFC822.HEADER")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("RFC822.HEADER",new IMAP_t_Fetch_i_Rfc822Header());
+                    requireMessage = true;
+                    setSeen = true;
                 }
 
                 #endregion
 
                 #region RFC822.SIZE
 
-                else if(r.StartsWith("RFC822.SIZE",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Rfc822Size());
+                else if(imapReader.PeekIs("RFC822.SIZE")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("RFC822.SIZE",new IMAP_t_Fetch_i_Rfc822Size());
                 }
 
                 #endregion
 
                 #region RFC822.TEXT
 
-                else if(r.StartsWith("RFC822.TEXT",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Rfc822Text());
-                    msgDataNeeded = true;
-                    fetchDataType = IMAP_Fetch_DataType.FullMessage;
+                else if(imapReader.PeekIs("RFC822.TEXT")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("RFC822.TEXT",new IMAP_t_Fetch_i_Rfc822Text());
+                    requireMessage = true;
+                    setSeen = true;
                 }
 
                 #endregion
 
                 #region RFC822
 
-                else if(r.StartsWith("RFC822",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Rfc822());
-                    msgDataNeeded = true;
-                    fetchDataType = IMAP_Fetch_DataType.FullMessage;
+                else if(imapReader.PeekIs("RFC822")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("RFC822",new IMAP_t_Fetch_i_Rfc822());
+                    requireMessage = true;
+                    setSeen = true;
                 }
 
                 #endregion
 
                 #region UID
 
-                else if(r.StartsWith("UID",false)){
-                    r.ReadWord();
-                    dataItems.Add(new IMAP_t_Fetch_i_Uid());
+                else if(imapReader.PeekIs("UID")){
+                    imapReader.ReadAtom();
+                    dataItems.TryAdd("UID",new IMAP_t_Fetch_i_Uid());
                 }
 
                 #endregion
@@ -3779,7 +3536,7 @@ namespace LumiSoft.Net.IMAP.Server
                 #region Unknown data-item.
 
                 else{
-                    WriteLine(cmdTag + " BAD Error in arguments: Unknown FETCH data-item.");
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments: Unknown FETCH data-item."),true);
 
                     return;
                 }
@@ -3791,225 +3548,260 @@ namespace LumiSoft.Net.IMAP.Server
 
             // UID FETCH must always return UID data-item, even if user didn't request it.
             if(uid){
-                bool add = true;
-                foreach(IMAP_t_Fetch_i item in dataItems){                    
-                    if(item is IMAP_t_Fetch_i_Uid){
-                        add = false;
-                        break;
-                    }
-                }
-                if(add){
-                    dataItems.Add(new IMAP_t_Fetch_i_Uid());
-                }
+                dataItems.TryAdd("UID",new IMAP_t_Fetch_i_Uid());
             }
 
-            UpdateSelectedFolderAndSendChanges();
+            await SyncFolderAsync();
 
-            IMAP_e_Fetch fetchEArgs = new IMAP_e_Fetch(
-                m_pSelectedFolder.Filter(uid,seqSet),
-                fetchDataType,
-                new IMAP_r_ServerStatus(cmdTag,"OK","FETCH command completed in %exectime seconds.")
-            );
-            fetchEArgs.NewMessageData += new EventHandler<IMAP_e_Fetch.e_NewMessageData>(delegate(object? s,IMAP_e_Fetch.e_NewMessageData e){                
+            byte[] readBuffer = new byte[16000];
+            FetchDataAsyncCallback addDataCallback = async (
+                IMAP_MessageInfo messageInfo,
+                Stream? messageStream,
+                IMAP_t_Envelope? envelope,
+                IMAP_t_BodyStructure? bodyStructure) =>
+            {   
+                long streamStartPosition = messageStream != null ? messageStream.Position : 0;
+
                 StringBuilder reponseBuffer = new StringBuilder();
-                reponseBuffer.Append("* " + e.MessageInfo.SeqNo + " FETCH (");
-
-                Mail_Message? message = e.MessageData;                
-
+                reponseBuffer.Append("* " + m_pSelectedFolder.GetSeqNo(messageInfo) + " FETCH (");
+                                
+                bool isFirst = true;
                 // Return requested data-items for the returned message.
-                for(int i=0;i<dataItems.Count;i++){
-                    IMAP_t_Fetch_i dataItem = dataItems[i];
-                                      
+                foreach(IMAP_t_Fetch_i dataItem in dataItems.Values){                                      
                     // Add data-items separator.
-                    if(i > 0){
+                    if(!isFirst){
                         reponseBuffer.Append(" ");
                     }
-                                       
-                    #region BODY
-
-                    // Not used nowdays.
-                    /*
-                    if(dataItem is IMAP_t_Fetch_i_BodyS){
-                        ArgumentNullException.ThrowIfNull(message);
-
-                        reponseBuffer.Append(ConstructBodyStructure(message,false));
-                    }*/
-
-                    #endregion
+                    isFirst = false;
 
                     #region BODY[<section>]<<partial>> and BODY.PEEK[<section>]<<partial>>
 
-                    if(dataItem is IMAP_t_Fetch_i_Body || dataItem is IMAP_t_Fetch_i_BodyPeek){
-                        ArgumentNullException.ThrowIfNull(message);
+                    if(dataItem is IMAP_t_Fetch_i_Body body){
+                        messageStream!.Position = streamStartPosition;
 
-                        string section  = "";
-                        long?  offset   = null;
-                        long?  maxCount = null;
-                        if(dataItem is IMAP_t_Fetch_i_Body){
-                            section  = ((IMAP_t_Fetch_i_Body)dataItem).Section ?? string.Empty;
-                            offset   = ((IMAP_t_Fetch_i_Body)dataItem).Offset;
-                            maxCount = ((IMAP_t_Fetch_i_Body)dataItem).MaxCount;
+                        Stream? streamToSend = null;
+                        long    bytesToSend  = 0;
+                        // BODY[]
+                        if(string.IsNullOrEmpty(body.Section)){
+                            streamToSend = messageStream;
+                            bytesToSend  = streamToSend.Length - streamToSend.Position;
+                        }
+                        // BODY[HEADER]
+                        else if (string.Equals(body.Section,"HEADER",StringComparison.OrdinalIgnoreCase)){
+                            var (headerLength,missingTerminatorBytes) = await FindHeaderEndAsync(messageStream, readBuffer);
+                            if(missingTerminatorBytes.Length == 0){
+                                messageStream.Position = streamStartPosition;
+                                streamToSend = messageStream;
+                                bytesToSend = headerLength;
+                            }
+                            // Header not properly terminated, add missing terminator.
+                            else{
+                                MemoryStreamEx ms = new MemoryStreamEx(64000);
+    
+                                // Position back at the start of the message/header
+                                messageStream.Position = streamStartPosition;
+    
+                                // Copy exactly headerLength bytes into the memory stream
+                                byte[] buffer = new byte[8000];
+                                long bytesToCopy = headerLength;
+    
+                                while(bytesToCopy > 0){
+                                    int countToRead = (int)Math.Min(buffer.Length, bytesToCopy);
+                                    int read = await messageStream.ReadAsync(buffer,0,countToRead);
+                                    if(read == 0){
+                                        throw new IOException("Fetch message source stream closed unexpectedly.");
+                                    }
+        
+                                    await ms.WriteAsync(buffer,0,read);
+                                    bytesToCopy -= read;
+                                }
+    
+                                // Append the patch/missing terminator bytes (e.g., missing \r\n)
+                                await ms.WriteAsync(missingTerminatorBytes,0,missingTerminatorBytes.Length);
+    
+                                // Reset position to the beginning so it's ready to be read/sent
+                                ms.Position = 0;
+    
+                                streamToSend = ms;
+                                bytesToSend = ms.Length;
+                            }
+                        }
+                        // BODY[TEXT]
+                        else if (string.Equals(body.Section,"TEXT",StringComparison.OrdinalIgnoreCase)){
+                            await FindHeaderEndAsync(messageStream,readBuffer);
+
+                            streamToSend = messageStream;
+                            bytesToSend  = streamToSend.Length - streamToSend.Position;
                         }
                         else{
-                            section  = ((IMAP_t_Fetch_i_BodyPeek)dataItem).Section ?? string.Empty;
-                            offset   = ((IMAP_t_Fetch_i_BodyPeek)dataItem).Offset;
-                            maxCount = ((IMAP_t_Fetch_i_BodyPeek)dataItem).MaxCount;
-                        }
-
-                        using(MemoryStreamEx tmpFs = new MemoryStreamEx(32000)){
-                            // Empty section, full message wanted.
-                            if(string.IsNullOrEmpty(section)){
-                                message.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
-                                tmpFs.Position = 0;
-                            }
-                            // Message data part wanted.
-                            else{
-                                // Get specified MIME part.
-                                MIME_Entity? entity = GetMimeEntity(message,ParsePartNumberFromSection(section));
-                                if(entity != null){
-                                    string partSpecifier = ParsePartSpecifierFromSection(section);
-
-                                    #region HEADER
-
-                                    if(string.Equals(partSpecifier,"HEADER",StringComparison.InvariantCultureIgnoreCase)){                                        
-                                        entity.Header.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
-                                        // All header fetches must include header terminator(CRLF).
-                                        if(tmpFs.Length >0 ){
-                                            tmpFs.WriteByte((byte)'\r');
-                                            tmpFs.WriteByte((byte)'\n');
-                                        }
-                                        tmpFs.Position = 0;
-                                    }
-
-                                    #endregion
-
-                                    #region HEADER.FIELDS
-
-                                    else if(string.Equals(partSpecifier,"HEADER.FIELDS",StringComparison.InvariantCultureIgnoreCase)){                            
-                                        string   fieldsString = section.Split(new char[]{' '},2)[1];
-                                        string[] fieldNames   = fieldsString.Substring(1,fieldsString.Length - 2).Split(' ');
-                                        foreach(string filedName in fieldNames){
-                                            MIME_h[] fields = entity.Header[filedName];
-                                            if(fields != null){
-                                                foreach(MIME_h field in fields){
-                                                    byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8));
-                                                    tmpFs.Write(fieldBytes,0,fieldBytes.Length);
-                                                }
-                                            }
-                                        }
-                                        // All header fetches must include header terminator(CRLF).
-                                        if(tmpFs.Length > 0){
-                                            tmpFs.WriteByte((byte)'\r');
-                                            tmpFs.WriteByte((byte)'\n');
-                                        }
-                                        tmpFs.Position = 0;
-                                    }
-
-                                    #endregion
-
-                                    #region HEADER.FIELDS.NOT
-
-                                    else if(string.Equals(partSpecifier,"HEADER.FIELDS.NOT",StringComparison.InvariantCultureIgnoreCase)){
-                                        string   fieldsString = section.Split(new char[]{' '},2)[1];
-                                        string[] fieldNames   = fieldsString.Substring(1,fieldsString.Length - 2).Split(' ');
-                                        foreach(MIME_h field in entity.Header){
-                                            bool contains = false;
-                                            foreach(string fieldName in fieldNames){
-                                                if(string.Equals(field.Name,fieldName,StringComparison.InvariantCultureIgnoreCase)){
-                                                    contains = true;
-                                                    break;
-                                                }
-                                            }
-
-                                            if(!contains){
-                                                byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8));
-                                                tmpFs.Write(fieldBytes,0,fieldBytes.Length);
-                                            }
-                                        }
-                                        // All header fetches must include header terminator(CRLF).
-                                        if(tmpFs.Length >0 ){
-                                            tmpFs.WriteByte((byte)'\r');
-                                            tmpFs.WriteByte((byte)'\n');
-                                        }
-                                        tmpFs.Position = 0;
-                                    }
-
-                                    #endregion
-
-                                    #region MIME
-
-                                    else if(string.Equals(partSpecifier,"MIME",StringComparison.InvariantCultureIgnoreCase)){
-                                        entity.Header.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
-                                        // All header fetches must include header terminator(CRLF).
-                                        if(tmpFs.Length >0 ){
-                                            tmpFs.WriteByte((byte)'\r');
-                                            tmpFs.WriteByte((byte)'\n');
-                                        }
-                                        tmpFs.Position = 0;
-                                    }
-
-                                    #endregion
-
-                                    #region TEXT
-
-                                    else if(string.Equals(partSpecifier,"TEXT",StringComparison.InvariantCultureIgnoreCase)){
-                                        entity.Body?.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
-                                        tmpFs.Position = 0;
-                                    }
-
-                                    #endregion
-
-                                    #region part-number only
-
-                                    else{
-                                        entity.Body?.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
-                                        tmpFs.Position = 0;
-                                    }
-
-                                    #endregion
-                                }
-                            }
-
-                            #region Send data
-
-                            // All data wanted.
-                            if(offset == null){
-                                reponseBuffer.Append("BODY[" + section + "] {" + tmpFs.Length + "}\r\n");
-                                WriteLine(reponseBuffer.ToString());
-                                reponseBuffer = new StringBuilder();
-
-                                this.TcpStream.WriteStream(tmpFs,tmpFs.Length,tmpFs.Length);
-                                LogAddWrite(tmpFs.Length,"Wrote " + tmpFs.Length + " bytes.");
-                            }
-                            // Partial data wanted.
-                            else{                                    
-                                // Offet out of range.
-                                if(offset >= tmpFs.Length){
-                                    reponseBuffer.Append("BODY[" + section + "]<" + offset + "> \"\"");
-                                }
-                                else{
-                                    tmpFs.Position = (long)offset;
-                                        
-                                    int count = (maxCount != null ? (int)Math.Min((long)maxCount,tmpFs.Length - tmpFs.Position) : (int)(tmpFs.Length - tmpFs.Position));
-                                    reponseBuffer.Append("BODY[" + section + "]<" + offset + "> {" + count + "}");
-                                    WriteLine(reponseBuffer.ToString());
-                                    reponseBuffer = new StringBuilder();
-
-                                    this.TcpStream.WriteStream(tmpFs,count,count);
-                                    LogAddWrite(tmpFs.Length,"Wrote " + count + " bytes.");
-                                }
-                            }
-
-                            #endregion
-                        }
-
-                        // Set Seen flag.
-                        if(!m_pSelectedFolder.IsReadOnly && dataItem is IMAP_t_Fetch_i_Body){
+                            Mail_Message? message = null;
                             try{
-                                OnStore(e.MessageInfo,IMAP_Flags_SetType.Add,new string[]{"Seen"},new IMAP_r_ServerStatus("dummy","OK","This is FETCH set Seen flag, this response not used."));
+                                message = Mail_Message.ParseFromStream(messageStream);
                             }
                             catch{
+                                streamToSend = null;
                             }
+
+                            // Get specified MIME part.
+                            MIME_Entity? entity = message != null ? GetMimeEntity(message,body.PartSpecifier!) : null;
+                            if(entity != null){
+
+                                #region HEADER
+
+                                if (string.Equals(body.SectionType,"HEADER",StringComparison.OrdinalIgnoreCase)){
+                                    streamToSend = new MemoryStreamEx(64000);
+
+                                    entity.Header.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    // All header fetches must include header terminator(CRLF).
+                                    if(streamToSend.Length > 0){
+                                        await streamToSend.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'});
+                                    }
+                                    streamToSend.Position = 0;                                    
+                                    bytesToSend  = streamToSend.Length - streamToSend.Position;
+                                }
+
+                                #endregion
+
+                                #region HEADER.FIELDS
+
+                                else if (string.Equals(body.SectionType,"HEADER.FIELDS",StringComparison.OrdinalIgnoreCase)){
+                                    streamToSend = new MemoryStreamEx(64000);
+
+                                    foreach(string filedName in (body.HeaderFields ?? [])){
+                                        MIME_h[] fields = entity.Header[filedName];
+                                        if(fields != null){
+                                            foreach(MIME_h field in fields){
+                                                byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8));
+                                                await streamToSend.WriteAsync(fieldBytes);
+                                            }
+                                        }
+                                    }
+                                    // All header fetches must include header terminator(CRLF).
+                                    if(streamToSend.Length > 0){
+                                        await streamToSend.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'});
+                                    }
+                                    streamToSend.Position = 0;
+                                    bytesToSend  = streamToSend.Length - streamToSend.Position;
+                                }
+
+                                #endregion
+
+                                #region HEADER.FIELDS.NOT
+
+                                else if (string.Equals(body.SectionType,"HEADER.FIELDS.NOT",StringComparison.OrdinalIgnoreCase)){
+                                    streamToSend = new MemoryStreamEx(64000);
+
+                                    foreach(MIME_h field in entity.Header){
+                                        bool contains = false;
+                                        foreach(string fieldName in (body.HeaderFieldsNot ?? [])){
+                                            if(string.Equals(field.Name,fieldName,StringComparison.OrdinalIgnoreCase)){
+                                                contains = true;
+                                                break;
+                                            }
+                                        }
+
+                                        if(!contains){
+                                            byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8));
+                                            await streamToSend.WriteAsync(fieldBytes);
+                                        }
+                                    }
+                                    // All header fetches must include header terminator(CRLF).
+                                    if(streamToSend.Length > 0){
+                                        await streamToSend.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'});
+                                    }
+                                    streamToSend.Position = 0;
+                                    bytesToSend  = streamToSend.Length - streamToSend.Position;
+                                }
+
+                                #endregion
+
+                                #region MIME
+
+                                else if (string.Equals(body.SectionType,"MIME",StringComparison.OrdinalIgnoreCase)){
+                                    streamToSend = new MemoryStreamEx(64000);
+
+                                    entity.Header.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    // All header fetches must include header terminator(CRLF).
+                                    if(streamToSend.Length > 0){
+                                        await streamToSend.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'});
+                                    }
+                                    streamToSend.Position = 0;                                    
+                                    bytesToSend  = streamToSend.Length - streamToSend.Position;
+                                }
+
+                                #endregion
+
+                                #region TEXT
+
+                                else if (string.Equals(body.SectionType,"TEXT",StringComparison.OrdinalIgnoreCase)){
+                                    streamToSend = new MemoryStreamEx(64000);
+
+                                    entity.Body?.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    streamToSend.Position = 0;                                    
+                                    bytesToSend  = streamToSend.Length - streamToSend.Position;
+                                }
+
+                                #endregion
+
+                                #region part-number only
+
+                                else{
+                                    streamToSend = new MemoryStreamEx(64000);
+
+                                    entity.Body?.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    streamToSend.Position = 0;                                    
+                                    bytesToSend  = streamToSend.Length - streamToSend.Position;
+                                }
+
+                                #endregion
+                            }
+                        }
+
+                        // All data wanted.
+                        if(body.Offset == null){
+                            if(streamToSend != null){
+                                reponseBuffer.Append("BODY[" + body.Section + "] {" + bytesToSend + "}\r\n");
+                                await SendResponseAsync(reponseBuffer.ToString(),true);
+                                reponseBuffer = new StringBuilder();
+                        
+                                await this.TcpStream.WriteStreamExactlyAsync(streamToSend,bytesToSend);
+                                LogAddWrite(bytesToSend,"Wrote " + bytesToSend + " bytes.");
+                            }
+                            else{
+                                reponseBuffer.Append("BODY[" + body.Section + "] NIL");
+                            }
+                        }
+                        // Partial data wanted.
+                        else{
+                            if(streamToSend != null){
+                                if(body.Offset > bytesToSend){
+                                    bytesToSend = 0;
+                                }
+                                else{
+                                    streamToSend.Position = (long)body.Offset;
+
+                                    bytesToSend = bytesToSend - (long)body.Offset;
+                                    if(body.MaxCount != null){
+                                        bytesToSend = Math.Min(bytesToSend,(long)body.MaxCount);
+                                    }
+                                }
+
+                                reponseBuffer.Append("BODY[" + body.Section + "]<" + body.Offset + "> {" + bytesToSend + "}\r\n");
+                                await SendResponseAsync(reponseBuffer.ToString(),true);
+                                reponseBuffer = new StringBuilder();
+                        
+                                if(bytesToSend > 0){
+                                    await this.TcpStream.WriteStreamExactlyAsync(streamToSend,bytesToSend);
+                                }
+                                LogAddWrite(bytesToSend,"Wrote " + bytesToSend + " bytes.");
+                            }
+                            else{
+                                reponseBuffer.Append("BODY[" + body.Section + "] NIL");
+                            }
+                        }
+
+                        if(streamToSend is MemoryStreamEx){
+                            _= streamToSend.DisposeAsync();
                         }
                     }
 
@@ -4018,9 +3810,7 @@ namespace LumiSoft.Net.IMAP.Server
                     #region BODYSTRUCTURE
 
                     else if(dataItem is IMAP_t_Fetch_i_BodyStructure){
-                        ArgumentNullException.ThrowIfNull(message);
-
-                        reponseBuffer.Append(ConstructBodyStructure(message,true));
+                        reponseBuffer.Append("BODYSTRUCTURE " + bodyStructure!.ToString());
                     }
 
                     #endregion
@@ -4028,9 +3818,7 @@ namespace LumiSoft.Net.IMAP.Server
                     #region ENVELOPE
 
                     else if(dataItem is IMAP_t_Fetch_i_Envelope){
-                        ArgumentNullException.ThrowIfNull(message);
-
-                        reponseBuffer.Append(IMAP_t_Fetch_r_i_Envelope.ConstructEnvelope(message));
+                        reponseBuffer.Append("ENVELOPE " + envelope!.ToString());
                     }
 
                     #endregion
@@ -4038,7 +3826,7 @@ namespace LumiSoft.Net.IMAP.Server
                     #region FLAGS
 
                     else if(dataItem is IMAP_t_Fetch_i_Flags){
-                        reponseBuffer.Append("FLAGS " + e.MessageInfo.FlagsToImapString());
+                        reponseBuffer.Append("FLAGS (" + string.Join(' ',messageInfo.Flags) + ")");
                     }
 
                     #endregion
@@ -4046,7 +3834,7 @@ namespace LumiSoft.Net.IMAP.Server
                     #region INTERNALDATE
 
                     else if(dataItem is IMAP_t_Fetch_i_InternalDate){
-                        reponseBuffer.Append("INTERNALDATE \"" + IMAP_Utils.DateTimeToString(e.MessageInfo.InternalDate) + "\"");
+                        reponseBuffer.Append("INTERNALDATE \"" + IMAP_Utils.DateTimeToString(messageInfo.InternalDate) + "\"");
                     }
 
                     #endregion
@@ -4054,19 +3842,15 @@ namespace LumiSoft.Net.IMAP.Server
                     #region RFC822
 
                     else if(dataItem is IMAP_t_Fetch_i_Rfc822){
-                        ArgumentNullException.ThrowIfNull(message);
+                        messageStream!.Position = streamStartPosition;
+                        long messageSize = messageStream.Length - messageStream.Position;
 
-                        using (MemoryStreamEx tmpFs = new MemoryStreamEx(32000)){
-                            message.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
-                            tmpFs.Position = 0;
-
-                            reponseBuffer.Append("RFC822 {" + tmpFs.Length + "}\r\n");
-                            WriteLine(reponseBuffer.ToString());
-                            reponseBuffer = new StringBuilder();
-
-                            this.TcpStream.WriteStream(tmpFs,tmpFs.Length,tmpFs.Length);
-                            LogAddWrite(tmpFs.Length,"Wrote " + tmpFs.Length + " bytes.");
-                        }
+                        reponseBuffer.Append("RFC822 {" + messageSize + "}\r\n");
+                        await SendResponseAsync(reponseBuffer.ToString(),true);
+                        reponseBuffer = new StringBuilder();
+                        
+                        await this.TcpStream.WriteStreamExactlyAsync(messageStream,messageSize);
+                        LogAddWrite(messageSize,"Wrote " + messageSize + " bytes.");
                     }
 
                     #endregion
@@ -4074,18 +3858,21 @@ namespace LumiSoft.Net.IMAP.Server
                     #region RFC822.HEADER
 
                     else if(dataItem is IMAP_t_Fetch_i_Rfc822Header){
-                        ArgumentNullException.ThrowIfNull(message);
-
-                        MemoryStream ms = new MemoryStream();
-                        message.Header.ToStream(ms,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
-                        ms.Position = 0;
-
-                        reponseBuffer.Append("RFC822.HEADER {" + ms.Length + "}\r\n");
-                        WriteLine(reponseBuffer.ToString());
+                        messageStream!.Position = streamStartPosition;
+                        var (headerLength,missingTerminatorBytes) = await FindHeaderEndAsync(messageStream, readBuffer);
+                        
+                        messageStream!.Position = streamStartPosition;
+                        long countToSend = headerLength + missingTerminatorBytes.Length;
+                        reponseBuffer.Append("RFC822.HEADER {" + countToSend  + "}\r\n");
+                        await SendResponseAsync(reponseBuffer.ToString(),true);
                         reponseBuffer = new StringBuilder();
 
-                        this.TcpStream.WriteStream(ms,ms.Length,ms.Length);
-                        LogAddWrite(ms.Length,"Wrote " + ms.Length + " bytes.");
+                        await this.TcpStream.WriteStreamExactlyAsync(messageStream,countToSend);
+                        // Header not properly terminated, send missing part of CRLFCRLF,
+                        if(missingTerminatorBytes.Length > 0){
+                            await this.TcpStream.WriteAsync(missingTerminatorBytes);
+                        }
+                        LogAddWrite(countToSend,"Wrote " + countToSend + " bytes.");
                     }
 
                     #endregion
@@ -4093,7 +3880,7 @@ namespace LumiSoft.Net.IMAP.Server
                     #region RFC822.SIZE
 
                     else if(dataItem is IMAP_t_Fetch_i_Rfc822Size){
-                        reponseBuffer.Append("RFC822.SIZE " + e.MessageInfo.Size);
+                        reponseBuffer.Append("RFC822.SIZE " + messageInfo.Size);
                     }
 
                     #endregion
@@ -4101,19 +3888,18 @@ namespace LumiSoft.Net.IMAP.Server
                     #region RFC822.TEXT
 
                     else if(dataItem is IMAP_t_Fetch_i_Rfc822Text){
-                        ArgumentNullException.ThrowIfNull(message);
+                        messageStream!.Position = streamStartPosition;
+                        await FindHeaderEndAsync(messageStream,readBuffer);
 
-                        using (MemoryStreamEx tmpFs = new MemoryStreamEx(32000)){
-                            message.Body?.ToStream(tmpFs,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
-                            tmpFs.Position = 0;
+                        long countToSend = messageStream.Length - messageStream.Position;
+                        reponseBuffer.Append("RFC822.TEXT {" + countToSend  + "}\r\n");
+                        await SendResponseAsync(reponseBuffer.ToString(),true);
+                        reponseBuffer = new StringBuilder();
 
-                            reponseBuffer.Append("RFC822.TEXT {" + tmpFs.Length + "}\r\n");
-                            WriteLine(reponseBuffer.ToString());
-                            reponseBuffer = new StringBuilder();
-
-                            this.TcpStream.WriteStream(tmpFs,tmpFs.Length,tmpFs.Length);
-                            LogAddWrite(tmpFs.Length,"Wrote " + tmpFs.Length + " bytes.");
+                        if(countToSend > 0){
+                            await this.TcpStream.WriteStreamExactlyAsync(messageStream,countToSend);
                         }
+                        LogAddWrite(countToSend,"Wrote " + countToSend + " bytes.");
                     }
 
                     #endregion
@@ -4121,627 +3907,887 @@ namespace LumiSoft.Net.IMAP.Server
                     #region UID
 
                     else if(dataItem is IMAP_t_Fetch_i_Uid){ 
-                        reponseBuffer.Append("UID " + e.MessageInfo.UID);
+                        reponseBuffer.Append("UID " + messageInfo.UID);
                     }
 
                     #endregion
                 }
 
                 reponseBuffer.Append(")\r\n");            
-                WriteLine(reponseBuffer.ToString());
-            });
+                await SendResponseAsync(reponseBuffer.ToString(),true);
+
+                if(setSeen && !m_pSelectedFolder.IsReadOnly){
+                    messageInfo.UpdateFlags(IMAP_Flags_SetType.Add,["\\Seen"]);
+                }
+            };
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","FETCH completed.");
                         
             // We have all needed data in message info.
-            if(!msgDataNeeded){
+            if(!requireMessage && !requireEnvelope && !requireBodyStructure){
                 foreach(IMAP_MessageInfo msgInfo in m_pSelectedFolder.Filter(uid,seqSet)){
-                    fetchEArgs.AddData(msgInfo);
+                    await addDataCallback(msgInfo,null,null,null);
                 }
             }
             // Request messages data.
             else{
-                OnFetch(fetchEArgs);
+                IMAP_e_Fetch fetchEArgs = new IMAP_e_Fetch(
+                    this,
+                    m_pSelectedFolder.Filter(uid,seqSet),
+                    requireMessage,
+                    requireEnvelope,
+                    requireBodyStructure,
+                    setSeen && !m_pSelectedFolder.IsReadOnly,
+                    response,
+                    addDataCallback
+                );
+
+                // Raise FetchAsync event.
+                if(FetchAsync != null){
+                    await FetchAsync(fetchEArgs);
+
+                    response = fetchEArgs.Response;
+                }
             }
-                                    
-            WriteLine(fetchEArgs.Response.ToString().Replace("%exectime",((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2")));
+            
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method SEARCH
+        #region method _SearchAsync
 
-        private void SEARCH(bool uid,string cmdTag,string cmdText)
+        private async Task _SearchAsync(bool uid,string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.4.4. SEARCH Command.
-                Arguments:  OPTIONAL [CHARSET] specification
-                            searching criteria (one or more)
+            /* RFC 9051 6.4.4. SEARCH Command
 
-                Responses:  REQUIRED untagged response: SEARCH
+                Arguments:  OPTIONAL RETURN options
+                            OPTIONAL CHARSET specification
+                            one or more search keys
 
-                Result:     OK - search completed
-                            NO - search error: can't search that [CHARSET] or criteria
+                Responses:  REQUIRED untagged SEARCH response
+                            OPTIONAL ESEARCH response
+
+                Result:     OK  - SEARCH completed
+                            NO  - unable to perform the requested search
                             BAD - command unknown or arguments invalid
 
-                The SEARCH command searches the mailbox for messages that match
-                the given searching criteria.  Searching criteria consist of one
-                or more search keys.  The untagged SEARCH response from the server
-                contains a listing of message sequence numbers corresponding to
-                those messages that match the searching criteria.
-            
-                When multiple keys are specified, the result is the intersection
-                (AND function) of all the messages that match those keys.  For
-                example, the criteria DELETED FROM "SMITH" SINCE 1-Feb-1994 refers
-                to all deleted messages from Smith that were placed in the mailbox
-                since February 1, 1994.  A search key can also be a parenthesized
-                list of one or more search keys (e.g., for use with the OR and NOT
-                keys).
+                The SEARCH command searches the selected mailbox for messages
+                matching the supplied search criteria.
 
-                Server implementations MAY exclude [MIME-IMB] body parts with
-                terminal content media types other than TEXT and MESSAGE from
-                consideration in SEARCH matching.
+                Multiple search keys are combined using logical AND.
+                Parenthesized search keys may be combined with NOT and OR to
+                form more complex search expressions.
 
-                The OPTIONAL [CHARSET] specification consists of the word
-                "CHARSET" followed by a registered [CHARSET].  It indicates the
-                [CHARSET] of the strings that appear in the search criteria.
-                [MIME-IMB] content transfer encodings, and [MIME-HDRS] strings in
-                [RFC-2822]/[MIME-IMB] headers, MUST be decoded before comparing
-                text in a [CHARSET] other than US-ASCII.  US-ASCII MUST be
-                supported; other [CHARSET]s MAY be supported.
+                Unless ESEARCH is in effect, matching messages are returned as
+                message sequence numbers in an untagged SEARCH response.
 
-                If the server does not support the specified [CHARSET], it MUST
-                return a tagged NO response (not a BAD).  This response SHOULD
-                contain the BADCHARSET response code, which MAY list the
-                [CHARSET]s supported by the server.
+                The UID SEARCH command returns matching message UIDs instead
+                of message sequence numbers.
 
-                In all search keys that use strings, a message matches the key if
-                the string is a substring of the field.  The matching is
-                case-insensitive.
+                The optional CHARSET argument specifies the character set used
+                by search strings. If the requested charset is not supported,
+                the server should return a NO response and may include a
+                BADCHARSET response code.
 
-                The defined search keys are as follows.  Refer to the Formal
-                Syntax section for the precise syntactic definitions of the
-                arguments.
+                Text matching is case-insensitive.
 
-                <sequence set>
-                    Messages with message sequence numbers corresponding to the
-                    specified message sequence number set.
+                Common search keys:
 
-                ALL
-                    All messages in the mailbox; the default initial key for ANDing.
+                    <sequence-set>
+                        Messages with sequence numbers matching the specified
+                        sequence set.
 
-                ANSWERED
-                    Messages with the \Answered flag set.
+                    ALL
+                        All messages in the mailbox.
 
-                BCC <string>
-                    Messages that contain the specified string in the envelope
-                    structure's BCC field.
+                    ANSWERED
+                        Messages with the \Answered flag set.
 
-                BEFORE <date>
-                    Messages whose internal date (disregarding time and timezone)
-                    is earlier than the specified date.
+                    BCC <string>
+                        Messages whose BCC header contains the specified string.
 
-                BODY <string>
-                    Messages that contain the specified string in the body of the
-                    message.
+                    BEFORE <date>
+                        Messages whose INTERNALDATE is earlier than the
+                        specified date.
 
-                CC <string>
-                    Messages that contain the specified string in the envelope
-                    structure's CC field.
+                    BODY <string>
+                        Messages whose message body contains the specified
+                        string.
 
-                DELETED
-                    Messages with the \Deleted flag set.
+                    CC <string>
+                        Messages whose CC header contains the specified string.
 
-                DRAFT
-                    Messages with the \Draft flag set.
+                    DELETED
+                        Messages with the \Deleted flag set.
 
-                FLAGGED
-                    Messages with the \Flagged flag set.
+                    DRAFT
+                        Messages with the \Draft flag set.
 
-                FROM <string>
-                    Messages that contain the specified string in the envelope
-                    structure's FROM field.
+                    FLAGGED
+                        Messages with the \Flagged flag set.
 
-                HEADER <field-name> <string>
-                    Messages that have a header with the specified field-name (as
-                    defined in [RFC-2822]) and that contains the specified string
-                    in the text of the header (what comes after the colon).  If the
-                    string to search is zero-length, this matches all messages that
-                    have a header line with the specified field-name regardless of
-                    the contents.
+                    FROM <string>
+                        Messages whose FROM header contains the specified
+                        string.
 
-                KEYWORD <flag>
-                    Messages with the specified keyword flag set.
+                    HEADER <field-name> <string>
+                        Messages whose specified header contains the specified
+                        string.
 
-                LARGER <n>
-                    Messages with an [RFC-2822] size larger than the specified
-                    number of octets.
+                    KEYWORD <flag>
+                        Messages with the specified keyword set.
 
-                NEW
-                    Messages that have the \Recent flag set but not the \Seen flag.
-                    This is functionally equivalent to "(RECENT UNSEEN)".
+                    LARGER <n>
+                        Messages larger than the specified number of octets.
 
-                NOT <search-key>
-                    Messages that do not match the specified search key.
+                    NOT <search-key>
+                        Messages that do not match the specified search key.
 
-                OLD
-                    Messages that do not have the \Recent flag set.  This is
-                    functionally equivalent to "NOT RECENT" (as opposed to "NOT NEW").
+                    ON <date>
+                        Messages whose INTERNALDATE matches the specified date.
 
-                ON <date>
-                    Messages whose internal date (disregarding time and timezone)
-                    is within the specified date.
+                    OR <search-key1> <search-key2>
+                        Messages matching either search key.
 
-                OR <search-key1> <search-key2>
-                    Messages that match either search key.
+                    SEEN
+                        Messages with the \Seen flag set.
 
-                RECENT
-                    Messages that have the \Recent flag set.
+                    SENTBEFORE <date>
+                        Messages whose Date header is earlier than the
+                        specified date.
 
-                SEEN
-                    Messages that have the \Seen flag set.
+                    SENTON <date>
+                        Messages whose Date header matches the specified date.
 
-                SENTBEFORE <date>
-                    Messages whose [RFC-2822] Date: header (disregarding time and
-                    timezone) is earlier than the specified date.
+                    SENTSINCE <date>
+                        Messages whose Date header is on or after the
+                        specified date.
 
-                SENTON <date>
-                    Messages whose [RFC-2822] Date: header (disregarding time and
-                    timezone) is within the specified date.
+                    SINCE <date>
+                        Messages whose INTERNALDATE is on or after the
+                        specified date.
 
-                SENTSINCE <date>
-                    Messages whose [RFC-2822] Date: header (disregarding time and
-                    timezone) is within or later than the specified date.
+                    SMALLER <n>
+                        Messages smaller than the specified number of octets.
 
-                SINCE <date>
-                    Messages whose internal date (disregarding time and timezone)
-                    is within or later than the specified date.
+                    SUBJECT <string>
+                        Messages whose Subject header contains the specified
+                        string.
 
-                SMALLER <n>
-                    Messages with an [RFC-2822] size smaller than the specified
-                    number of octets.
+                    TEXT <string>
+                        Messages whose headers or body contain the specified
+                        string.
 
-                SUBJECT <string>
-                    Messages that contain the specified string in the envelope
-                    structure's SUBJECT field.
+                    TO <string>
+                        Messages whose TO header contains the specified string.
 
-                TEXT <string>
-                    Messages that contain the specified string in the header or
-                    body of the message.
+                    UID <sequence-set>
+                        Messages whose UIDs match the specified UID set.
 
-                TO <string>
-                    Messages that contain the specified string in the envelope
-                    structure's TO field.
+                    UNANSWERED
+                        Messages without the \Answered flag.
 
-                UID <sequence set>
-                    Messages with unique identifiers corresponding to the specified
-                    unique identifier set.  Sequence set ranges are permitted.
+                    UNDELETED
+                        Messages without the \Deleted flag.
 
-                UNANSWERED
-                    Messages that do not have the \Answered flag set.
+                    UNDRAFT
+                        Messages without the \Draft flag.
 
-                UNDELETED
-                    Messages that do not have the \Deleted flag set.
+                    UNFLAGGED
+                        Messages without the \Flagged flag.
 
-                UNDRAFT
-                    Messages that do not have the \Draft flag set.
+                    UNKEYWORD <flag>
+                        Messages without the specified keyword.
 
-                UNFLAGGED
-                    Messages that do not have the \Flagged flag set.
+                    UNSEEN
+                        Messages without the \Seen flag.
 
-                UNKEYWORD <flag>
-                    Messages that do not have the specified keyword flag set.
+                Compatibility search keys:
 
-                UNSEEN
-                    Messages that do not have the \Seen flag set.
+                    NEW
+                        Messages with the \Recent flag set and without the
+                        \Seen flag.
 
-                Example:    C: A282 SEARCH FLAGGED SINCE 1-Feb-1994 NOT FROM "Smith"
-                            S: * SEARCH 2 84 882
-                            S: A282 OK SEARCH completed
-                            C: A283 SEARCH TEXT "string not in mailbox"
-                            S: * SEARCH
-                            S: A283 OK SEARCH completed
-                            C: A284 SEARCH CHARSET UTF-8 TEXT {6}
-                            C: XXXXXX
-                            S: * SEARCH 43
-                            S: A284 OK SEARCH completed
+                    OLD
+                        Messages without the \Recent flag set.
+
+                    RECENT
+                        Messages with the \Recent flag set.
+
+                IMAP4rev2 removes the \Recent message flag. The NEW, OLD,
+                and RECENT search keys are supported only for interoperability
+                with legacy IMAP4rev1 clients.
+                Compatibility search keys NEW, OLD, and RECENT are evaluated
+                as if no messages possess the obsolete \Recent flag.
+
+                Example:
+
+                    C: A282 SEARCH FLAGGED SINCE 1-Feb-2024 NOT FROM "Smith"
+                    S: * SEARCH 2 84 882
+                    S: A282 OK SEARCH completed
+
+                Example:
+
+                    C: A283 SEARCH TEXT "string not in mailbox"
+                    S: * SEARCH
+                    S: A283 OK SEARCH completed
+
+                Example:
+
+                    C: A284 UID SEARCH UNSEEN
+                    S: * SEARCH 101 102 105
+                    S: A284 OK SEARCH completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
+
+                return;
+            }
+           
+            IMAP_t_Search_Key_Group criteria;
+            try{
+                if(imapReader.PeekIs("CHARSET")){
+                    string charset  = await imapReader.ReadStringAsync() ?? "";
+                    if(!(string.Equals(charset,"US-ASCII",StringComparison.OrdinalIgnoreCase) || string.Equals(charset,"UTF-8",StringComparison.OrdinalIgnoreCase))){
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO",new IMAP_t_orc_BadCharset(["US-ASCII","UTF-8"]),"Unsupported charset."),true);
+
+                        return;
+                    }
+                }
+
+                criteria = await IMAP_t_Search_Key_Group.ParseAsync(imapReader);
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
+            #region Determine search mode. Local(use cache data) or raise SearchAsync event
 
-            #region Parse arguments
+            bool localSearch = true;
 
-            StringReader r = new StringReader(cmdText);
-            
-            // See if we have optional CHARSET argument.
-            if(r.StartsWith("CHARSET",false)){
-                r.ReadWord();
+            List<IMAP_t_Search_Key> keys = new List<IMAP_t_Search_Key>();
+            keys.Add(criteria);
 
-                string charset = r.ReadWord() ?? string.Empty;
-                if(!(string.Equals(charset,"US-ASCII",StringComparison.InvariantCultureIgnoreCase) || string.Equals(charset,"UTF-8",StringComparison.InvariantCultureIgnoreCase))){
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO",new IMAP_t_orc_BadCharset(new string[]{"US-ASCII","UTF-8"}),"Not supported charset."));
+            int index = 0;
+            while(index < keys.Count){
+                IMAP_t_Search_Key current = keys[index++];
 
-                    return;
+                switch(current)
+                {
+                    case IMAP_t_Search_Key_Bcc:
+                    case IMAP_t_Search_Key_Body:
+                    case IMAP_t_Search_Key_Cc:
+                    case IMAP_t_Search_Key_From:
+                    case IMAP_t_Search_Key_Header:
+                    case IMAP_t_Search_Key_Subject:
+                    case IMAP_t_Search_Key_Text:
+                    case IMAP_t_Search_Key_To:
+                    case IMAP_t_Search_Key_SentBefore:
+                    case IMAP_t_Search_Key_SentOn:
+                    case IMAP_t_Search_Key_SentSince:
+                        localSearch = false;
+                        break;
+
+                    case IMAP_t_Search_Key_Not notKey:
+                        keys.Add(notKey.SearchKey);
+                        break;
+
+                    case IMAP_t_Search_Key_Or orKey:
+                        keys.Add(orKey.SearchKey1);
+                        keys.Add(orKey.SearchKey2);
+                        break;
+
+                    case IMAP_t_Search_Key_Group group:
+                        keys.AddRange(group.Keys);
+                        break;
+                }
+
+                if(!localSearch){
+                    break;
                 }
             }
 
             #endregion
 
-            try{
-                IMAP_t_Search_Key_Group criteria = IMAP_t_Search_Key_Group.Parse(r);
+            await SyncFolderAsync();
 
-                UpdateSelectedFolderAndSendChanges();
-                
-                List<long> matchedValues = new List<long>();
-
-                IMAP_e_Search searchArgs = new IMAP_e_Search(criteria,new IMAP_r_ServerStatus(cmdTag,"OK","SEARCH completed in %exectime seconds."));
-                searchArgs.Matched += new EventHandler<EventArgs<long>>(delegate(object? s,EventArgs<long> e){
-                    if(uid){
-                        matchedValues.Add(e.Value);
-                    }
-                    else{
-                        // Search sequence-number for that message.
-                        long seqNo = m_pSelectedFolder.GetSeqNo(e.Value);
-                        if(seqNo != -1){
-                            matchedValues.Add(seqNo);
+            if(localSearch){
+                List<long> matched = new List<long>();
+                foreach(var message in m_pSelectedFolder.Messages){
+                    if(SearchIsMatch(message,criteria)){
+                        if(uid){
+                            matched.Add(message.UID);
                         }
-                    }                    
-                });
-                OnSearch(searchArgs);
+                        else{
+                            matched.Add(m_pSelectedFolder.GetSeqNo(message));
+                        }
+                    }
+                }
 
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_Search(matchedValues.ToArray()));
-                m_pResponseSender.SendResponseAsync(IMAP_r_ServerStatus.Parse(searchArgs.Response.ToString().TrimEnd().Replace("%exectime",((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2"))));
+                await SendResponseAsync(new IMAP_r_u_Search(matched.ToArray()),matched.Count < 50);
+                if(matched.Count > 50){
+                    LogAddWrite(0,$"* SEARCH [{matched.Count} matches]");
+                }
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","SEARCH completed."),true);
             }
-            catch{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-            }            
+            else{
+                var response = new IMAP_r_ServerStatus(cmdTag,"OK","SEARCH completed.");
+                
+                // Raise SearchAsync event.
+                if(this.SearchAsync != null){
+                    IMAP_e_Search eArgs = new IMAP_e_Search(this,m_pSelectedFolder.Folder,criteria,response);
+                    await SearchAsync(eArgs);
+
+                    response = eArgs.Response;
+
+                    if(response.IsSuccess){
+                        List<long> matched = new List<long>();
+                        if(uid){
+                            matched.AddRange(eArgs.MatchedUids);
+                        }
+                        else{
+                            foreach(long matchedUid in eArgs.MatchedUids){
+                                int seqNo = m_pSelectedFolder.GetSeqNo(matchedUid);
+                                if(seqNo > 0){
+                                    matched.Add(seqNo);
+                                }
+                            }
+                        }
+
+                        await SendResponseAsync(new IMAP_r_u_Search(matched.ToArray()),matched.Count < 50);
+                        if(matched.Count > 50){
+                            LogAddWrite(0,$"* SEARCH [{matched.Count} matches]");
+                        }
+                    }
+                }
+
+                await SendResponseAsync(response,true);
+            } 
         }
 
         #endregion
 
-        #region method STORE
+        #region method _StoreAsync
 
-        private void STORE(bool uid,string cmdTag,string cmdText)
+        private async Task _StoreAsync(bool uid,string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.4.6. STORE Command.
+            /* RFC 9051 6.4.6. STORE Command
+
                 Arguments:  sequence set
                             message data item name
                             value for message data item
 
-                Responses:  untagged responses: FETCH
+                Responses:  untagged FETCH responses
 
-                Result:     OK - store completed
-                            NO - store error: can't store that data
+                Result:     OK  - STORE completed
+                            NO  - unable to store the requested data
                             BAD - command unknown or arguments invalid
 
-                The STORE command alters data associated with a message in the
-                mailbox.  Normally, STORE will return the updated value of the
-                data with an untagged FETCH response.  A suffix of ".SILENT" in
-                the data item name prevents the untagged FETCH, and the server
-                SHOULD assume that the client has determined the updated value
-                itself or does not care about the updated value.
+                The STORE command alters data associated with one or more
+                messages in the selected mailbox.
 
-                    Note: Regardless of whether or not the ".SILENT" suffix
-                    was used, the server SHOULD send an untagged FETCH
-                    response if a change to a message's flags from an
-                    external source is observed.  The intent is that the
-                    status of the flags is determinate without a race
-                    condition.
+                Unless the ".SILENT" suffix is specified, the server returns
+                the updated data using untagged FETCH responses.
 
-                The currently defined data items that can be stored are:
+                Regardless of whether the ".SILENT" suffix is used, the server
+                should notify clients of externally observed flag changes using
+                the appropriate untagged FETCH responses.
 
-                FLAGS <flag list>
-                    Replace the flags for the message (other than \Recent) with the
-                    argument.  The new value of the flags is returned as if a FETCH
-                    of those flags was done.
+                The following STORE data items are defined:
 
-                FLAGS.SILENT <flag list>
-                    Equivalent to FLAGS, but without returning a new value.
+                    FLAGS <flag-list>
 
-                +FLAGS <flag list>
-                    Add the argument to the flags for the message.  The new value
-                    of the flags is returned as if a FETCH of those flags was done.
+                        Replaces the message flags with the supplied flag list.
+                        The updated flags are returned using untagged FETCH
+                        responses.
 
-                +FLAGS.SILENT <flag list>
-                    Equivalent to +FLAGS, but without returning a new value.
+                    FLAGS.SILENT <flag-list>
 
-                -FLAGS <flag list>
-                    Remove the argument from the flags for the message.  The new
-                    value of the flags is returned as if a FETCH of those flags was
-                    done.
+                        Equivalent to FLAGS but suppresses the untagged FETCH
+                        responses normally generated by the STORE command.
 
-                -FLAGS.SILENT <flag list>
-                    Equivalent to -FLAGS, but without returning a new value.
+                    +FLAGS <flag-list>
 
-                Example:    C: A003 STORE 2:4 +FLAGS (\Deleted)
-                            S: * 2 FETCH (FLAGS (\Deleted \Seen))
-                            S: * 3 FETCH (FLAGS (\Deleted))
-                            S: * 4 FETCH (FLAGS (\Deleted \Flagged \Seen))
-                            S: A003 OK STORE completed
+                        Adds the supplied flags to the existing message flags.
+                        The updated flags are returned using untagged FETCH
+                        responses.
+
+                    +FLAGS.SILENT <flag-list>
+
+                        Equivalent to +FLAGS but suppresses the untagged FETCH
+                        responses normally generated by the STORE command.
+
+                    -FLAGS <flag-list>
+
+                        Removes the supplied flags from the existing message
+                        flags. The updated flags are returned using untagged
+                        FETCH responses.
+
+                    -FLAGS.SILENT <flag-list>
+
+                        Equivalent to -FLAGS but suppresses the untagged FETCH
+                        responses normally generated by the STORE command.
+
+                Example:
+
+                    C: A003 STORE 2:4 +FLAGS (\Deleted)
+                    S: * 2 FETCH (FLAGS (\Deleted \Seen))
+                    S: * 3 FETCH (FLAGS (\Deleted))
+                    S: * 4 FETCH (FLAGS (\Deleted \Flagged \Seen))
+                    S: A003 OK STORE completed
+
+                Example:
+
+                    C: A004 UID STORE 100:102 FLAGS.SILENT (\Seen)
+                    S: A004 OK STORE completed
             */
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
+            /* RFC 9051 UID Command Semantics
+
+                For UID STORE, all FETCH responses generated by the command
+                must include the UID message data item.
+
+                Example:
+
+                    C: A003 UID STORE 100 +FLAGS (\Seen)
+                    S: * 5 FETCH (FLAGS (\Seen) UID 100)
+                    S: A003 OK STORE completed
+
+                This requirement applies regardless of whether the STORE
+                operation targets a single message or multiple messages.
+            */
+            
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
 
                 return;
             }
-
-            #region Parse arguments
-
-            string[] parts = cmdText.Split(new char[]{' '},3);
-            if(parts.Length != 3){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                return;
-            }
-
-            IMAP_t_SeqSet seqSet;
-            try{                
-                seqSet = IMAP_t_SeqSet.Parse(parts[0]);
-            }
-            catch{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                return;
-            }
-         
+ 
+            IMAP_t_SeqSet      seqSet;
             IMAP_Flags_SetType setType;
+            string[]           flags;
             bool               silent = false;
-            if(string.Equals(parts[1],"FLAGS",StringComparison.InvariantCultureIgnoreCase)){
-                setType = IMAP_Flags_SetType.Replace;
+            try{
+                try{
+                    seqSet = IMAP_t_SeqSet.Parse(await imapReader.ReadStringAsync() ?? "");
+                }
+                catch{
+                    throw new ParseException("Error in arguments.");
+                }
+
+                string dataitem = await imapReader.ReadStringAsync() ?? "";
+                if(string.Equals(dataitem,"FLAGS",StringComparison.OrdinalIgnoreCase)){
+                    setType = IMAP_Flags_SetType.Replace;
+                }
+                else if(string.Equals(dataitem,"FLAGS.SILENT",StringComparison.OrdinalIgnoreCase)){
+                    setType = IMAP_Flags_SetType.Replace;
+                    silent = true;
+                }
+                else if(string.Equals(dataitem,"+FLAGS",StringComparison.OrdinalIgnoreCase)){
+                    setType = IMAP_Flags_SetType.Add;
+                }
+                else if(string.Equals(dataitem,"+FLAGS.SILENT",StringComparison.OrdinalIgnoreCase)){
+                    setType = IMAP_Flags_SetType.Add;
+                    silent = true;
+                }
+                else if(string.Equals(dataitem,"-FLAGS",StringComparison.OrdinalIgnoreCase)){
+                    setType = IMAP_Flags_SetType.Remove;
+                }
+                else if(string.Equals(dataitem,"-FLAGS.SILENT",StringComparison.OrdinalIgnoreCase)){
+                    setType = IMAP_Flags_SetType.Remove;
+                    silent = true;
+                }
+                else{
+                    throw new ParseException("Error in arguments.");
+                }
+
+                flags = imapReader.ReadParenthesized().Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
+
+                if(imapReader.HasMore){
+                    throw new ParseException("Error in arguments.");
+                }
             }
-            else if(string.Equals(parts[1],"FLAGS.SILENT",StringComparison.InvariantCultureIgnoreCase)){
-                setType = IMAP_Flags_SetType.Replace;
-                silent = true;
-            }
-            else if(string.Equals(parts[1],"+FLAGS",StringComparison.InvariantCultureIgnoreCase)){
-                setType = IMAP_Flags_SetType.Add;
-            }
-            else if(string.Equals(parts[1],"+FLAGS.SILENT",StringComparison.InvariantCultureIgnoreCase)){
-                setType = IMAP_Flags_SetType.Add;
-                silent = true;
-            }
-            else if(string.Equals(parts[1],"-FLAGS",StringComparison.InvariantCultureIgnoreCase)){
-                setType = IMAP_Flags_SetType.Remove;
-            }
-            else if(string.Equals(parts[1],"-FLAGS.SILENT",StringComparison.InvariantCultureIgnoreCase)){
-                setType = IMAP_Flags_SetType.Remove;
-                silent = true;
-            }
-            else{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
-            }                       
-
-            if(!(parts[2].StartsWith("(") && parts[2].EndsWith(")"))){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                return;
-            }
-            List<string> flags = new List<string>();
-            foreach(string f in parts[2].Substring(1,parts[2].Length - 2).Split(' ')){
-                if(f.Length > 0 && !flags.Contains(f.Substring(1))){
-                    flags.Add(f.Substring(1));
-                }
             }
 
-            #endregion
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise StoreAsync event.
+            if(this.StoreAsync != null){
+                await SyncFolderAsync();
 
-            IMAP_r_ServerStatus response = new IMAP_r_ServerStatus(cmdTag,"OK","STORE command completed in %exectime seconds.");
-            foreach(IMAP_MessageInfo msgInfo in m_pSelectedFolder.Filter(uid,seqSet)){
-                IMAP_e_Store e = OnStore(msgInfo,setType,flags.ToArray(),response);
-                response = e.Response;
-                if(!string.Equals(e.Response.ResponseCode,"OK",StringComparison.InvariantCultureIgnoreCase)){
-                    break;
-                }
+                var messages = m_pSelectedFolder.Filter(uid,seqSet);
 
-                // Update local message info flags value.
-                msgInfo.UpdateFlags(setType,flags.ToArray());
+                IMAP_e_Store eArgs = new IMAP_e_Store(this,m_pSelectedFolder.Folder,setType,flags,messages,response);
+                await StoreAsync(eArgs);
 
-                if(!silent){
-                    // UID STORE must include UID. For more info see RFC 3501 6.4.8. UID Command.
-                    if(uid){
-                        m_pResponseSender.SendResponseAsync(
-                            new IMAP_r_u_Fetch(
-                                m_pSelectedFolder.GetSeqNo(msgInfo),
-                                new IMAP_t_Fetch_r_i[]{
-                                    new IMAP_t_Fetch_r_i_Flags(msgInfo.Flags),
-                                    new IMAP_t_Fetch_r_i_Uid(msgInfo.UID)
-                                }
-                            )
-                        );
-                    }
-                    else{
-                        m_pResponseSender.SendResponseAsync(
-                            new IMAP_r_u_Fetch(
-                                m_pSelectedFolder.GetSeqNo(msgInfo),
-                                new IMAP_t_Fetch_r_i[]{
-                                    new IMAP_t_Fetch_r_i_Flags(msgInfo.Flags)
-                                }
-                            )
-                        );
+                response = eArgs.Response;
+
+                if(response.IsSuccess){
+                    foreach(var message in messages){
+                        // Update local message info flags value.
+                        message.UpdateFlags(setType,flags.ToArray());
+
+                        if(!silent){
+                            if(uid){
+                                await SendResponseAsync(
+                                    new IMAP_r_u_Fetch(
+                                        m_pSelectedFolder.GetSeqNo(message),
+                                        new IMAP_t_Fetch_r_i[]{
+                                            new IMAP_t_Fetch_r_i_Flags(message.Flags),
+                                            new IMAP_t_Fetch_r_i_Uid(message.UID)
+                                        }
+                                    ),
+                                    true
+                                );
+                            }
+                            else{
+                                await SendResponseAsync(
+                                    new IMAP_r_u_Fetch(
+                                        m_pSelectedFolder.GetSeqNo(message),
+                                        new IMAP_t_Fetch_r_i[]{
+                                            new IMAP_t_Fetch_r_i_Flags(message.Flags)
+                                        }
+                                    ),
+                                    true
+                                );
+                            }
+                        }
                     }
                 }
             }
 
-            m_pResponseSender.SendResponseAsync(IMAP_r_ServerStatus.Parse(response.ToString().TrimEnd().Replace("%exectime",((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2"))));
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method COPY
+        #region method _CopyAsync
 
-        private void COPY(bool uid,string cmdTag,string cmdText)
+        private async Task _CopyAsync(bool uid,string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.4.7. COPY Command.
+            /* RFC 9051 6.4.8. COPY Command
+
                 Arguments:  sequence set
                             mailbox name
 
                 Responses:  no specific responses for this command
 
-                Result:     OK - copy completed
-                            NO - copy error: can't copy those messages or to that
-                                 name
+                Result:     OK  - COPY completed
+                            NO  - unable to copy the specified message(s)
                             BAD - command unknown or arguments invalid
 
-                The COPY command copies the specified message(s) to the end of the
-                specified destination mailbox.  The flags and internal date of the
-                message(s) SHOULD be preserved, and the Recent flag SHOULD be set,
-                in the copy.
+                The COPY command copies the specified message(s) to the end of
+                the destination mailbox.
 
-                If the destination mailbox does not exist, a server SHOULD return
-                an error.  It SHOULD NOT automatically create the mailbox.  Unless
-                it is certain that the destination mailbox can not be created, the
-                server MUST send the response code "[TRYCREATE]" as the prefix of
-                the text of the tagged NO response.  This gives a hint to the
-                client that it can attempt a CREATE command and retry the COPY if
-                the CREATE is successful.
+                The flags and INTERNALDATE of the source message(s) should be
+                preserved in the copied message(s).
 
-                If the COPY command is unsuccessful for any reason, server
-                implementations MUST restore the destination mailbox to its state
-                before the COPY attempt.
+                If the destination mailbox does not exist, the server should
+                return a NO response and should not automatically create the
+                mailbox. Unless it is certain that the mailbox cannot be created,
+                the server should include the [TRYCREATE] response code.
 
-                Example:    C: A003 COPY 2:4 MEETING
-                            S: A003 OK COPY completed
+                If the COPY operation fails for any reason, the destination
+                mailbox must be restored to its state before the COPY attempt.
+                Partial copies are not permitted.
+
+                Servers supporting UIDPLUS (RFC 4315) may include a COPYUID
+                response code in the final OK response.
+
+                Example:
+
+                    C: A003 COPY 2:4 MEETING
+                    S: A003 OK COPY completed
+
+                Example (UIDPLUS):
+
+                    C: A004 UID COPY 100:102 Archive
+                    S: A004 OK [COPYUID 3857529045 100:102 500:502]
+                       COPY completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
 
                 return;
             }
 
-            string[] parts = cmdText.Split(new char[]{' '},2);
-            if(parts.Length != 2){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
-
-                return;
-            }
             IMAP_t_SeqSet seqSet;
+            string        folder;            
             try{                
-                seqSet = IMAP_t_SeqSet.Parse(parts[0]);
+                seqSet = IMAP_t_SeqSet.Parse(await imapReader.ReadStringAsync() ?? "");
+                folder = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
             }
-            catch{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
-            string targetFolder = IMAP_Utils.DecodeMailbox(TextUtils.UnQuoteString(parts[1]));
 
-            UpdateSelectedFolderAndSendChanges();
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise CopyAsync event.
+            if(this.CopyAsync != null){
+                await SyncFolderAsync();
+                
+                IMAP_e_Copy eArgs = new IMAP_e_Copy(this,uid,seqSet,m_pSelectedFolder.Folder,folder,m_pSelectedFolder.Filter(uid,seqSet),response);
+                await CopyAsync(eArgs);
 
-            IMAP_e_Copy e = OnCopy(
-                targetFolder,
-                m_pSelectedFolder.Filter(uid,seqSet),
-                new IMAP_r_ServerStatus(cmdTag,"OK","COPY completed.")
-            );
-            m_pResponseSender.SendResponseAsync(e.Response);
+                response = eArgs.Response;
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method UID
+        #region method _MoveAsync
 
-        private void UID(string cmdTag,string cmdText)
+        private async Task _MoveAsync(bool uid,string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.4.8. UID Command.
-                Arguments:  command name
-                            command arguments
+            /* RFC 9051 6.4.8. MOVE Command
 
-                Responses:  untagged responses: FETCH, SEARCH
+                Originally specified by RFC 6851 and incorporated into
+                IMAP4rev2 by RFC 9051.
 
-                Result:     OK - UID command completed
-                            NO - UID command error
+                Arguments:  sequence set
+                            mailbox name
+
+                Responses:  untagged EXPUNGE responses
+                            untagged VANISHED responses (QRESYNC)
+
+                Result:     OK  - MOVE completed
+                            NO  - unable to move the specified message(s)
                             BAD - command unknown or arguments invalid
 
-                The UID command has two forms.  In the first form, it takes as its
-                arguments a COPY, FETCH, or STORE command with arguments
-                appropriate for the associated command.  However, the numbers in
-                the sequence set argument are unique identifiers instead of
-                message sequence numbers.  Sequence set ranges are permitted, but
-                there is no guarantee that unique identifiers will be contiguous.
+                The MOVE command moves the specified message(s) from the
+                currently selected mailbox to the specified destination
+                mailbox.
 
-                A non-existent unique identifier is ignored without any error
-                message generated.  Thus, it is possible for a UID FETCH command
-                to return an OK without any data or a UID COPY or UID STORE to
-                return an OK without performing any operations.
+                The flags and INTERNALDATE of the source message(s) should
+                be preserved in the moved message(s).
 
-                In the second form, the UID command takes a SEARCH command with
-                SEARCH command arguments.  The interpretation of the arguments is
-                the same as with SEARCH; however, the numbers returned in a SEARCH
-                response for a UID SEARCH command are unique identifiers instead
-                of message sequence numbers.  For example, the command UID SEARCH
-                1:100 UID 443:557 returns the unique identifiers corresponding to
-                the intersection of two sequence sets, the message sequence number
-                range 1:100 and the UID range 443:557.
+                The MOVE command is functionally equivalent to performing:
 
-                    Note: in the above example, the UID range 443:557
-                    appears.  The same comment about a non-existent unique
-                    identifier being ignored without any error message also
-                    applies here.  Hence, even if neither UID 443 or 557
-                    exist, this range is valid and would include an existing
-                    UID 495.
+                    COPY
+                    STORE +FLAGS.SILENT (\Deleted)
+                    EXPUNGE
 
-                Also note that a UID range of 559:* always includes the
-                UID of the last message in the mailbox, even if 559 is
-                higher than any assigned UID value.  This is because the
-                contents of a range are independent of the order of the
-                range endpoints.  Thus, any UID range with * as one of
-                the endpoints indicates at least one message (the
-                message with the highest numbered UID), unless the
-                mailbox is empty.
+                However, MOVE is performed atomically. The server must ensure
+                that each message is either moved successfully or remains in
+                the source mailbox. Intermediate states must not be visible to
+                clients.
 
-                The number after the "*" in an untagged FETCH response is always a
-                message sequence number, not a unique identifier, even for a UID
-                command response.  However, server implementations MUST implicitly
-                include the UID message data item as part of any FETCH response
-                caused by a UID command, regardless of whether a UID was specified
-                as a message data item to the FETCH.
+                If the destination mailbox does not exist, the server should
+                return a NO response. Unless it is certain that the mailbox
+                cannot be created, the server should include the [TRYCREATE]
+                response code in the tagged NO response.
 
-                    Note: The rule about including the UID message data item as part
-                    of a FETCH response primarily applies to the UID FETCH and UID
-                    STORE commands, including a UID FETCH command that does not
-                    include UID as a message data item.  Although it is unlikely that
-                    the other UID commands will cause an untagged FETCH, this rule
-                    applies to these commands as well.
+                If the server supports UIDPLUS (RFC 4315), the tagged OK
+                response should include a COPYUID response code providing the
+                UID mapping between source and destination messages.
 
-                Example:    C: A999 UID FETCH 4827313:4828442 FLAGS
-                            S: * 23 FETCH (FLAGS (\Seen) UID 4827313)
-                            S: * 24 FETCH (FLAGS (\Seen) UID 4827943)
-                            S: * 25 FETCH (FLAGS (\Seen) UID 4828442)
-                            S: A999 OK UID FETCH completed
+                When messages are removed from the selected mailbox as a result
+                of a successful MOVE operation, appropriate EXPUNGE responses
+                must be generated. Servers supporting QRESYNC may return
+                VANISHED responses instead.
+
+                Example:
+
+                    C: A003 MOVE 2:4 Archive
+                    S: * 2 EXPUNGE
+                    S: * 2 EXPUNGE
+                    S: * 2 EXPUNGE
+                    S: A003 OK MOVE completed
+
+                Example (UIDPLUS):
+
+                    C: A004 UID MOVE 100:102 Archive
+                    S: * 100 EXPUNGE
+                    S: * 101 EXPUNGE
+                    S: * 102 EXPUNGE
+                    S: A004 OK [COPYUID 3857529045 100:102 500:502]
+                       MOVE completed
             */
 
+            var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
+
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
+
+                return;
+            }
+
+            IMAP_t_SeqSet seqSet;
+            string        folder;            
+            try{                
+                seqSet = IMAP_t_SeqSet.Parse(await imapReader.ReadStringAsync() ?? "");
+                folder = await imapReader.ReadMailboxAsync() ?? "";
+
+                if(imapReader.HasMore){
+                    await imapReader.DrainRemainingCommandAsync();
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }
+            catch(ParseException){
+                await imapReader.DrainRemainingCommandAsync();
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                return;
+            }
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"NO","Command not supported.");
+            
+            // Raise MoveAsync event.
+            if(this.MoveAsync != null){
+                await SyncFolderAsync();
+               
+                var messagesToCopy = m_pSelectedFolder.Filter(uid,seqSet);
+
+                IMAP_e_Move eArgs = new IMAP_e_Move(this,uid,seqSet,m_pSelectedFolder.Folder,folder,messagesToCopy,response);
+                await MoveAsync(eArgs);
+
+                response = eArgs.Response;
+
+                // Generate EXPUNGE foreach copied message and remove these messages from current folder.
+                if(response.IsSuccess){
+                    foreach(var message in messagesToCopy) {
+                        int seqNo = m_pSelectedFolder.GetSeqNo(message);
+                        m_pSelectedFolder.RemoveMessage(message);
+
+                        await SendResponseAsync(new IMAP_r_u_Expunge(seqNo),true);                        
+                    }
+                }
+            }
+
+            await SendResponseAsync(response,true);
+        }
+
+        #endregion
+
+        #region method _UidAsync
+
+        private async Task _UidAsync(string cmdTag,string cmdText)
+        {
+            /* RFC 9051 6.4.8. UID Command
+
+                Arguments:  command name
+                            command arguments
+
+                Responses:  untagged FETCH responses
+                            untagged SEARCH responses
+
+                Result:     OK  - UID command completed
+                            NO  - UID command failed
+                            BAD - command unknown or arguments invalid
+
+                The UID command causes the specified command to operate on
+                message UIDs rather than message sequence numbers.
+
+                IMAP4rev2 defines the following UID commands:
+
+                    UID COPY
+                    UID EXPUNGE
+                    UID FETCH
+                    UID MOVE
+                    UID SEARCH
+                    UID STORE
+
+                Unless otherwise specified, sequence-set arguments supplied
+                to a UID command are interpreted as UID sets.
+
+                Non-existent UIDs are ignored without error. Consequently,
+                a UID command may complete successfully without affecting any
+                messages.
+
+                UID SEARCH uses the same search criteria as SEARCH. However,
+                matching UIDs are returned in the SEARCH response instead of
+                message sequence numbers.
+
+                For UID FETCH and UID STORE, all untagged FETCH responses
+                generated by the command must include the UID data item,
+                regardless of whether UID was explicitly requested.
+
+                Note that the number appearing immediately after "*" in an
+                untagged FETCH response is always a message sequence number,
+                not a UID.
+
+                Example:
+
+                    C: A999 UID FETCH 4827313:4828442 FLAGS
+                    S: * 23 FETCH (FLAGS (\Seen) UID 4827313)
+                    S: * 24 FETCH (FLAGS (\Seen) UID 4827943)
+                    S: * 25 FETCH (FLAGS (\Seen) UID 4828442)
+                    S: A999 OK UID FETCH completed
+
+                Example:
+
+                    C: A100 UID SEARCH UNSEEN
+                    S: * SEARCH 4827313 4827943 4828442
+                    S: A100 OK UID SEARCH completed
+            */
+
+            if(!this.IsAuthenticated){
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+            if(m_pSelectedFolder == null){
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
 
                 return;
             }
@@ -4749,194 +4795,296 @@ namespace LumiSoft.Net.IMAP.Server
             string[] cmd_cmtText = cmdText.Split(new char[]{' '},2);
                         
             if(string.Equals(cmd_cmtText[0],"COPY",StringComparison.InvariantCultureIgnoreCase)){
-                COPY(true,cmdTag,cmd_cmtText[1]);
+                await _CopyAsync(true,cmdTag,cmd_cmtText[1]);
             }
             else if(string.Equals(cmd_cmtText[0],"FETCH",StringComparison.InvariantCultureIgnoreCase)){
-                FETCH(true,cmdTag,cmd_cmtText[1]);
+                await _FetchAsync(true,cmdTag,cmd_cmtText[1]);
             }
             else if(string.Equals(cmd_cmtText[0],"STORE",StringComparison.InvariantCultureIgnoreCase)){
-                STORE(true,cmdTag,cmd_cmtText[1]);
+                await _StoreAsync(true,cmdTag,cmd_cmtText[1]);
             }
             else if(string.Equals(cmd_cmtText[0],"SEARCH",StringComparison.InvariantCultureIgnoreCase)){
-                SEARCH(true,cmdTag,cmd_cmtText[1]);
+                await _SearchAsync(true,cmdTag,cmd_cmtText[1]);
+            }
+            else if(string.Equals(cmd_cmtText[0],"EXPUNGE",StringComparison.InvariantCultureIgnoreCase)){
+                await _ExpungeAsync(true,cmdTag,cmd_cmtText[1]);
             }
             else{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
             }
         }
 
         #endregion
 
-        #region method EXPUNGE
+        #region method _ExpungeAsync
 
-        private void EXPUNGE(string cmdTag,string cmdText)
+        private async Task _ExpungeAsync(bool uid,string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.4.3. EXPUNGE Command.
+            /* RFC 9051 6.4.3. EXPUNGE Command
+
                 Arguments:  none
 
-                Responses:  untagged responses: EXPUNGE
+                Responses:  untagged EXPUNGE responses
+                            untagged VANISHED responses (QRESYNC)
 
-                Result:     OK - expunge completed
-                            NO - expunge failure: can't expunge (e.g., permission
-                                 denied)
+                Result:     OK  - EXPUNGE completed
+                            NO  - unable to expunge messages
                             BAD - command unknown or arguments invalid
 
-                The EXPUNGE command permanently removes all messages that have the
-                \Deleted flag set from the currently selected mailbox.  Before
-                returning an OK to the client, an untagged EXPUNGE response is
-                sent for each message that is removed.
+                The EXPUNGE command permanently removes all messages marked
+                with the \Deleted flag from the currently selected mailbox.
 
-                Example:    C: A202 EXPUNGE
-                            S: * 3 EXPUNGE
-                            S: * 3 EXPUNGE
-                            S: * 5 EXPUNGE
-                            S: * 8 EXPUNGE
-                            S: A202 OK EXPUNGE completed
+                Before returning an OK response, the server must send an
+                untagged EXPUNGE response for each message removed from the
+                selected mailbox.
 
-                    Note: In this example, messages 3, 4, 7, and 11 had the
-                    \Deleted flag set.  See the description of the EXPUNGE
-                    response for further explanation.
+                EXPUNGE responses use message sequence numbers. Since sequence
+                numbers are renumbered after each expunge, clients must process
+                EXPUNGE responses in the order received.
+
+                If the selected mailbox is read-only, for example opened by
+                EXAMINE, no messages may be removed.
+
+                Example:
+
+                    C: A202 EXPUNGE
+                    S: * 3 EXPUNGE
+                    S: * 3 EXPUNGE
+                    S: * 5 EXPUNGE
+                    S: * 8 EXPUNGE
+                    S: A202 OK EXPUNGE completed
+
+                In this example, messages 3, 4, 7, and 11 were marked with
+                the \Deleted flag before the EXPUNGE command was issued.
+            */
+
+            /* RFC 4315 2.1 UID EXPUNGE Command
+
+                Arguments:  UID sequence set
+
+                Responses:  untagged EXPUNGE responses
+                            untagged VANISHED responses (QRESYNC)
+
+                Result:     OK  - UID EXPUNGE completed
+                            NO  - unable to expunge messages
+                            BAD - command unknown or arguments invalid
+
+                The UID EXPUNGE command permanently removes messages that:
+
+                    - have the \Deleted flag set, and
+                    - match the supplied UID sequence set.
+
+                Messages marked with \Deleted that are not included in the
+                supplied UID set must not be removed.
+
+                UID EXPUNGE is intended for disconnected clients to safely
+                remove only messages previously marked for deletion by that
+                client.
+
+                Before returning an OK response, the server must send an
+                untagged EXPUNGE response for each removed message.
+
+                Example:
+
+                    C: A301 UID EXPUNGE 100:150
+                    S: * 3 EXPUNGE
+                    S: * 5 EXPUNGE
+                    S: A301 OK UID EXPUNGE completed
             */
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
 
                 return;
             }
             if(m_pSelectedFolder == null){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Error: This command is valid only in selected state."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
 
                 return;
             }
 
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
-            
-            IMAP_r_ServerStatus response = new IMAP_r_ServerStatus(cmdTag,"OK","EXPUNGE completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds.");
-            for(int i=0;i<m_pSelectedFolder.MessagesInfo.Length;i++){
-                IMAP_MessageInfo msgInfo = m_pSelectedFolder.MessagesInfo[i];
-                if(msgInfo.ContainsFlag("Deleted")){
-                    IMAP_e_Expunge e = OnExpunge(msgInfo,response);
-                    // Expunge failed.
-                    if(!string.Equals(e.Response.ResponseCode,"OK",StringComparison.InvariantCultureIgnoreCase)){
-                        m_pResponseSender.SendResponseAsync(e.Response);
+            IMAP_t_SeqSet? seqSet = null;
+            if(uid){
+                try{
+                    seqSet = IMAP_t_SeqSet.Parse(cmdText);
+                }
+                catch{
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
-                        return;
-                    }
-                    m_pSelectedFolder.RemoveMessage(msgInfo);
-
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_u_Expunge(i + 1));
+                    return;
                 }
             }
-            m_pSelectedFolder.Reindex();
+            else{
+                if(cmdText.Length > 0) {
+                    await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
+
+                    return;
+                }
+            }            
+
+            var response = new IMAP_r_ServerStatus(cmdTag,"OK","EXPUNGE completed.");
             
-            m_pResponseSender.SendResponseAsync(response);
+            // Raise ExpungeAsync event.
+            if(this.ExpungeAsync != null){
+                await SyncFolderAsync();
+               
+                IMAP_MessageInfo[] messagesToDelete;
+                if(uid){
+                     messagesToDelete = m_pSelectedFolder.Filter(uid,seqSet!).Where(item => item.ContainsFlag("\\Deleted")).ToArray();
+                }
+                else{
+                    messagesToDelete = m_pSelectedFolder.Messages.Where(item => item.ContainsFlag("\\Deleted")).ToArray();
+                }
+
+                IMAP_e_Expunge eArgs = new IMAP_e_Expunge(this,uid,seqSet,m_pSelectedFolder.Folder,messagesToDelete,response);
+                await ExpungeAsync(eArgs);
+
+                response = eArgs.Response;
+
+                // Generate EXPUNGE foreach deleted message and remove these messages from current folder.
+                if(response.IsSuccess){
+                    foreach(var message in messagesToDelete){
+                        int seqNo = m_pSelectedFolder.GetSeqNo(message);
+                        m_pSelectedFolder.RemoveMessage(message);
+
+                        await SendResponseAsync(new IMAP_r_u_Expunge(seqNo),true);                        
+                    }
+                }
+            }
+
+            await SendResponseAsync(response,true);
         }
 
         #endregion
 
-        #region method IdleAsync
+        #region method _IdleAsync
 
-        private async Task IdleAsync(string cmdTag,string cmdText)
+        private async Task _IdleAsync(string cmdTag,string cmdText)
         {
-            /* RFC 2177 3. IDLE Command.
+            /* RFC 9051 6.3.13. IDLE Command
+
+                Originally specified by RFC 2177 and incorporated into
+                IMAP4rev2.
+
                 Arguments:  none
 
-                Responses:  continuation data will be requested; the client sends
-                            the continuation data "DONE" to end the command
+                Responses:  continuation request ("+")
+                            untagged mailbox update responses
 
-                Result:     OK - IDLE completed after client sent "DONE"
-                            NO - failure: the server will not allow the IDLE
-                            command at this time
-                BAD - command unknown or arguments invalid
+                Result:     OK  - IDLE completed after receipt of DONE
+                            NO  - IDLE cannot be started at this time
+                            BAD - command unknown or arguments invalid
 
-                The IDLE command may be used with any IMAP4 server implementation
-                that returns "IDLE" as one of the supported capabilities to the
-                CAPABILITY command.  If the server does not advertise the IDLE
-                capability, the client MUST NOT use the IDLE command and must poll
-                for mailbox updates.  In particular, the client MUST continue to be
-                able to accept unsolicited untagged responses to ANY command, as
-                specified in the base IMAP specification.
+                The IDLE command allows a client to request immediate mailbox
+                update notifications without polling.
 
-                The IDLE command is sent from the client to the server when the
-                client is ready to accept unsolicited mailbox update messages.  The
-                server requests a response to the IDLE command using the continuation
-                ("+") response.  The IDLE command remains active until the client
-                responds to the continuation, and as long as an IDLE command is
-                active, the server is now free to send untagged EXISTS, EXPUNGE, and
-                other messages at any time.
+                After receiving the IDLE command, the server issues a
+                continuation response:
 
-                The IDLE command is terminated by the receipt of a "DONE"
-                continuation from the client; such response satisfies the server's
-                continuation request.  At that point, the server MAY send any
-                remaining queued untagged responses and then MUST immediately send
-                the tagged response to the IDLE command and prepare to process other
-                commands. As in the base specification, the processing of any new
-                command may cause the sending of unsolicited untagged responses,
-                subject to the ambiguity limitations.  The client MUST NOT send a
-                command while the server is waiting for the DONE, since the server
-                will not be able to distinguish a command from a continuation.
+                    + idling
 
-                The server MAY consider a client inactive if it has an IDLE command
-                running, and if such a server has an inactivity timeout it MAY log
-                the client off implicitly at the end of its timeout period.  Because
-                of that, clients using IDLE are advised to terminate the IDLE and
-                re-issue it at least every 29 minutes to avoid being logged off.
-                This still allows a client to receive immediate mailbox updates even
-                though it need only "poll" at half hour intervals.
+                While IDLE is active, the server may send untagged responses
+                such as:
 
-                Example:    C: A001 SELECT INBOX
-                            S: * FLAGS (Deleted Seen)
-                            S: * 3 EXISTS
-                            S: * 0 RECENT
-                            S: * OK [UIDVALIDITY 1]
-                            S: A001 OK SELECT completed
-                            C: A002 IDLE
-                            S: + idling
-                            ...time passes; new mail arrives...
-                            S: * 4 EXISTS
-                            C: DONE
-                            S: A002 OK IDLE terminated
-                            ...another client expunges message 2 now...
-                            C: A003 FETCH 4 ALL
-                            S: * 4 FETCH (...)
-                            S: A003 OK FETCH completed
-                            C: A004 IDLE
-                            S: * 2 EXPUNGE
-                            S: * 3 EXISTS
-                            S: + idling
-                            ...time passes; another client expunges message 3...
-                            S: * 3 EXPUNGE
-                            S: * 2 EXISTS
-                            ...time passes; new mail arrives...
-                            S: * 3 EXISTS
-                            C: DONE
-                            S: A004 OK IDLE terminated
-                            C: A005 FETCH 3 ALL
-                            S: * 3 FETCH (...)
-                            S: A005 OK FETCH completed
+                    EXISTS
+                    EXPUNGE
+                    FETCH
+                    LIST
+                    STATUS
+                    VANISHED (QRESYNC)
+
+                and other mailbox update notifications permitted by the
+                protocol.
+
+                The client terminates IDLE by sending:
+
+                    DONE
+
+                Upon receiving DONE, the server may send any queued untagged
+                responses and must immediately return the tagged completion
+                response for the IDLE command.
+
+                While the server is waiting for DONE, the client must not send
+                any command other than DONE.
+
+                Servers may terminate idle clients according to local inactivity
+                policies. Clients are generally expected to terminate and
+                reissue IDLE periodically to avoid inactivity timeouts.
+
+                Example:
+
+                    C: A001 SELECT INBOX
+                    S: * FLAGS (\Answered \Flagged \Deleted \Seen \Draft)
+                    S: * 3 EXISTS
+                    S: * OK [UIDVALIDITY 1]
+                    S: A001 OK [READ-WRITE] SELECT completed
+
+                    C: A002 IDLE
+                    S: + idling
+
+                    ... new mail arrives ...
+
+                    S: * 4 EXISTS
+
+                    C: DONE
+                    S: A002 OK IDLE completed
+
+                Example:
+
+                    C: A003 IDLE
+                    S: + idling
+
+                    ... another client deletes a message ...
+
+                    S: * 3 EXPUNGE
+                    S: * 3 EXISTS
+
+                    C: DONE
+                    S: A003 OK IDLE completed
             */
 
             if(!this.IsAuthenticated){
-                m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authentication required."));
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","Authenticate first."),true);
+
+                return;
+            }
+            if(m_pSelectedFolder == null){
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"NO","No mailbox selected."),true);
+
+                return;
+            }
+            if(cmdText.Length > 0) {
+                await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
                 return;
             }
 
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus("+","idling"));
+            await SendResponseAsync(new IMAP_r_ServerStatus("+","idling"),true);
 
-            using TimerEx timer = new TimerEx(30000,true);
-            timer.Elapsed += new System.Timers.ElapsedEventHandler(delegate(object? sender,System.Timers.ElapsedEventArgs e){
-                try{
-                    UpdateSelectedFolderAndSendChanges();
-                }
-                catch{
-                }
-            });
-            timer.Enabled = true;
+            using SemaphoreSlim idleSync = new(1,1);
+            using var timer = new System.Threading.Timer(
+                async  _ =>  {
+                    if(!await idleSync.WaitAsync(0)){
+                        return;
+                    }
+
+                    try{
+                        await SyncFolderAsync();
+                    }
+                    catch(Exception x){
+                        LogAddException(x);
+                    }
+                    finally{
+                        idleSync.Release();
+                    }
+                },
+                null,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(30)
+            );
                         
             while(true){
-                var readLineResult = this.TcpStream.ReadLine(new byte[8000],SizeExceededAction.JunkAndThrowException);
+                var readLineResult = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
                 if(readLineResult.BytesInBuffer == 0){
                     LogAddText("The remote host '" + this.RemoteEndPoint?.ToString() + "' closed connection.");
 
@@ -4949,8 +5097,14 @@ namespace LumiSoft.Net.IMAP.Server
 
                 if(string.Equals(line,"DONE",StringComparison.OrdinalIgnoreCase)){
                     timer.Dispose();
+                    await idleSync.WaitAsync();
 
-                    m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","IDLE terminated."));
+                    try{
+                        await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","IDLE terminated."),true);
+                    }
+                    finally{
+                        idleSync.Release();
+                    }
 
                     break;
                 }
@@ -4960,55 +5114,48 @@ namespace LumiSoft.Net.IMAP.Server
         #endregion
 
 
-        #region method CAPABILITY
+        #region method CapabilityAsync
 
-        private void CAPABILITY(string cmdTag,string cmdText)
+        private async Task CapabilityAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.1.1. CAPABILITY Command.
-                Arguments:  none
+            /*
+             RFC 9051 §6.1.1 CAPABILITY Command
 
-                Responses:  REQUIRED untagged response: CAPABILITY
+             Arguments:
+                 none
 
-                Result:     OK - capability completed
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 REQUIRED untagged response: CAPABILITY
 
-                The CAPABILITY command requests a listing of capabilities that the
-                server supports.  The server MUST send a single untagged
-                CAPABILITY response with "IMAP4rev1" as one of the listed
-                capabilities before the (tagged) OK response.
+             Result:
+                 OK  - CAPABILITY completed
+                 BAD - command unknown or arguments invalid
 
-                A capability name which begins with "AUTH=" indicates that the
-                server supports that particular authentication mechanism.  All
-                such names are, by definition, part of this specification.  For
-                example, the authorization capability for an experimental
-                "blurdybloop" authenticator would be "AUTH=XBLURDYBLOOP" and not
-                "XAUTH=BLURDYBLOOP" or "XAUTH=XBLURDYBLOOP".
+             The CAPABILITY command requests a listing of capabilities supported
+             by the server. The server MUST send a single untagged CAPABILITY
+             response before the tagged OK response.
 
-                Other capability names refer to extensions, revisions, or
-                amendments to this specification.  See the documentation of the
-                CAPABILITY response for additional information.  No capabilities,
-                beyond the base IMAP4rev1 set defined in this specification, are
-                enabled without explicit client action to invoke the capability.
+             Example:
 
-                Client and server implementations MUST implement the STARTTLS,
-                LOGINDISABLED, and AUTH=PLAIN (described in [IMAP-TLS])
-                capabilities.  See the Security Considerations section for
-                important information.
+                 C: A001 CAPABILITY
+                 S: * CAPABILITY IMAP4rev2 STARTTLS AUTH=PLAIN IDLE ENABLE
+                 S: A001 OK CAPABILITY completed
 
-                See the section entitled "Client Commands -
-                Experimental/Expansion" for information about the form of site or
-                implementation-specific capabilities.
+             Capability names beginning with "AUTH=" advertise supported SASL
+             authentication mechanisms.
 
-                Example:    C: abcd CAPABILITY
-                            S: * CAPABILITY IMAP4rev1 STARTTLS AUTH=GSSAPI LOGINDISABLED
-                            S: abcd OK CAPABILITY completed
-                            C: efgh STARTTLS
-                            S: efgh OK STARTLS completed
-                            <TLS negotiation, further commands are under [TLS] layer>
-                            C: ijkl CAPABILITY
-                            S: * CAPABILITY IMAP4rev1 AUTH=GSSAPI AUTH=PLAIN
-                            S: ijkl OK CAPABILITY completed
-            */
+             Capabilities may vary depending on session state (for example,
+             before and after successful authentication or TLS negotiation).
+
+             RFC 9051 requires support for the IMAP4rev2 capability. Additional
+             capabilities advertise optional protocol extensions and server
+             features.
+
+             References:
+
+                 RFC 9051 §6.1.1 CAPABILITY Command
+                 RFC 9051 §7.2.1 CAPABILITY Response
+             */
 
             List<string> capabilities = new List<string>();
             if(!this.IsSecureConnection && this.Certificate != null){
@@ -5021,135 +5168,131 @@ namespace LumiSoft.Net.IMAP.Server
                 capabilities.Add("AUTH=" + auth.Name);
             }
 
-            m_pResponseSender.SendResponseAsync(new IMAP_r_u_Capability(capabilities.ToArray()));
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","CAPABILITY completed."));
+            await SendResponseAsync(new IMAP_r_u_Capability(capabilities.ToArray()),true);
+            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","CAPABILITY completed."),true);
         }
 
         #endregion
 
-        #region method NOOP
+        #region method NoopAsync
 
-        private void NOOP(string cmdTag,string cmdText)
+        private async Task NoopAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.1.2. NOOP Command.
-                Arguments:  none
+            /*
+             RFC 9051 §6.1.2 NOOP Command
 
-                Responses:  no specific responses for this command (but see below)
+             Arguments:
+                 none
 
-                Result:     OK - noop completed
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 no specific responses for this command
 
-                The NOOP command always succeeds.  It does nothing.
+             Result:
+                 OK  - NOOP completed
+                 BAD - command unknown or arguments invalid
 
-                Since any command can return a status update as untagged data, the
-                NOOP command can be used as a periodic poll for new messages or
-                message status updates during a period of inactivity (this is the
-                preferred method to do this).  The NOOP command can also be used
-                to reset any inactivity autologout timer on the server.
+             The NOOP command always succeeds and performs no action.
 
-                Example:    C: a002 NOOP
-                            S: a002 OK NOOP completed
-                            . . .
-                            C: a047 NOOP
-                            S: * 22 EXPUNGE
-                            S: * 23 EXISTS
-                            S: * 3 RECENT
-                            S: * 14 FETCH (FLAGS (\Seen \Deleted))
-                            S: a047 OK NOOP completed
+             Because any command can return untagged status updates, NOOP is
+             commonly used to poll for mailbox changes during periods of client
+             inactivity and can also be used to reset server inactivity timers.
+
+             A NOOP command may cause the server to send untagged EXISTS,
+             EXPUNGE, FETCH, STATUS, or other mailbox updates before the tagged
+             OK response.
+
+             Example:
+
+                 C: A002 NOOP
+                 S: A002 OK NOOP completed
+
+                 ...
+
+                 C: A047 NOOP
+                 S: * 22 EXPUNGE
+                 S: * 23 EXISTS
+                 S: * 14 FETCH (FLAGS (\Seen \Deleted))
+                 S: A047 OK NOOP completed
+
+             References:
+
+                 RFC 9051 §6.1.2 NOOP Command
             */
-
-            // Store start time
-			long startTime = DateTime.Now.Ticks;
 
             if(m_pSelectedFolder != null){
-                UpdateSelectedFolderAndSendChanges();
+                await SyncFolderAsync();
             }
 
-            m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","NOOP Completed in " + ((DateTime.Now.Ticks - startTime) / (decimal)10000000).ToString("f2") + " seconds."));
+            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","NOOP Completed."),true);
         }
 
         #endregion
 
-        #region method LOGOUT
+        #region method LogoutAsync
 
-        private void LOGOUT(string cmdTag,string cmdText)
+        private async Task LogoutAsync(string cmdTag,string cmdText)
         {
-            /* RFC 3501 6.1.3. LOGOUT Command.
-                Arguments:  none
+            /*
+             RFC 9051 §6.1.3 LOGOUT Command
 
-                Responses:  REQUIRED untagged response: BYE
+             Arguments:
+                 none
 
-                Result:     OK - logout completed
-                            BAD - command unknown or arguments invalid
+             Responses:
+                 REQUIRED untagged response: BYE
 
-                The LOGOUT command informs the server that the client is done with
-                the connection.  The server MUST send a BYE untagged response
-                before the (tagged) OK response, and then close the network
-                connection.
+             Result:
+                 OK  - LOGOUT completed
+                 BAD - command unknown or arguments invalid
 
-                Example:    C: A023 LOGOUT
-                            S: * BYE IMAP4rev1 Server logging out
-                            S: A023 OK LOGOUT completed
-                            (Server and client then close the connection)
+             The LOGOUT command informs the server that the client wishes
+             to terminate the session.
+
+             The server MUST send an untagged BYE response before the tagged
+             OK response and then close the network connection.
+
+             Example:
+
+                 C: A023 LOGOUT
+                 S: * BYE IMAP4rev2 Server logging out
+                 S: A023 OK LOGOUT completed
+                 (connection closed)
+
+             References:
+
+                 RFC 9051 §6.1.3 LOGOUT Command
             */
 
-            try{
-                m_pResponseSender.SendResponseAsync(new IMAP_r_u_Bye("IMAP4rev1 Server logging out."));
-
-                // Create callback which is called when BYE comletes asynchronously.
-                EventHandler<EventArgs<Exception?>> byeCompletedAsyncCallback = delegate(object? s,EventArgs<Exception?> e){
-                    try{
-                        Disconnect();
-                        Dispose();
-                    }
-                    catch{
-                    }
-                };
-                                
-                // BYE completed synchronously.
-                if(!m_pResponseSender.SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","LOGOUT completed."),byeCompletedAsyncCallback)){
-                    Disconnect();
-                    Dispose();
-                }
-                // BYE completed asynchronously, callback byeCompletedAsyncCallback is called when operation completes.
-                //else{
-            }
-            catch{
-                Disconnect();
-                Dispose();
-            }            
+            await SendResponseAsync(new IMAP_r_u_ServerStatus("BYE","IMAP Server logging out."),true);
+            await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"OK","LOGOUT completed."),true);
+            await DisconnectAsync();
+            Dispose();
         }
 
         #endregion
-                
-        
-        #region method WriteLine
 
-        /// <summary>
-        /// Sends and logs specified line to connected host.
-        /// </summary>
-        /// <param name="line">Line to send.</param>
-        private void WriteLine(string line)
+
+        #region method SendResponseAsync
+
+        internal async Task SendResponseAsync(string response,bool log)
         {
-            if(line == null){
-                throw new ArgumentNullException("line");
+            if(log){
+                LogAddWrite(Encoding.UTF8.GetByteCount(response),response.TrimEnd());
             }
-            ArgumentNullException.ThrowIfNull(this.TcpStream);
+            await this.TcpStream.WriteLineAsync(response);
+        }
 
-            byte[]? buffer = null;
-            if(line.EndsWith("\r\n")){
-                buffer = Encoding.UTF8.GetBytes(line);
-            }
-            else{
-                buffer = Encoding.UTF8.GetBytes(line + "\r\n");
+        internal async Task SendResponseAsync(IMAP_r response,bool log)
+        {
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
             }
 
-            this.TcpStream.Write(buffer,0,buffer.Length);
-            
-            // Log.
-            if(this.Server.Logger != null){
-                this.Server.Logger.AddWrite(this.ID,this.AuthenticatedUserIdentity,buffer.Length,line,this.LocalEndPoint,this.RemoteEndPoint);
+            string cmdLine = response.ToString(m_Utf8Enabled)!;
+            if(log){
+                LogAddWrite(Encoding.UTF8.GetByteCount(cmdLine),cmdLine.TrimEnd());
             }
+            await this.TcpStream.WriteLineAsync(cmdLine);
         }
 
         #endregion
@@ -5271,48 +5414,74 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-        #region method UpdateSelectedFolderAndSendChanges
+        #region method SyncFolderAsync
 
         /// <summary>
-        /// Updates current slected folder status and sends currently selected folder changes versus current folder state.
+        /// Synchronizes the currently selected mailbox and sends any
+        /// detected mailbox changes to the client.
         /// </summary>
-        private void UpdateSelectedFolderAndSendChanges()
+        /// <remarks>
+        /// This method compares the mailbox state supplied through the
+        /// <see cref="FolderSyncAsync"/> event with the session's cached
+        /// mailbox state. Differences are translated into the
+        /// appropriate IMAP mailbox update responses.
+        /// </remarks>
+        private async Task SyncFolderAsync()
         {
             if(m_pSelectedFolder == null){
                 return;
             }
-                        
-            IMAP_e_MessagesInfo e = OnGetMessagesInfo(m_pSelectedFolder.Folder);
-            
-            int currentExists = m_pSelectedFolder.MessagesInfo.Length;
-            // Create ID indexed lookup table for new messages.
-            Dictionary<string,string?> newMessagesLookup = new Dictionary<string,string?>();
-            foreach(IMAP_MessageInfo msgInfo in e.MessagesInfo){
-                newMessagesLookup.Add(msgInfo.ID,null);
-            }
-            
-            StringBuilder retVal = new StringBuilder();
-            // Check deleted messages, send "* n EXPUNGE" for each deleted message.
-            foreach(IMAP_MessageInfo msgInfo in m_pSelectedFolder.MessagesInfo){
-                // Message deleted.
-                if(!newMessagesLookup.ContainsKey(msgInfo.ID)){
-                    retVal.Append("* " + m_pSelectedFolder.GetSeqNo(msgInfo) + " EXPUNGE\r\n");
-                    m_pSelectedFolder.RemoveMessage(msgInfo);
+
+            if(FolderSyncAsync != null){
+                IMAP_e_FolderSync eArgs = new IMAP_e_FolderSync(this,m_pSelectedFolder.Folder,m_pSelectedFolder.Version);
+                await FolderSyncAsync(eArgs);
+
+                if(m_pSelectedFolder.Version != eArgs.Version){
+                    m_pSelectedFolder.Version = eArgs.Version;
+
+                    // Check deleted messages, send "* n EXPUNGE" for each deleted message.                    
+                    var newUids = new HashSet<long>(eArgs.Uids);
+                    foreach(IMAP_MessageInfo msgInfo in m_pSelectedFolder.Messages){
+                        if(!newUids.Contains(msgInfo.UID)){
+                            await SendResponseAsync(new IMAP_r_u_Expunge(m_pSelectedFolder.GetSeqNo(msgInfo)),true);
+                            m_pSelectedFolder.RemoveMessage(msgInfo);
+                        }
+                    }
+
+                    // Check message flags update and new messages.
+                    foreach(IMAP_MessageInfo newMsgInfo in eArgs.Messages){
+                        IMAP_MessageInfo? currentMsgInfo = m_pSelectedFolder.GetMessage(newMsgInfo.UID);
+                        // Existing message,check if message flags changed.
+                        if(currentMsgInfo != null){
+                            if(!currentMsgInfo.FlagsEqual(newMsgInfo.Flags)){
+                                currentMsgInfo.UpdateFlags(IMAP_Flags_SetType.Replace,newMsgInfo.Flags);
+
+                                await SendResponseAsync(
+                                    new IMAP_r_u_Fetch(m_pSelectedFolder.GetSeqNo(currentMsgInfo),
+                                    [new IMAP_t_Fetch_r_i_Flags(currentMsgInfo.Flags)]),
+                                    true);
+                            }
+                        }
+                        // New message.
+                        else{
+                            if(m_pSelectedFolder.MaxUid < newMsgInfo.UID){
+                                m_pSelectedFolder.AddMessage(newMsgInfo);
+                            } 
+                            else{
+                                Exception x = new InvalidOperationException(
+                                    $"Folder synchronization returned a new message with UID '{newMsgInfo.UID}' " +
+                                    $"which is lower than the highest known UID '{m_pSelectedFolder.MaxUid}'."
+                                );
+
+                                LogAddException(x);
+                            }
+                        }
+                    }
+
+                    // Send EXISTS
+                    await SendResponseAsync(new IMAP_r_u_Exists(newUids.Count),true);
                 }
             }
-
-            // Send EXISTS if current count differs from existing.
-            if(currentExists != e.MessagesInfo.Count){
-                retVal.Append("* " + e.MessagesInfo.Count + " EXISTS\r\n");
-            }
-
-            // Send STATUS change responses.
-            if(retVal.Length > 0){
-                WriteLine(retVal.ToString());                
-            }
-
-            // Create new selected folder based on new messages info.
-            m_pSelectedFolder = new _SelectedFolder(m_pSelectedFolder.Folder,m_pSelectedFolder.IsReadOnly,e.MessagesInfo);
         }
 
         #endregion
@@ -5333,69 +5502,6 @@ namespace LumiSoft.Net.IMAP.Server
             }
 
             return false;
-        }
-
-        #endregion
-
-        #region method ParsePartNumberFromSection
-
-        /// <summary>
-        /// Parses MIME part-number specifier from BODY[] section string.
-        /// </summary>
-        /// <param name="section">Section string.</param>
-        /// <returns>Returns part-number.</returns>
-        /// <exception cref="ArgumentNullException">Is raised wehn <b>section</b> is null reference.</exception>
-        private string ParsePartNumberFromSection(string section)
-        {
-            if(section == null){
-                throw new ArgumentNullException("section");
-            }
-
-            StringBuilder retVal = new StringBuilder();
-            string[] parts = section.Split('.');
-            foreach(string part in parts){
-                if(Net_Utils.IsInteger(part)){
-                    if(retVal.Length > 0){
-                        retVal.Append(".");
-                    }
-                    retVal.Append(part);
-                }
-                else{
-                    break;
-                }
-            }
-
-            return retVal.ToString();
-        }
-
-        #endregion
-
-        #region method ParsePartSpecifierFromSection
-
-        /// <summary>
-        /// Parses MIME part specifier from BODY[] section string.
-        /// </summary>
-        /// <param name="section">Section string.</param>
-        /// <returns>Returns specifier.</returns>
-        /// <exception cref="ArgumentNullException">Is raised wehn <b>section</b> is null reference.</exception>
-        private string ParsePartSpecifierFromSection(string section)
-        {
-            if(section == null){
-                throw new ArgumentNullException("section");
-            }
-
-            StringBuilder retVal = new StringBuilder();
-            string[] parts = section.Split(' ')[0].Split('.');
-            foreach(string part in parts){
-                if(!Net_Utils.IsInteger(part)){
-                    if(retVal.Length > 0){
-                        retVal.Append(".");
-                    }
-                    retVal.Append(part);
-                }
-            }
-
-            return retVal.ToString();
         }
 
         #endregion
@@ -5470,374 +5576,203 @@ namespace LumiSoft.Net.IMAP.Server
 
 		#endregion
 
-        #region mehtod ConstructBodyStructure
+        #region method SearchIsMatch
 
-		/// <summary>
-		/// Constructs FETCH BODY and BODYSTRUCTURE response.
-		/// </summary>
-		/// <param name="message">Mail message.</param>
-		/// <param name="bodystructure">Specifies if to construct BODY or BODYSTRUCTURE.</param>
-		/// <returns></returns>
-		public string ConstructBodyStructure(Mail_Message message,bool bodystructure)
-		{			
-			if(bodystructure){
-				return "BODYSTRUCTURE " + ConstructParts(message,bodystructure);
-			}
-			else{
-				return "BODY " + ConstructParts(message,bodystructure);
-			}
-		}
+        /// <summary>
+        /// Determines whether the specified message matches the specified
+        /// SEARCH key.
+        /// </summary>
+        private bool SearchIsMatch(IMAP_MessageInfo message,IMAP_t_Search_Key key)
+        {
+            switch(key)
+            {
+                case IMAP_t_Search_Key_All:
+                    return true;
 
-		/// <summary>
-		/// Constructs specified entity and it's childentities bodystructure string.
-		/// </summary>
-		/// <param name="entity">Mime entity.</param>
-		/// <param name="bodystructure">Specifies if to construct BODY or BODYSTRUCTURE.</param>
-		/// <returns></returns>
-		private string ConstructParts(MIME_Entity entity,bool bodystructure)
-		{
-            ArgumentNullException.ThrowIfNull(entity);
+                case IMAP_t_Search_Key_Answered:
+                    return message.ContainsFlag("\\Answered");
 
-            /* RFC 3501 7.4.2 BODYSTRUCTURE
-							  BODY A form of BODYSTRUCTURE without extension data.
-			  
-				A parenthesized list that describes the [MIME-IMB] body
-				structure of a message.  This is computed by the server by
-				parsing the [MIME-IMB] header fields, defaulting various fields
-				as necessary.
+                case IMAP_t_Search_Key_Unanswered:
+                    return !message.ContainsFlag("\\Answered");
 
-				For example, a simple text message of 48 lines and 2279 octets
-				can have a body structure of: ("TEXT" "PLAIN" ("CHARSET"
-				"US-ASCII") NIL NIL "7BIT" 2279 48)
+                case IMAP_t_Search_Key_Deleted:
+                    return message.ContainsFlag("\\Deleted");
 
-				Multiple parts are indicated by parenthesis nesting.  Instead
-				of a body type as the first element of the parenthesized list,
-				there is a sequence of one or more nested body structures.  The
-				second element of the parenthesized list is the multipart
-				subtype (mixed, digest, parallel, alternative, etc.).
-					
-				For example, a two part message consisting of a text and a
-				BASE64-encoded text attachment can have a body structure of:
-				(("TEXT" "PLAIN" ("CHARSET" "US-ASCII") NIL NIL "7BIT" 1152
-				23)("TEXT" "PLAIN" ("CHARSET" "US-ASCII" "NAME" "cc.diff")
-				"<960723163407.20117h@cac.washington.edu>" "Compiler diff"
-				"BASE64" 4554 73) "MIXED")
+                case IMAP_t_Search_Key_Undeleted:
+                    return !message.ContainsFlag("\\Deleted");
 
-				Extension data follows the multipart subtype.  Extension data
-				is never returned with the BODY fetch, but can be returned with
-				a BODYSTRUCTURE fetch.  Extension data, if present, MUST be in
-				the defined order.  The extension data of a multipart body part
-				are in the following order:
+                case IMAP_t_Search_Key_Draft:
+                    return message.ContainsFlag("\\Draft");
 
-				body parameter parenthesized list
-					A parenthesized list of attribute/value pairs [e.g., ("foo"
-					"bar" "baz" "rag") where "bar" is the value of "foo", and
-					"rag" is the value of "baz"] as defined in [MIME-IMB].
+                case IMAP_t_Search_Key_Undraft:
+                    return !message.ContainsFlag("\\Draft");
 
-				body disposition
-					A parenthesized list, consisting of a disposition type
-					string, followed by a parenthesized list of disposition
-					attribute/value pairs as defined in [DISPOSITION].
+                case IMAP_t_Search_Key_Flagged:
+                    return message.ContainsFlag("\\Flagged");
 
-				body language
-					A string or parenthesized list giving the body language
-					value as defined in [LANGUAGE-TAGS].
+                case IMAP_t_Search_Key_Unflagged:
+                    return !message.ContainsFlag("\\Flagged");
 
-				body location
-					A string list giving the body content URI as defined in [LOCATION].
+                case IMAP_t_Search_Key_Seen:
+                    return message.ContainsFlag("\\Seen");
 
-				Any following extension data are not yet defined in this
-				version of the protocol.  Such extension data can consist of
-				zero or more NILs, strings, numbers, or potentially nested
-				parenthesized lists of such data.  Client implementations that
-				do a BODYSTRUCTURE fetch MUST be prepared to accept such
-				extension data.  Server implementations MUST NOT send such
-				extension data until it has been defined by a revision of this
-				protocol.
+                case IMAP_t_Search_Key_Unseen:
+                    return !message.ContainsFlag("\\Seen");
 
-				The basic fields of a non-multipart body part are in the
-				following order:
+                case IMAP_t_Search_Key_Keyword x:
+                    return message.ContainsFlag(x.Value);
 
-				body type
-					A string giving the content media type name as defined in [MIME-IMB].
-				
-				body subtype
-					 A string giving the content subtype name as defined in [MIME-IMB].
+                case IMAP_t_Search_Key_Unkeyword x:
+                    return !message.ContainsFlag(x.Value);
 
-				body parameter parenthesized list
-					A parenthesized list of attribute/value pairs [e.g., ("foo"
-					"bar" "baz" "rag") where "bar" is the value of "foo" and
-					"rag" is the value of "baz"] as defined in [MIME-IMB].
+                case IMAP_t_Search_Key_Larger x:
+                    return message.Size > x.Value;
 
-				body id
-					A string giving the content id as defined in [MIME-IMB].
+                case IMAP_t_Search_Key_Smaller x:
+                    return message.Size < x.Value;
 
-				body description
-					A string giving the content description as defined in [MIME-IMB].
+                case IMAP_t_Search_Key_Before x:
+                    return DateOnly.FromDateTime(message.InternalDate) < x.Date;
 
-				body encoding
-					A string giving the content transfer encoding as defined in	[MIME-IMB].
+                case IMAP_t_Search_Key_On x:
+                    return DateOnly.FromDateTime(message.InternalDate) == x.Date;
 
-				body size
-					A number giving the size of the body in octets.  Note that
-					this size is the size in its transfer encoding and not the
-					resulting size after any decoding.
+                case IMAP_t_Search_Key_Since x:
+                    return DateOnly.FromDateTime(message.InternalDate) >= x.Date;
 
-				A body type of type MESSAGE and subtype RFC822 contains,
-				immediately after the basic fields, the envelope structure,
-				body structure, and size in text lines of the encapsulated
-				message.
+                case IMAP_t_Search_Key_SeqSet x:
+                    return x.Value.Contains(m_pSelectedFolder?.GetSeqNo(message) ?? 0);
 
-				A body type of type TEXT contains, immediately after the basic
-				fields, the size of the body in text lines.  Note that this
-				size is the size in its content transfer encoding and not the
-				resulting size after any decoding.
+                case IMAP_t_Search_Key_Uid x:
+                    return x.Value.Contains(message.UID);
 
-				Extension data follows the basic fields and the type-specific
-				fields listed above.  Extension data is never returned with the
-				BODY fetch, but can be returned with a BODYSTRUCTURE fetch.
-				Extension data, if present, MUST be in the defined order.
+                case IMAP_t_Search_Key_Recent:
+                    return false;
 
-				The extension data of a non-multipart body part are in the
-				following order:
+                case IMAP_t_Search_Key_New:
+                    return false;
 
-				body MD5
-					A string giving the body MD5 value as defined in [MD5].
-					
-				body disposition
-					A parenthesized list with the same content and function as
-					the body disposition for a multipart body part.
+                case IMAP_t_Search_Key_Old:
+                    return true;
 
-				body language
-					A string or parenthesized list giving the body language
-					value as defined in [LANGUAGE-TAGS].
+                case IMAP_t_Search_Key_Not x:
+                    return !SearchIsMatch(message,x.SearchKey);
 
-				body location
-					A string list giving the body content URI as defined in [LOCATION].
+                case IMAP_t_Search_Key_Or x:
+                    return
+                        SearchIsMatch(message,x.SearchKey1) ||
+                        SearchIsMatch(message,x.SearchKey2);
 
-				Any following extension data are not yet defined in this
-				version of the protocol, and would be as described above under
-				multipart extension data.
-			
-			
-				// We don't construct extention fields like rfc says:
-					Server implementations MUST NOT send such
-					extension data until it has been defined by a revision of this
-					protocol.
-			
-										
-				contentTypeMainMediaType - Example: 'TEXT'
-				contentTypeSubMediaType  - Example: 'PLAIN'
-				conentTypeParameters     - Example: '("CHARSET" "iso-8859-1" ...)'
-				contentID                - Content-ID: header field value.
-				contentDescription       - Content-Description: header field value.
-				contentEncoding          - Content-Transfer-Encoding: header field value.
-				contentSize              - mimeEntity ENCODED data size
-				[envelope]               - NOTE: included only if contentType = "message" !!!
-				[contentLines]           - number of ENCODED data lines. NOTE: included only if contentType = "text" !!!
-									   			
-				// Basic fields for multipart
-				(nestedMimeEntries) contentTypeSubMediaType
-												
-				// Basic fields for non-multipart
-				contentTypeMainMediaType contentTypeSubMediaType (conentTypeParameters) contentID contentDescription contentEncoding contentSize [envelope] [contentLine]
+                case IMAP_t_Search_Key_Group x:
+                    foreach(IMAP_t_Search_Key k in x.Keys){
+                        if(!SearchIsMatch(message,k)){
+                            return false;
+                        }
+                    }
 
-			*/
+                    return true;
 
-            MIME_Encoding_EncodedWord wordEncoder = new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8);
-            wordEncoder.Split = false;
+                default:
+                    throw new NotSupportedException(
+                        $"Search key '{key.GetType().Name}' is not supported by local cache search."
+                    );
+            }
+        }
 
-			StringBuilder retVal = new StringBuilder();
-			// Multipart message
-			if(entity.Body is MIME_b_Multipart){
-				retVal.Append("(");
+        #endregion
 
-				// Construct child entities.
-				foreach(MIME_Entity childEntity in ((MIME_b_Multipart)entity.Body).BodyParts){
-					// Construct child entity. This can be multipart or non multipart.
-					retVal.Append(ConstructParts(childEntity,bodystructure));
-				}
-			
-				// Add contentTypeSubMediaType
-                if(entity.ContentType != null && entity.ContentType.SubType != null){
-                    retVal.Append(" \"" + entity.ContentType.SubType + "\"");
+        #region method FindHeaderEndAsync
+
+        /// <summary>
+        /// Asynchronously scans an email stream to determine the header length using a zero-allocation 
+        /// overlap buffer pattern, positions the stream precisely at the start of the body, and computes 
+        /// any missing RFC 5322 terminator bytes if the headers are truncated.
+        /// </summary>
+        /// <param name="messageStream">The source stream containing the email, positioned at the start of the headers.</param>
+        /// <param name="buffer">
+        /// A reusable byte array buffer used for chunked reading and cross-chunk overlap search. 
+        /// Must be at least 4 bytes in length (3 bytes for overlap tracking + at least 1 byte per read).
+        /// </param>
+        /// <returns>
+        /// A tuple containing:
+        /// <list type="bullet">
+        /// <item><description><see langword="HeaderLength"/>: The length of the header block, including its terminator (or full stream length if truncated).</description></item>
+        /// <item><description><see langword="MissingTerminatorBytes"/>: Any padding bytes (<c>\r\n</c> or <c>\r\n\r\n</c>) required to ensure the output stream adheres strictly to RFC 5322.</description></item>
+        /// </list>
+        /// </returns>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="buffer"/> is null or less than 4 bytes long.</exception>
+        private async Task<(long HeaderLength, byte[] MissingTerminatorBytes)> FindHeaderEndAsync(Stream messageStream,byte[] buffer)
+        {
+            if(buffer == null || buffer.Length < 4){
+                throw new ArgumentException("Buffer must be at least 4 bytes (3 bytes overlap + at least 1 read byte).", nameof(buffer));
+            }
+
+            int chunkSize = buffer.Length - 3;
+            long originalPosition = messageStream.Position;
+            long headerLength = -1;
+            byte[] missingTerminatorBytes = Array.Empty<byte>();
+
+            int bytesRead;
+            long currentScanOffset = originalPosition;
+
+            // Strict RFC 5322 header terminator
+            byte[] crlfcrlf = [(byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n'];
+
+            byte lastByte1 = 0, lastByte2 = 0;
+
+            while((bytesRead = await messageStream.ReadAsync(buffer.AsMemory(3, chunkSize)).ConfigureAwait(false)) > 0){
+                int totalValidLength = 3 + bytesRead;
+                ReadOnlySpan<byte> searchSpan = buffer.AsSpan(0, totalValidLength);
+
+                // Vectorized check for standard \r\n\r\n
+                int index = searchSpan.IndexOf(crlfcrlf);
+                if(index != -1){
+                    headerLength = ((currentScanOffset - 3) + index + crlfcrlf.Length) - originalPosition;
+
+                    break;
+                }
+
+                // Save final bytes for fallback tracking
+                if (searchSpan.Length >= 2){
+                    lastByte1 = searchSpan[searchSpan.Length - 2];
+                    lastByte2 = searchSpan[searchSpan.Length - 1];
+                }
+
+                currentScanOffset += bytesRead;
+                searchSpan.Slice(searchSpan.Length - 3, 3).CopyTo(buffer.AsSpan(0, 3));
+            }
+
+            // Fallback if no valid \r\n\r\n terminator was found all the way to EOF
+            if(headerLength == -1){
+                headerLength = messageStream.Length - originalPosition;
+                messageStream.Position = originalPosition + headerLength;
+
+                // Check if it ends with a partial CRLF or nothing, and patch to valid \r\n\r\n
+                if(lastByte1 == '\r' && lastByte2 == '\n'){
+                    missingTerminatorBytes = [(byte)'\r', (byte)'\n'];
                 }
                 else{
-                    retVal.Append(" \"plain\"");
+                    missingTerminatorBytes = [(byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n'];
                 }
+            }
+            else{
+                messageStream.Position = originalPosition + headerLength;
+            }
 
-				retVal.Append(")");
-			}
-			// Single part message
-			else{
-				retVal.Append("(");
+            return (headerLength, missingTerminatorBytes);
+        }
 
-				// NOTE: all header fields and parameters must in ENCODED form !!!
-
-				// Add contentTypeMainMediaType
-				if(entity.ContentType != null && entity.ContentType.Type != null){
-					retVal.Append("\"" + entity.ContentType.Type + "\"");
-				}
-				else{
-					retVal.Append("\"text\"");
-				}
-
-                // Add contentTypeSubMediaType
-                if(entity.ContentType != null && entity.ContentType.SubType != null){
-                    retVal.Append(" \"" + entity.ContentType.SubType + "\"");
-                }
-                else{
-                    retVal.Append(" \"plain\"");
-                }
-
-				// conentTypeParameters - Syntax: {("name" SP "value" *(SP "name" SP "value"))}
-				if(entity.ContentType != null){
-                    if(entity.ContentType.Parameters.Count > 0){
-                        retVal.Append(" (");
-                        bool first = true;
-                        foreach(MIME_h_Parameter parameter in entity.ContentType.Parameters){
-                            // For the first item, don't add SP.
-                            if(first){
-                                first = false;
-                            }
-                            else{
-                                retVal.Append(" ");
-                            }
-
-                            retVal.Append("\"" + parameter.Name + "\" \"" + wordEncoder.Encode(parameter.Value ?? "") + "\"");
-                        }
-                        retVal.Append(")");
-                    }
-                    else{
-                        retVal.Append(" NIL");
-                    }
-				}
-				else{
-					retVal.Append(" NIL");
-				}
-
-				// contentID
-				string? contentID = entity.ContentID;
-				if(contentID != null){
-					retVal.Append(" \"" + wordEncoder.Encode(contentID) + "\""); 
-				}
-				else{
-					retVal.Append(" NIL");
-				}
-
-				// contentDescription
-				string? contentDescription = entity.ContentDescription;
-				if(contentDescription != null){
-					retVal.Append(" \"" + wordEncoder.Encode(contentDescription) + "\""); 
-				}
-				else{
-					retVal.Append(" NIL");
-				}
-
-				// contentEncoding
-				if(entity.ContentTransferEncoding != null){
-					retVal.Append(" \"" + wordEncoder.Encode(entity.ContentTransferEncoding) + "\""); 
-				}
-				else{
-					// If not specified, then must be 7bit.
-					retVal.Append(" \"7bit\"");
-				}
-
-				// contentSize
-				if(entity.Body is MIME_b_SinglepartBase){                    
-					retVal.Append(" " + ((MIME_b_SinglepartBase)entity.Body).EncodedData.Length.ToString());
-				}
-				else{
-					retVal.Append(" 0");
-				}
-
-				// envelope ---> FOR ContentType: message/rfc822 ONLY ###
-				if(entity.Body is MIME_b_MessageRfc822){                    
-					retVal.Append(" " + IMAP_t_Fetch_r_i_Envelope.ConstructEnvelope(((MIME_b_MessageRfc822)entity.Body).Message));
-
-                    // BODYSTRUCTURE
-                    retVal.Append(" NIL");
-
-                    // LINES
-                    retVal.Append(" NIL");
-				}
-
-				// contentLines ---> FOR ContentType: text/xxx ONLY ###
-				if(entity.Body is MIME_b_Text){                    
-				    long lineCount = 0;
-					StreamLineReader r = new StreamLineReader(new MemoryStream(((MIME_b_SinglepartBase)entity.Body).EncodedData));
-					byte[]? line = r.ReadLine();
-					while(line != null){
-						lineCount++;
-
-						line = r.ReadLine();
-					}
-						
-					retVal.Append(" " + lineCount.ToString());
-                }
-
-
-                #region BODYSTRUCTURE extention fields
-
-                if(bodystructure){
-                    // body MD5
-                    retVal.Append(" NIL");
-
-                    // body disposition  Syntax: {(disposition-type [ SP ("name" SP "value" *(SP "name" SP "value"))])}
-				    if(entity.ContentDisposition != null && entity.ContentDisposition.Parameters.Count > 0){
-                        retVal.Append(" (\"" + entity.ContentDisposition.DispositionType + "\"");
-
-                        if(entity.ContentDisposition.Parameters.Count > 0){
-                            retVal.Append(" (");
-
-                            bool first = true;
-                            foreach(MIME_h_Parameter parameter in entity.ContentDisposition.Parameters){
-                                // For the first item, don't add SP.
-                                if(first){
-                                    first = false;
-                                }
-                                else{
-                                    retVal.Append(" ");
-                                }
-
-                                retVal.Append("\"" + parameter.Name + "\" \"" + wordEncoder.Encode(parameter.Value ?? "") + "\"");
-                            }
-                            retVal.Append(")");
-                        }
-                        else{
-                            retVal.Append(" NIL");
-                        }
-
-                        retVal.Append(")");
-				    }
-				    else{
-					    retVal.Append(" NIL");
-				    }
-
-                    // body language
-                    retVal.Append(" NIL");
-
-                    // body location
-                    retVal.Append(" NIL");
-                }
-
-                #endregion
-
-                retVal.Append(")");
-			}
-
-			return retVal.ToString();
-		}
-
-		#endregion
+        #endregion
 
 
         #region Properties implementation
 
         /// <summary>
-        /// Gets session owner IMAP server.
+        /// Gets the IMAP server that owns this session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this session has been disposed.
+        /// </exception>
         public new IMAP_Server Server
         {
             get{
@@ -5850,9 +5785,16 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets supported SASL authentication methods collection.
+        /// Gets the SASL authentication mechanisms available to this
+        /// session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// The key is the SASL mechanism name and the value is the
+        /// corresponding server-side SASL mechanism implementation.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this session has been disposed.
+        /// </exception>
         public Dictionary<string,AUTH_SASL_ServerMechanism> Authentications
         {
             get{
@@ -5865,9 +5807,12 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets number of bad commands happened on IMAP session.
+        /// Gets the number of invalid or unrecognized commands
+        /// received during this session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this session has been disposed.
+        /// </exception>
         public int BadCommands
         {
             get{ 
@@ -5880,9 +5825,15 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets authenticated user identity or null if user has not authenticated.
+        /// Gets the identity of the authenticated user.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns <see langword="null"/> if the session has not yet
+        /// successfully authenticated.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this session has been disposed.
+        /// </exception>
         public override GenericIdentity? AuthenticatedUserIdentity
         {
 	        get{
@@ -5895,9 +5846,11 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets session supported CAPABILITIES.
+        /// Gets the IMAP capabilities advertised by this session.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Thrown when this session has been disposed.
+        /// </exception>
         public List<string> Capabilities
         {
             get{ 
@@ -5910,8 +5863,12 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets selected folder name with optional path. Value null means no selected folder.
+        /// Gets the name of the currently selected mailbox.
         /// </summary>
+        /// <remarks>
+        /// Returns <see langword="null"/> if no mailbox is currently
+        /// selected.
+        /// </remarks>
         public string? SelectedFolderName
         {
             get{ 
@@ -5924,653 +5881,549 @@ namespace LumiSoft.Net.IMAP.Server
             }
         }
 
-
-        /// <summary>
-        /// Gets mailbox encoding.
-        /// </summary>
-        internal IMAP_Mailbox_Encoding MailboxEncoding
-        {
-            get{ return m_MailboxEncoding; }
-        }
-
         #endregion
 
         #region Events implementation
 
         /// <summary>
-        /// Is raised when session has started processing and needs to send "* OK ..." greeting or "* NO ..." error resposne to the connected client.
+        /// Raised when a new IMAP session is created, before the server sends its initial
+        /// greeting banner. Event handlers may customize the greeting or reject the
+        /// connection by modifying the provided <see cref="IMAP_r_u_ServerStatus"/>.
         /// </summary>
-        public event EventHandler<IMAP_e_Started>? Started = null;
-
-        #region method OnStarted
+        public event Func<IMAP_e_Started,Task>? StartedAsync = null;
 
         /// <summary>
-        /// Raises <b>Started</b> event.
+        /// Is raised when an IMAP session processes a LOGIN command and requires
+        /// validation of the credentials supplied by the client. Event handlers
+        /// must examine the provided <see cref="IMAP_e_AuthLogin"/> instance and
+        /// set an appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether authentication succeeded or failed.
         /// </summary>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Started OnStarted(IMAP_r_u_ServerStatus response)
-        {
-            IMAP_e_Started eArgs = new IMAP_e_Started(response);            
-            if(this.Started != null){                
-                this.Started(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_AuthLogin,Task>? AuthLoginAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle LOGIN command.
+        /// Is raised when an IMAP session processes a NAMESPACE command and
+        /// requires namespace information. Event handlers may replace the
+        /// default <see cref="IMAP_r_u_Namespace"/> response and must set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the request was processed successfully or why it failed.
         /// </summary>
-        public event EventHandler<IMAP_e_Login>? Login = null;
-
-        #region method OnLogin
+        /// <remarks>
+        /// A default RFC-compliant namespace response is provided and represents
+        /// a single personal namespace with an empty prefix and '/' hierarchy
+        /// delimiter, and no other-users or shared namespaces.
+        /// </remarks>
+        public event Func<IMAP_e_Namespace,Task>? NamespaceAsync = null;
 
         /// <summary>
-        /// Raises <b>Login</b> event.
+        /// Is raised when an IMAP session processes a LIST command and requires
+        /// the application to provide the folders that match the requested
+        /// reference name and mailbox filter.
         /// </summary>
-        /// <param name="user">User name.</param>
-        /// <param name="password">Password.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Login OnLogin(string user,string password)
-        {
-            IMAP_e_Login eArgs = new IMAP_e_Login(user,password);            
-            if(this.Login != null){                
-                this.Login(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
+        public event Func<IMAP_e_List,Task>? ListAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle NAMESPACE command.
+        /// Is raised when an IMAP session processes a CREATE command. Event
+        /// handlers must examine the provided <see cref="IMAP_e_Create"/>
+        /// instance, create the requested mailbox if permitted, and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response describing
+        /// the result of the operation.
         /// </summary>
-        public event EventHandler<IMAP_e_Namespace>? Namespace = null;
-
-        #region method OnNamespace
+        public event Func<IMAP_e_Create,Task>? CreateAsync = null;
 
         /// <summary>
-        /// Raises <b>Namespace</b> event.
+        /// Is raised when an IMAP session processes a DELETE command and requires
+        /// deletion of the mailbox specified by the client. Event handlers must
+        /// examine the provided <see cref="IMAP_e_Delete"/> instance and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the mailbox was deleted successfully or why the request failed.
         /// </summary>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Namespace OnNamespace(IMAP_r_ServerStatus response)
-        {
-            IMAP_e_Namespace eArgs = new IMAP_e_Namespace(response);            
-            if(this.Namespace != null){                
-                this.Namespace(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_Delete,Task>? DeleteAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle LIST command.
+        /// Is raised when an IMAP session processes a RENAME command and requires
+        /// renaming a mailbox. Event handlers must examine the provided
+        /// <see cref="IMAP_e_Rename"/> instance and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// mailbox was renamed successfully or why the request failed.
         /// </summary>
-        public event EventHandler<IMAP_e_List>? List = null;
-
-        #region method OnList
+        public event Func<IMAP_e_Rename,Task>? RenameAsync = null;
 
         /// <summary>
-        /// Raises <b>List</b> event.
+        /// Is raised when an IMAP session processes an LSUB command and requires
+        /// retrieval of subscribed mailboxes matching the reference name and
+        /// mailbox pattern supplied by the client. Event handlers must examine
+        /// the provided <see cref="IMAP_e_LSub"/> instance and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response describing the result of
+        /// the operation.
         /// </summary>
-        /// <param name="refName">Folder reference name.</param>
-        /// <param name="folder">Folder filter.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_List OnList(string refName,string folder)
-        {
-            IMAP_e_List eArgs = new IMAP_e_List(refName,folder);
-            if(this.List != null){
-                this.List(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_LSub,Task>? LSubAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle CREATE command.
+        /// Is raised when an IMAP session processes a SUBSCRIBE command and
+        /// requires creation of a mailbox subscription. Event handlers must
+        /// examine the provided <see cref="IMAP_e_Subscribe"/> instance and set
+        /// an appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the subscription was created successfully or why the request
+        /// failed.
         /// </summary>
-        public event EventHandler<IMAP_e_Folder>? Create = null;
-
-        #region method OnCreate
+        public event Func<IMAP_e_Subscribe,Task>? SubscribeAsync = null;
 
         /// <summary>
-        /// Raises <b>Create</b> event.
+        /// Is raised when an IMAP session processes an UNSUBSCRIBE command and
+        /// requires removal of a mailbox subscription. Event handlers must
+        /// examine the provided <see cref="IMAP_e_Unsubscribe"/> instance and set
+        /// an appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the request was processed successfully or why it failed.
+        ///
+        /// In accordance with RFC 9051, a successful response should also be
+        /// returned when the specified mailbox is not currently subscribed.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Folder OnCreate(string cmdTag,string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_Folder eArgs = new IMAP_e_Folder(cmdTag,folder,response);
-            if(this.Create != null){
-                this.Create(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_Unsubscribe,Task>? UnsubscribeAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle DELETE command.
+        /// Is raised when an IMAP session processes a STATUS command and
+        /// requires mailbox status information. Event handlers must examine
+        /// the provided <see cref="IMAP_e_Status"/> instance, populate the
+        /// available status data items, and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// request was processed successfully or why it failed.
         /// </summary>
-        public event EventHandler<IMAP_e_Folder>? Delete = null;
-
-        #region method OnDelete
+        /// <remarks>
+        /// IMAP servers include only the STATUS data items explicitly requested
+        /// by the client. The server is responsible for selecting which populated
+        /// values are returned in the STATUS response.
+        /// </remarks>
+        public event Func<IMAP_e_Status,Task>? StatusAsync = null;
+         
+        /// <summary>
+        /// Is raised when an IMAP session processes a SELECT command and
+        /// requires mailbox information. Event handlers must examine the
+        /// provided <see cref="IMAP_e_Select"/> instance, populate
+        /// <see cref="IMAP_e_Select.MessagesInfo"/>, and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// mailbox was selected successfully or why the request failed.
+        /// </summary>
+        /// <remarks>
+        /// Event handlers should populate
+        /// <see cref="IMAP_e_Select.MessagesInfo"/> with metadata for all
+        /// messages currently contained in the mailbox. The server caches this
+        /// information and uses it to service subsequent mailbox operations
+        /// such as FETCH, STORE, SEARCH, COPY, EXPUNGE, and sequence number to
+        /// UID mapping.
+        /// </remarks>
+        public event Func<IMAP_e_Select,Task>? SelectAsync = null;
 
         /// <summary>
-        /// Raises <b>Delete</b> event.
+        /// Is raised when an IMAP session processes an EXAMINE command and
+        /// requires mailbox information. Event handlers must examine the
+        /// provided <see cref="IMAP_e_Examine"/> instance, populate
+        /// <see cref="IMAP_e_Examine.MessagesInfo"/>, and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// mailbox was opened successfully in read-only mode or why the
+        /// request failed.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Folder OnDelete(string cmdTag,string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_Folder eArgs = new IMAP_e_Folder(cmdTag,folder,response);
-            if(this.Delete != null){
-                this.Delete(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// Event handlers should populate
+        /// <see cref="IMAP_e_Examine.MessagesInfo"/> with metadata for all
+        /// messages currently contained in the mailbox. The server caches this
+        /// information and uses it to service subsequent mailbox operations
+        /// such as FETCH, SEARCH, and sequence number to UID mapping.
+        /// <para>
+        /// A successful response should normally contain a
+        /// <see cref="IMAP_t_orc_ReadOnly"/> response code.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Examine,Task>? ExamineAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle RENAME command.
+        /// Is raised when the IMAP session synchronizes the state of the
+        /// selected mailbox.
         /// </summary>
-        public event EventHandler<IMAP_e_Rename>? Rename = null;
-
-        #region method OnRename
+        /// <remarks>
+        /// This event allows an application to determine whether the
+        /// mailbox has changed since the previous synchronization and, if
+        /// necessary, supply the current mailbox state.
+        /// <para>
+        /// The mailbox version known to the IMAP session is available
+        /// through the <see cref="IMAP_e_FolderSync.KnownVersion"/>
+        /// property.
+        /// </para>
+        /// <para>
+        /// If the current mailbox version differs from
+        /// <see cref="IMAP_e_FolderSync.KnownVersion"/>, the event handler
+        /// should set <see cref="IMAP_e_FolderSync.Version"/> to the
+        /// current mailbox version and provide the complete mailbox UID
+        /// set through <see cref="IMAP_e_FolderSync.Uids"/>.
+        /// </para>
+        /// <para>
+        /// Message information supplied through
+        /// <see cref="IMAP_e_FolderSync.Messages"/> may contain either the
+        /// complete mailbox snapshot or only messages that have been added
+        /// or modified since the previous synchronization.
+        /// </para>
+        /// <para>
+        /// The IMAP session uses the supplied information to detect
+        /// message additions, removals, and flag changes and generates
+        /// the appropriate mailbox update responses.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_FolderSync,Task>? FolderSyncAsync = null;
 
         /// <summary>
-        /// Raises <b>Rename</b> event.
+        /// Is raised when an IMAP session processes an APPEND command and
+        /// before the message literal is read from the client. Event handlers
+        /// may validate the operation, reject the APPEND request by setting
+        /// <see cref="IMAP_e_AppendBegin.RejectResponse"/>, or provide a
+        /// writable destination stream through
+        /// <see cref="IMAP_e_AppendBegin.Stream"/> into which the incoming
+        /// message will be stored.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="currentFolder">Current folder name with optional path.</param>
-        /// <param name="newFolder">New folder name with optional path.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Rename OnRename(string cmdTag,string currentFolder,string newFolder)
-        {
-            IMAP_e_Rename eArgs = new IMAP_e_Rename(cmdTag,currentFolder,newFolder);
-            if(this.Rename != null){
-                this.Rename(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// This event is intended for mailbox validation, permission checks,
+        /// quota checks, and allocation of message storage before any message
+        /// data is received from the client.
+        /// </remarks>
+        public event Func<IMAP_e_AppendBegin,Task>? AppendBeginAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle LSUB command.
+        /// Is raised when an APPEND operation is cancelled and the message
+        /// cannot be stored successfully.
         /// </summary>
-        public event EventHandler<IMAP_e_LSub>? LSub = null;
-
-        #region method OnLSub
+        /// <remarks>
+        /// Typical causes include:
+        /// <list type="bullet">
+        /// <item><description>Client connection closed during literal transfer.</description></item>
+        /// <item><description>Session timeout.</description></item>
+        /// <item><description>I/O or storage failure.</description></item>
+        /// <item><description>Unexpected processing error.</description></item>
+        /// </list>
+        /// This event allows applications to perform cleanup of temporary
+        /// files, streams, or other resources associated with the failed
+        /// APPEND operation.
+        /// </remarks>
+        public event Func<IMAP_e_AppendCancel,Task>? AppendCancelAsync = null;
 
         /// <summary>
-        /// Raises <b>LSub</b> event.
+        /// Is raised when an APPEND message literal has been successfully
+        /// received from the client and written to the destination stream.
+        /// Event handlers may finalize message storage, update mailbox
+        /// metadata, and set the final <see cref="IMAP_r_ServerStatus"/>
+        /// response that will be returned to the client.
         /// </summary>
-        /// <param name="refName">Folder reference name.</param>
-        /// <param name="folder">Folder filter.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_LSub OnLSub(string refName,string folder)
-        {
-            IMAP_e_LSub eArgs = new IMAP_e_LSub(refName,folder);
-            if(this.LSub != null){
-                this.LSub(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// Event handlers should set an appropriate OK or NO response. For
+        /// successful APPEND operations, servers supporting the UIDPLUS
+        /// extension (RFC 4315) should include an
+        /// <see cref="IMAP_t_orc_AppendUid"/> optional response code in the
+        /// returned OK response.
+        /// </remarks>
+        public event Func<IMAP_e_AppendComplete,Task>? AppendCompleteAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle SUBSCRIBE command.
+        /// Is raised when an IMAP session processes a GETQUOTAROOT command and
+        /// requires quota root information for a mailbox. Event handlers must
+        /// examine the provided <see cref="IMAP_e_GetQuotaRoot"/> instance,
+        /// populate <see cref="IMAP_e_GetQuotaRoot.QuotaRootResponse"/> and the
+        /// corresponding <see cref="IMAP_e_GetQuotaRoot.QuotaResponses"/>
+        /// collection, and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// request was processed successfully or why it failed.
         /// </summary>
-        public event EventHandler<IMAP_e_Folder>? Subscribe = null;
-
-        #region method OnSubscribe
+        /// <remarks>
+        /// For each quota root listed in
+        /// <see cref="IMAP_e_GetQuotaRoot.QuotaRootResponse"/>, a corresponding
+        /// <see cref="IMAP_r_u_Quota"/> response should be added to
+        /// <see cref="IMAP_e_GetQuotaRoot.QuotaResponses"/>.
+        /// </remarks>
+        public event Func<IMAP_e_GetQuotaRoot,Task>? GetQuotaRootAsync = null;
 
         /// <summary>
-        /// Raises <b>Subscribe</b> event.
+        /// Is raised when an IMAP session processes a GETQUOTA command and
+        /// requires quota information for a specific quota root. Event handlers
+        /// must examine the provided <see cref="IMAP_e_GetQuota"/> instance,
+        /// populate the <see cref="IMAP_e_GetQuota.QuotaResponses"/> collection
+        /// with the requested quota information, and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// request was processed successfully or why it failed.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Folder OnSubscribe(string cmdTag,string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_Folder eArgs = new IMAP_e_Folder(cmdTag,folder,response);
-            if(this.Subscribe != null){
-                this.Subscribe(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_GetQuota,Task>? GetQuotaAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle SUBSCRIBE command.
+        /// Is raised when an IMAP session processes a GETACL command and
+        /// requires access control information for a mailbox. Event handlers
+        /// must examine the provided <see cref="IMAP_e_GetAcl"/> instance,
+        /// populate <see cref="IMAP_e_GetAcl.AclResponse"/>, and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the request was processed successfully or why it failed.
         /// </summary>
-        public event EventHandler<IMAP_e_Folder>? Unsubscribe = null;
-
-        #region method OnUnsubscribe
+        /// <remarks>
+        /// A successful GETACL operation should provide an ACL response
+        /// describing the access rights associated with the requested mailbox.
+        /// </remarks>
+        public event Func<IMAP_e_GetAcl,Task>? GetAclAsync = null;
 
         /// <summary>
-        /// Raises <b>OnUnsubscribe</b> event.
+        /// Is raised when an IMAP session processes a SETACL command and
+        /// requires modification of mailbox access rights. Event handlers must
+        /// examine the provided <see cref="IMAP_e_SetAcl"/> instance and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the access control list was modified successfully or why the
+        /// request failed.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Folder OnUnsubscribe(string cmdTag,string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_Folder eArgs = new IMAP_e_Folder(cmdTag,folder,response);
-            if(this.Unsubscribe != null){
-                this.Unsubscribe(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-                
-        /// <summary>
-        /// Is raised when IMAP session needs to handle SELECT command.
-        /// </summary>
-        public event EventHandler<IMAP_e_Select>? Select = null;
-
-        #region method OnSelect
+        /// <remarks>
+        /// The <see cref="IMAP_e_SetAcl.Rights"/> property contains the rights
+        /// modification string supplied by the client. Depending on its format,
+        /// the specified rights are added to, removed from, or replace the
+        /// identifier's existing access rights.
+        /// </remarks>
+        public event Func<IMAP_e_SetAcl,Task>? SetAclAsync = null;
 
         /// <summary>
-        /// Raises <b>Select</b> event.
+        /// Is raised when an IMAP session processes a DELETEACL command and
+        /// requires removal of an ACL entry from a mailbox. Event handlers
+        /// must examine the provided <see cref="IMAP_e_DeleteAcl"/> instance
+        /// and set an appropriate <see cref="IMAP_r_ServerStatus"/> response
+        /// indicating whether the ACL entry was removed successfully or why
+        /// the request failed.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Select OnSelect(string cmdTag,string folder)
-        {
-            IMAP_e_Select eArgs = new IMAP_e_Select(cmdTag,folder);
-            if(this.Select != null){
-                this.Select(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_DeleteAcl,Task>? DeleteAclAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to get folder messages info.
+        /// Is raised when an IMAP session processes a LISTRIGHTS command and
+        /// requires information about the rights that may be granted to an
+        /// identifier for a mailbox. Event handlers must examine the provided
+        /// <see cref="IMAP_e_ListRights"/> instance, populate
+        /// <see cref="IMAP_e_ListRights.ListRightsResponse"/>, and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the request was processed successfully or why it failed.
         /// </summary>
-        public event EventHandler<IMAP_e_MessagesInfo>? GetMessagesInfo = null;
-
-        #region method OnGetMessagesInfo
+        public event Func<IMAP_e_ListRights,Task>? ListRightsAsync = null;
 
         /// <summary>
-        /// Raises <b>GetMessagesInfo</b> event.
+        /// Is raised when an IMAP session processes a MYRIGHTS command and
+        /// requires the effective access rights of the authenticated user for
+        /// a mailbox. Event handlers must examine the provided
+        /// <see cref="IMAP_e_MyRights"/> instance, populate
+        /// <see cref="IMAP_e_MyRights.MyRightsResponse"/>, and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the request was processed successfully or why it failed.
         /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_MessagesInfo OnGetMessagesInfo(string folder)
-        {
-            IMAP_e_MessagesInfo eArgs = new IMAP_e_MessagesInfo(folder);
-            if(this.GetMessagesInfo != null){
-                this.GetMessagesInfo(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        public event Func<IMAP_e_MyRights,Task>? MyRightsAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle APPEND command.
+        /// Is raised when an IMAP session processes a CLOSE command.
+        /// Event handlers should perform any required mailbox cleanup,
+        /// including permanent removal of messages marked with the
+        /// \Deleted flag when the mailbox is writable.
         /// </summary>
-        public event EventHandler<IMAP_e_Append>? Append = null;
-
-        #region method OnAppend
+        /// <remarks>
+        /// A successful CLOSE operation normally returns an OK response.
+        /// Mailboxes opened in read-only mode must not have messages
+        /// expunged.
+        /// </remarks>
+        public event Func<IMAP_e_Close,Task>? CloseAsync = null;
 
         /// <summary>
-        /// Raises <b>StoreMessage</b> event.
+        /// Is raised when an IMAP session processes a FETCH command and
+        /// requires the application to supply message data.
         /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="flags">Message flags.</param>
-        /// <param name="date">Message IMAP internal date.</param>
-        /// <param name="size">Message size in bytes.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Append OnAppend(string folder,string[] flags,DateTime date,int size,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_Append eArgs = new IMAP_e_Append(folder,flags,date,size,response);
-            if(this.Append != null){
-                this.Append(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// The messages included in the FETCH operation are available
+        /// through the <see cref="IMAP_e_Fetch.Messages"/> property.
+        /// <para>
+        /// The IMAP session determines which information is required to
+        /// satisfy the FETCH request and exposes the requirements through
+        /// the <see cref="IMAP_e_Fetch.RequiresMessageStream"/>,
+        /// <see cref="IMAP_e_Fetch.RequiresEnvelope"/>, and
+        /// <see cref="IMAP_e_Fetch.RequiresBodyStructure"/> properties.
+        /// </para>
+        /// <para>
+        /// Event handlers should call
+        /// <see cref="IMAP_e_Fetch.AddDataAsync(IMAP_MessageInfo,Stream?,IMAP_t_Envelope?,IMAP_t_BodyStructure?)"/>
+        /// for each message that is to be included in the FETCH response.
+        /// </para>
+        /// <para>
+        /// A handler may provide:
+        /// </para>
+        /// <list type="bullet">
+        /// <item>
+        /// <description>
+        /// The complete RFC 5322 message stream.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// A parsed <see cref="IMAP_t_Envelope"/> instance.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// A parsed <see cref="IMAP_t_BodyStructure"/> instance.
+        /// </description>
+        /// </item>
+        /// </list>
+        /// <para>
+        /// Envelope and body structure data may be supplied from an
+        /// application cache, avoiding the need to parse them from the
+        /// message stream for each FETCH operation.
+        /// </para>
+        /// <para>
+        /// If <see cref="IMAP_e_Fetch.SetSeen"/> is
+        /// <see langword="true"/>, the event handler must persist the
+        /// corresponding <c>\Seen</c> flag update for the fetched
+        /// messages.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Fetch,Task>? FetchAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle GETQUOTAROOT command.
+        /// Is raised when an IMAP session processes a SEARCH command and
+        /// requires the application to evaluate search criteria that cannot
+        /// be satisfied using the selected mailbox cache alone.
         /// </summary>
-        public event EventHandler<IMAP_e_GetQuotaRoot>? GetQuotaRoot = null;
-
-        #region method OnGetGuotaRoot
+        /// <remarks>
+        /// The parsed SEARCH expression is available through the
+        /// <see cref="IMAP_e_Search.Criteria"/> property.
+        /// <para>
+        /// Event handlers should populate the
+        /// <see cref="IMAP_e_Search.MatchedUids"/> property with the UIDs of
+        /// all messages matching the supplied search criteria.
+        /// </para>
+        /// <para>
+        /// The IMAP server automatically converts returned UIDs to message
+        /// sequence numbers when processing a SEARCH command. For UID SEARCH
+        /// commands, the returned UIDs are sent directly to the client.
+        /// </para>
+        /// <para>
+        /// Event handlers must assign an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// search operation completed successfully or why it failed.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Search,Task>? SearchAsync = null;
 
         /// <summary>
-        /// Raises <b>GetQuotaRoot</b> event.
+        /// Is raised when an IMAP session processes a STORE command and
+        /// requires one or more message flags to be updated. Event handlers
+        /// must examine the provided <see cref="IMAP_e_Store"/> instance and
+        /// set an appropriate <see cref="IMAP_r_ServerStatus"/> response
+        /// indicating whether the operation completed successfully or why it
+        /// failed.
         /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_GetQuotaRoot OnGetGuotaRoot(string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_GetQuotaRoot eArgs = new IMAP_e_GetQuotaRoot(folder,response);
-            if(this.GetQuotaRoot != null){
-                this.GetQuotaRoot(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// The <see cref="IMAP_e_Store.Messages"/> property contains the
+        /// messages affected by the operation.
+        /// <para>
+        /// The <see cref="IMAP_e_Store.FlagsSetType"/> property specifies
+        /// whether the supplied flags replace, add to, or remove existing
+        /// message flags.
+        /// </para>
+        /// <para>
+        /// The flags supplied by the client are available through the
+        /// <see cref="IMAP_e_Store.Flags"/> property.
+        /// </para>
+        /// <para>
+        /// When a successful response is returned, the IMAP server updates
+        /// the cached mailbox state and automatically generates any required
+        /// FETCH responses associated with the STORE operation.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Store,Task>? StoreAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle GETQUOTA command.
+        /// Is raised when an IMAP session processes a COPY command and
+        /// requires one or more messages to be copied from a source mailbox
+        /// to a destination mailbox. Event handlers must examine the
+        /// provided <see cref="IMAP_e_Copy"/> instance and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the copy operation completed successfully or why it
+        /// failed.
         /// </summary>
-        public event EventHandler<IMAP_e_GetQuota>? GetQuota = null;
-
-        #region method OnGetQuota
+        /// <remarks>
+        /// The original sequence set supplied by the client is available
+        /// through the <see cref="IMAP_e_Copy.SequenceSet"/> property.
+        /// <para>
+        /// The <see cref="IMAP_e_Copy.IsUidCopy"/> property indicates whether
+        /// the operation originated from a COPY or UID COPY command.
+        /// </para>
+        /// <para>
+        /// The <see cref="IMAP_e_Copy.Messages"/> property contains the
+        /// messages resolved from the supplied sequence set. Each
+        /// <see cref="IMAP_MessageInfo"/> contains the application's
+        /// internal message identifier together with the cached IMAP message
+        /// metadata for the current session.
+        /// </para>
+        /// <para>
+        /// For servers supporting the UIDPLUS extension (RFC 4315),
+        /// successful copy operations should include an
+        /// <see cref="IMAP_t_orc_CopyUid"/> optional response code in the
+        /// returned OK response.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Copy,Task>? CopyAsync = null;
 
         /// <summary>
-        /// Raises <b>GetQuota</b> event.
+        /// Is raised when an IMAP session processes a MOVE command and
+        /// requires one or more messages to be moved from a source mailbox
+        /// to a destination mailbox. Event handlers must examine the
+        /// provided <see cref="IMAP_e_Move"/> instance and set an
+        /// appropriate <see cref="IMAP_r_ServerStatus"/> response indicating
+        /// whether the move operation completed successfully or why it
+        /// failed.
         /// </summary>
-        /// <param name="quotaRoot">Quota root name.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_GetQuota OnGetQuota(string quotaRoot,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_GetQuota eArgs = new IMAP_e_GetQuota(quotaRoot,response);
-            if(this.GetQuota != null){
-                this.GetQuota(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// The original sequence set supplied by the client is available
+        /// through the <see cref="IMAP_e_Move.SequenceSet"/> property.
+        /// <para>
+        /// The <see cref="IMAP_e_Move.IsUidMove"/> property indicates whether
+        /// the operation originated from a MOVE or UID MOVE command.
+        /// </para>
+        /// <para>
+        /// The <see cref="IMAP_e_Move.Messages"/> property contains the
+        /// messages resolved from the supplied sequence set. Each
+        /// <see cref="IMAP_MessageInfo"/> contains the application's
+        /// internal message identifier together with the cached IMAP message
+        /// metadata for the current session.
+        /// </para>
+        /// <para>
+        /// When the handler returns a successful response, the IMAP server
+        /// automatically generates the required EXPUNGE responses for the
+        /// moved messages and updates the selected mailbox state.
+        /// </para>
+        /// <para>
+        /// For servers supporting the UIDPLUS extension (RFC 4315),
+        /// successful move operations should include an
+        /// <see cref="IMAP_t_orc_CopyUid"/> optional response code in the
+        /// returned OK response.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Move,Task>? MoveAsync = null;
 
         /// <summary>
-        /// Is raised when IMAP session needs to handle GETACL command.
+        /// Is raised when an IMAP session processes an EXPUNGE or UID EXPUNGE
+        /// command and requires one or more messages to be permanently removed
+        /// from the selected mailbox. Event handlers must examine the provided
+        /// <see cref="IMAP_e_Expunge"/> instance and set an appropriate
+        /// <see cref="IMAP_r_ServerStatus"/> response indicating whether the
+        /// expunge operation completed successfully or why it failed.
         /// </summary>
-        public event EventHandler<IMAP_e_GetAcl>? GetAcl = null;
-
-        #region method OnGetAcl
-
-        /// <summary>
-        /// Raises <b>GetAcl</b> event.
-        /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_GetAcl OnGetAcl(string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_GetAcl eArgs = new IMAP_e_GetAcl(folder,response);
-            if(this.GetAcl != null){
-                this.GetAcl(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle SETACL command.
-        /// </summary>
-        public event EventHandler<IMAP_e_SetAcl>? SetAcl = null;
-
-        #region method OnSetAcl
-
-        /// <summary>
-        /// Raises <b>SetAcl</b> event.
-        /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="identifier">ACL identifier (normally user or group name).</param>
-        /// <param name="flagsSetType">Flags set type.</param>
-        /// <param name="rights">Identifier rights.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_SetAcl OnSetAcl(string folder,string identifier,IMAP_Flags_SetType flagsSetType,string rights,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_SetAcl eArgs = new IMAP_e_SetAcl(folder,identifier,flagsSetType,rights,response);
-            if(this.SetAcl != null){
-                this.SetAcl(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle DELETEACL command.
-        /// </summary>
-        public event EventHandler<IMAP_e_DeleteAcl>? DeleteAcl = null;
-
-        #region method OnDeleteAcl
-
-        /// <summary>
-        /// Raises <b>DeleteAcl</b> event.
-        /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="identifier">ACL identifier (normally user or group name).</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_DeleteAcl OnDeleteAcl(string folder,string identifier,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_DeleteAcl eArgs = new IMAP_e_DeleteAcl(folder,identifier,response);
-            if(this.DeleteAcl != null){
-                this.DeleteAcl(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle LISTRIGHTS command.
-        /// </summary>
-        public event EventHandler<IMAP_e_ListRights>? ListRights = null;
-
-        #region method OnListRights
-
-        /// <summary>
-        /// Raises <b>ListRights</b> event.
-        /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="identifier">ACL identifier (normally user or group name).</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_ListRights OnListRights(string folder,string identifier,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_ListRights eArgs = new IMAP_e_ListRights(folder,identifier,response);
-            if(this.ListRights != null){
-                this.ListRights(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle MYRIGHTS command.
-        /// </summary>
-        public event EventHandler<IMAP_e_MyRights>? MyRights = null;
-
-        #region method OnMyRights
-
-        /// <summary>
-        /// Raises <b>MyRights</b> event.
-        /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_MyRights OnMyRights(string folder,IMAP_r_ServerStatus response)
-        {
-            IMAP_e_MyRights eArgs = new IMAP_e_MyRights(folder,response);
-            if(this.MyRights != null){
-                this.MyRights(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle FETCH command.
-        /// </summary>
-        public event EventHandler<IMAP_e_Fetch>? Fetch = null;
-
-        #region method OnFetch
-
-        /// <summary>
-        /// Raises <b>Fetch</b> event.
-        /// </summary>
-        /// <param name="e">Event data.</param>
-        private void OnFetch(IMAP_e_Fetch e)
-        {
-            if(this.Fetch != null){
-                this.Fetch(this,e);
-            }
-        }
-
-        #endregion
-                
-        /// <summary>
-        /// Is raised when IMAP session needs to handle SEARCH command.
-        /// </summary>
-        public event EventHandler<IMAP_e_Search>? Search = null;
-
-        #region method OnSearch
-
-        /// <summary>
-        /// Raises <b>Search</b> event.
-        /// </summary>
-        /// <param name="e">Event args.</param>
-        private void OnSearch(IMAP_e_Search e)
-        {
-            if(this.Search != null){
-                this.Search(this,e);
-            }
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle STORE command.
-        /// </summary>
-        public event EventHandler<IMAP_e_Store>? Store = null;
-
-        #region method OnStore
-
-        /// <summary>
-        /// Raises <b>Store</b> event.
-        /// </summary>
-        /// <param name="msgInfo">Message info.</param>
-        /// <param name="setType">Flags set type.</param>
-        /// <param name="flags">Flags.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Store OnStore(IMAP_MessageInfo msgInfo,IMAP_Flags_SetType setType,string[] flags,IMAP_r_ServerStatus response)
-        {
-            ArgumentNullException.ThrowIfNull(m_pSelectedFolder);
-
-            IMAP_e_Store eArgs = new IMAP_e_Store(m_pSelectedFolder.Folder,msgInfo,setType,flags,response);
-            if(this.Store != null){
-                this.Store(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle COPY command.
-        /// </summary>
-        public event EventHandler<IMAP_e_Copy>? Copy = null;
-
-        #region method OnCopy
-
-        /// <summary>
-        /// Raises <b>Copy</b> event.
-        /// </summary>
-        /// <param name="targetFolder">Target folder name with optional path.</param>
-        /// <param name="messagesInfo">Messages info.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Copy OnCopy(string targetFolder,IMAP_MessageInfo[] messagesInfo,IMAP_r_ServerStatus response)
-        {
-            ArgumentNullException.ThrowIfNull(m_pSelectedFolder);
-
-            IMAP_e_Copy eArgs = new IMAP_e_Copy(m_pSelectedFolder.Folder,targetFolder,messagesInfo,response);
-            if(this.Copy != null){
-                this.Copy(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
-
-        /// <summary>
-        /// Is raised when IMAP session needs to handle EXPUNGE command.
-        /// </summary>
-        public event EventHandler<IMAP_e_Expunge>? Expunge = null;
-
-        #region method OnExpunge
-
-        /// <summary>
-        /// Raises <b>Expunge</b> event.
-        /// </summary>
-        /// <param name="msgInfo">Messgae info.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <returns>Returns event args.</returns>
-        private IMAP_e_Expunge OnExpunge(IMAP_MessageInfo msgInfo,IMAP_r_ServerStatus response)
-        {
-            ArgumentNullException.ThrowIfNull(m_pSelectedFolder);
-
-            IMAP_e_Expunge eArgs = new IMAP_e_Expunge(m_pSelectedFolder.Folder,msgInfo,response);
-            if(this.Expunge != null){
-                this.Expunge(this,eArgs);
-            }
-
-            return eArgs;
-        }
-
-        #endregion
+        /// <remarks>
+        /// The <see cref="IMAP_e_Expunge.Messages"/> property contains the
+        /// messages selected for removal.
+        /// <para>
+        /// When <see cref="IMAP_e_Expunge.IsUidExpunge"/> is
+        /// <see langword="true"/>, the operation originated from a UID
+        /// EXPUNGE command and the original UID sequence set is available
+        /// through the <see cref="IMAP_e_Expunge.SequenceSet"/> property.
+        /// </para>
+        /// <para>
+        /// When a successful response is returned, the IMAP server
+        /// automatically generates the required EXPUNGE responses and updates
+        /// the selected mailbox state.
+        /// </para>
+        /// </remarks>
+        public event Func<IMAP_e_Expunge,Task>? ExpungeAsync = null;
 
         #endregion
     }

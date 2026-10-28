@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>DRAFT</c> search key is defined by RFC 3501 and selects all
+    /// The <c>DRAFT</c> search key is defined by RFC 9051 and selects all
     /// messages that have been marked with the <c>\Draft</c> flag. This flag
     /// is typically used by mail clients to indicate messages that are still
     /// being composed or are not yet ready to be sent.
@@ -32,10 +32,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>DRAFT</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Draft"/> instance representing
@@ -47,13 +47,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>DRAFT</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Draft Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Draft Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"DRAFT",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'DRAFT' key.");
             }
@@ -74,7 +74,7 @@ namespace LumiSoft.Net.IMAP
         /// <c>\Draft</c> flag.
         /// </returns>
         /// <remarks>
-        /// The <c>DRAFT</c> search key is defined by RFC 3501 and selects all
+        /// The <c>DRAFT</c> search key is defined by RFC 9051 and selects all
         /// messages that have been marked with the <c>\Draft</c> flag. This flag
         /// is typically used by clients to indicate messages still being composed
         /// or not yet ready for sending.
@@ -98,7 +98,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// Since <c>DRAFT</c> is a flag‑type search key, it carries no associated
-        /// value and is emitted as a fixed keyword token, as defined by RFC 3501.
+        /// value and is emitted as a fixed keyword token, as defined by RFC 9051.
         /// </remarks>
         internal override void ToCommandBuilder(CommandBuilder builder)
         {

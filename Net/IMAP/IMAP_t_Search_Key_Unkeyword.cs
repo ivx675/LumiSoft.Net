@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>UNKEYWORD</c> search key is defined by RFC 3501 and is the logical
+    /// The <c>UNKEYWORD</c> search key is defined by RFC 9051 and is the logical
     /// inverse of the <c>KEYWORD</c> search key. It matches messages whose flags
     /// do not include the specified keyword.
     /// </para>
@@ -35,7 +35,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>UNKEYWORD</c> search key is defined by RFC 3501 and selects
+        /// The <c>UNKEYWORD</c> search key is defined by RFC 9051 and selects
         /// messages that do not have the specified keyword set.
         /// </para>
         /// </remarks>
@@ -53,10 +53,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>UNKEYWORD</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Unkeyword"/> instance containing the
@@ -72,27 +72,24 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The <c>UNKEYWORD</c> search key selects messages that do <em>not</em>
-        /// have the specified keyword (flag) set, as defined by RFC 3501.
+        /// have the specified keyword (flag) set, as defined by RFC 9051.
         /// </para>
         /// <para>
         /// The keyword argument is an IMAP string and may be represented as an atom,
         /// a quoted string, or an IMAP literal.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Unkeyword Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Unkeyword Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"UNKEYWORD",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'UNKEYWORD' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'UNKEYWORD' value.");
-            }
+            string value = r.ReadAtom();
 
             return new IMAP_t_Search_Key_Unkeyword(value);
         }
@@ -114,7 +111,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The <c>UNKEYWORD</c> search key selects messages that do not have the
-        /// specified keyword (flag) set, as defined by RFC 3501.
+        /// specified keyword (flag) set, as defined by RFC 9051.
         /// </para>
         /// <para>
         /// This method produces a simplified, human‑readable representation intended
@@ -142,7 +139,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>UNKEYWORD</c> search key is defined by RFC 3501 and selects
+        /// The <c>UNKEYWORD</c> search key is defined by RFC 9051 and selects
         /// messages that do <em>not</em> have the specified keyword (flag) set.
         /// The keyword argument is an IMAP string and may be represented as an
         /// atom, a quoted string, or an IMAP literal.
@@ -166,7 +163,7 @@ namespace LumiSoft.Net.IMAP
         /// <para>
         /// The value represents the keyword that must <em>not</em> be present on a
         /// message for the <c>UNKEYWORD</c> search key to match, as defined by
-        /// RFC 3501.
+        /// RFC 9051.
         /// </para>
         /// </remarks>
         public string Value

@@ -1,9 +1,8 @@
 ﻿using LumiSoft.Net.IMAP.Client;
+using LumiSoft.Net.IMAP.Server;
 using LumiSoft.Net.IO;
 using LumiSoft.Net.Log;
-using System;
-using System.Collections.Generic;
-using System.Net;
+using System.Globalization;
 using System.Text;
 
 namespace LumiSoft.Net.IMAP 
@@ -35,10 +34,11 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     internal class _IMAP_Reader 
     {
-        private string       m_Line;
-        private int          m_Position    = 0;
-        private Memory<byte> m_LineBuffer;
-        private IMAP_Client? m_pImapClient = null;
+        private string        m_Line;
+        private int           m_Position          = 0;
+        private Memory<byte>  m_LineBuffer;
+        private IMAP_Client?  m_pImapClient       = null;
+        private IMAP_Session? m_ImapServerSession = null;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="_IMAP_Reader"/> class for parsing
@@ -47,7 +47,7 @@ namespace LumiSoft.Net.IMAP
         /// the caller and does not perform line‑based reading except when a literal
         /// requires the next protocol line to be fetched.
         /// <para>
-        /// The <paramref name="line"/> parameter provides the current IMAP command or
+        /// The <paramref name="line"/> parameter provides the 
         /// response line to be tokenized. All non‑literal parsing (atoms, quoted strings,
         /// NIL, mailbox names, etc.) is performed entirely within this line without
         /// accessing the network.
@@ -79,6 +79,51 @@ namespace LumiSoft.Net.IMAP
             m_pImapClient = imapClient;
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="_IMAP_Reader"/> class for parsing
+        /// IMAP lexical elements such as atoms, quoted strings, literals, astrings, and
+        /// mailbox names in server mode. The reader operates on a single IMAP protocol
+        /// line supplied by the caller and does not perform line-based reading except
+        /// when a literal requires the next protocol line to be fetched.
+        /// <para>
+        /// The <paramref name="line"/> parameter provides the IMAP command line currently
+        /// being processed. All non-literal parsing (atoms, quoted strings, NIL, mailbox
+        /// names, etc.) is performed entirely within this line without additional I/O.
+        /// </para>
+        /// <para>
+        /// When a literal is encountered (for example <c>{123}</c>), the reader uses the
+        /// supplied <paramref name="imapServerSession"/> to read the literal payload from
+        /// the client. For standard literals, the reader automatically sends the IMAP
+        /// continuation response <c>"+ Continue"</c> before reading the payload. After
+        /// the literal has been read, the next protocol line is loaded into
+        /// <c>m_Line</c> using the reusable buffer provided in
+        /// <paramref name="lineBuffer"/> so that parsing may continue.
+        /// </para>
+        /// <para>
+        /// This is the only situation in which the reader performs network I/O.
+        /// </para>
+        /// </summary>
+        /// <param name="line">
+        /// The IMAP protocol line to parse. All non-literal tokens are read directly
+        /// from this line without additional I/O.
+        /// </param>
+        /// <param name="lineBuffer">
+        /// A reusable buffer used exclusively for reading the next protocol line after a
+        /// literal. It is not used for literal payloads or for parsing within the current
+        /// line.
+        /// </param>
+        /// <param name="imapServerSession">
+        /// The IMAP server session associated with the command being parsed. The session
+        /// is used to send continuation responses and to read literal payload data from
+        /// the connected client.
+        /// </param>
+        internal _IMAP_Reader(string line,Memory<byte> lineBuffer,IMAP_Session imapServerSession)
+        {
+            m_Line              = line;
+            m_LineBuffer        = lineBuffer;
+            m_ImapServerSession = imapServerSession;
+        }
+
 
         #region method ReadStringAsync
 
@@ -105,7 +150,7 @@ namespace LumiSoft.Net.IMAP
         /// </item>
         /// <item>
         /// <description>
-        /// Literal — Parsed using <see cref="ReadLiteralAsync"/>, which reads the literal
+        /// Literal — Parsed using <see cref="ReadLiteralAsync(bool,System.Threading.CancellationToken)"/>, which reads the literal
         /// payload from the underlying stream and then advances to the next protocol line.
         /// The returned byte array is decoded as UTF‑8 and returned as a string.
         /// </description>
@@ -158,7 +203,7 @@ namespace LumiSoft.Net.IMAP
 
             // Literal
             if(c == '{'){
-                byte[] data = await ReadLiteralAsync(cancellationToken);
+                byte[] data = await ReadLiteralAsync(true,cancellationToken);
 
                 return Encoding.UTF8.GetString(data);
             }
@@ -219,10 +264,12 @@ namespace LumiSoft.Net.IMAP
         #endregion
 
         #region method ReadAtom
-
+        
         /// <summary>
-        /// Reads an IMAP atom. Throws if no atom characters are present.
+        /// Reads an IMAP atom.
         /// </summary>
+        /// <returns>Reurns IMAP atom.</returns>
+        /// <exception cref="ParseException">Throws ParseException if no atom characters are present.</exception>
         public string ReadAtom()
         {
             SkipWhitespaces();
@@ -284,6 +331,54 @@ namespace LumiSoft.Net.IMAP
             }
 
             return '\0';
+        }
+
+        #endregion
+
+        #region method ReadDate
+
+        /// <summary>
+        /// Reads an IMAP date value from the current protocol line.
+        /// </summary>
+        /// <remarks>
+        /// IMAP date values may be represented either as a date atom such as
+        /// <c>12-Oct-2026</c> or as a quoted date string such as
+        /// <c>"12-Oct-2026"</c>.
+        /// <para>
+        /// This method accepts both forms and returns the parsed value as a
+        /// <see cref="DateOnly"/>.
+        /// </para>
+        /// </remarks>
+        /// <returns>
+        /// The parsed date value.
+        /// </returns>
+        /// <exception cref="ParseException">
+        /// Thrown when the next token is not a valid IMAP date.
+        /// </exception>
+        public DateOnly ReadDate()
+        {
+            SkipWhitespaces();
+
+            string value;
+
+            if(PeekIs('"')){
+                value = ReadQuotedString();
+            }
+            else{
+                value = ReadAtom();
+            }
+
+            if(!DateOnly.TryParseExact(
+                value,
+                "d-MMM-yyyy",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out DateOnly date))
+            {
+                throw new ParseException($"Invalid IMAP date value '{value}'.");
+            }
+
+            return date;
         }
 
         #endregion
@@ -422,15 +517,160 @@ namespace LumiSoft.Net.IMAP
             // Server mode
             else{                
                 // Server standard literal reading, we need to send + Continue for client.
-                if(!isLiteralPluss){/*
-                    await m_pStream.WriteLineAsync("+ Continue\r\n",cancellationToken);
+                if(!isLiteralPluss){
+                    await m_ImapServerSession!.TcpStream.WriteLineAsync("+ Continue\r\n",cancellationToken);
 
-                    if(m_pLogger != null){
-                        m_pLogger.AddWrite(12,"+ Continue\r\n");
-                    }*/
+                    m_ImapServerSession.LogAddWrite(12,"+ Continue\r\n");
                 }
 
-                throw new NotImplementedException("ReadLiteralAsync server mode nor implemented.");
+                // Read literal payload
+                await m_ImapServerSession!.TcpStream.ReadFixedCountAsync(stream,size,cancellationToken);
+
+                m_ImapServerSession.LogAddRead(size,$"Literal {size} bytes.");
+
+                // After literal payload, next protocol line begins
+                ReadLineResult readLine = await m_ImapServerSession.TcpStream.ReadLineAsync(m_LineBuffer,SizeExceededAction.JunkAndThrowException,cancellationToken);
+                if(readLine.BytesInBuffer == 0){
+                    throw new IOException("Connection was closed.");
+                }
+                m_Line =  readLine.LineUtf8!;
+                m_Position = 0;
+
+                m_ImapServerSession.LogAddRead(readLine.BytesInBuffer,m_Line);
+            }
+        }
+
+        #endregion
+
+        #region method ReadLiteralAsync
+
+        /// <summary>
+        /// Reads an IMAP literal from the underlying stream. The reader position must be
+        /// at the opening '{' of a literal header, for example <c>{123}</c> or <c>{123+}</c>.
+        /// <para>
+        /// The method parses the literal header to determine the exact byte count and
+        /// whether the literal is a "literal+" (indicated by a trailing '+'). For normal
+        /// literals, the server side must send a continuation response (<c>"+ Continue"</c>)
+        /// before the client begins transmitting the literal payload.
+        /// </para>
+        /// <para>
+        /// A safety limit is applied to string‑type literals: if the literal size exceeds
+        /// 32 KB, a <see cref="ParseException"/> is thrown. This protects the parser from
+        /// allocating excessively large buffers when handling mailbox names or other
+        /// small astring‑based tokens. Larger message‑body literals are expected to be
+        /// handled by higher‑level streaming logic outside this reader.
+        /// </para>
+        /// </summary>
+        /// <param name="logLiteralData">
+        /// Specifies whether the literal payload should be written to protocol logs.
+        /// When <c>false</c>, only the literal size is logged. This should typically be
+        /// disabled when the literal may contain sensitive data such as passwords or
+        /// authentication tokens.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the read operation.
+        /// </param>
+        /// <returns>
+        /// A byte array containing the literal payload exactly as transmitted by the
+        /// peer. The caller is responsible for interpreting the payload according to
+        /// the IMAP command or response context.
+        /// </returns>
+        /// <exception cref="ParseException">
+        /// Thrown if the literal header is malformed, missing its size, missing the
+        /// closing brace, or if the literal size exceeds the 32 KB safety limit.
+        /// </exception>
+        /// <exception cref="IOException">
+        /// Thrown if the underlying stream is closed before the next protocol line
+        /// can be read after the literal payload.
+        /// </exception>
+        public async Task<byte[]> ReadLiteralAsync(bool logLiteralData,CancellationToken cancellationToken = default)
+        {
+            SkipWhitespaces();
+
+            // Parse header: "{N}" or "{N+}"
+            m_Position++; // skip '{'
+
+            int start = m_Position;
+            while(m_Position < m_Line.Length && char.IsDigit(m_Line[m_Position])){
+                m_Position++;
+            }
+
+            if(m_Position == start){
+                throw new ParseException("Invalid literal header: missing size.");
+            }
+
+            int size = int.Parse(m_Line.Substring(start, m_Position - start));
+
+            // Literal+ indicator.
+            bool isLiteralPluss = false;
+            if(PeekIs('+')){
+                isLiteralPluss = true;
+                m_Position++;
+            }
+            if(!PeekIs('}')){
+                throw new ParseException("Invalid literal header: missing closing '}'.");
+            }
+
+            m_Position++; // skip '}'
+
+            // Safety limit for string literals (32 KB)
+            if(size > 32 * 1024){
+                throw new ParseException($"Literal size {size} exceeds 32 KB limit.");
+            }
+
+            // Client mode
+            if(m_pImapClient != null){
+                // Read literal payload
+                byte[] buffer = new byte[size];
+                await m_pImapClient.TcpStream.ReadExactlyAsync(buffer,cancellationToken);
+
+                string logText = Encoding.UTF8.GetString(buffer).Trim().Replace("\r","<CR>").Replace("\n","<LF>");
+                m_pImapClient.LogAddRead(buffer.Length,$"Literal {buffer.Length} bytes: {logText}");               
+
+                // After literal payload, next protocol line begins
+                ReadLineResult readLine = await m_pImapClient.TcpStream.ReadLineAsync(m_LineBuffer,SizeExceededAction.JunkAndThrowException,cancellationToken);
+                if(readLine.BytesInBuffer == 0){
+                    throw new IOException("Connection was closed.");
+                }
+                m_Line =  readLine.LineUtf8!;
+                m_Position = 0;
+
+                m_pImapClient.LogAddRead(readLine.BytesInBuffer,m_Line);
+
+                return buffer;
+            }
+            // Server mode
+            else{
+                // Server standard literal reading, we need to send + Continue for client.
+                if(!isLiteralPluss){
+                    await m_ImapServerSession!.TcpStream.WriteLineAsync("+ Continue\r\n",cancellationToken);
+
+                    m_ImapServerSession.LogAddWrite(12,"+ Continue\r\n");
+                }
+
+                // Read literal payload
+                byte[] buffer = new byte[size];
+                await m_ImapServerSession!.TcpStream.ReadExactlyAsync(buffer,cancellationToken);
+
+                if(logLiteralData){
+                    string logText = Encoding.UTF8.GetString(buffer).Trim().Replace("\r","<CR>").Replace("\n","<LF>");
+                    m_ImapServerSession.LogAddRead(buffer.Length,$"Literal {buffer.Length} bytes: {logText}");
+                }
+                else{
+                    m_ImapServerSession.LogAddRead(buffer.Length,$"Literal {buffer.Length} bytes.");
+                }
+
+                // After literal payload, next protocol line begins
+                ReadLineResult readLine = await m_ImapServerSession.TcpStream.ReadLineAsync(m_LineBuffer,SizeExceededAction.JunkAndThrowException,cancellationToken);
+                if(readLine.BytesInBuffer == 0){
+                    throw new IOException("Connection was closed.");
+                }
+                m_Line =  readLine.LineUtf8!;
+                m_Position = 0;
+
+                m_ImapServerSession.LogAddRead(readLine.BytesInBuffer,m_Line);
+
+                return buffer;
             }
         }
 
@@ -595,12 +835,10 @@ namespace LumiSoft.Net.IMAP
             // Skip whitespace
             while (pos < m_Line.Length){
                 char ch = m_Line[pos];
-                if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')
-                {
+                if(ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'){
                     pos++;
                 }
-                else
-                {
+                else{
                     break;
                 }
             }
@@ -636,6 +874,86 @@ namespace LumiSoft.Net.IMAP
             }
 
             return size;
+        }
+
+        #endregion
+
+        #region method DrainRemainingCommandAsync
+
+        /// <summary>
+        /// Reads and discards any remaining data associated with the current
+        /// IMAP command so that protocol parsing remains synchronized.
+        /// <para>
+        /// This method is intended for error paths where the command cannot
+        /// be processed but may contain one or more non-synchronizing literals
+        /// (<c>{N+}</c>). Such literals can be transmitted by the client before
+        /// the server has validated the command, requiring the server to consume
+        /// the remaining literal data before sending an error response.
+        /// </para>
+        /// <para>
+        /// Synchronizing literals (<c>{N}</c>) do not require draining.
+        /// Because the client waits for a continuation response before sending
+        /// the literal payload, the server may reject the command immediately.
+        /// </para>
+        /// <para>
+        /// The method scans the remaining command text for non-synchronizing
+        /// literal headers, reads and discards their payloads, and continues
+        /// until no additional literal-plus arguments remain.
+        /// </para>
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel the operation.
+        /// </param>
+        /// <exception cref="ParseException">
+        /// Thrown if a malformed literal header is encountered while scanning
+        /// the remaining command data.
+        /// </exception>
+        /// <exception cref="IOException">
+        /// Thrown if the underlying connection is closed while draining a
+        /// pending literal.
+        /// </exception>
+        public async Task DrainRemainingCommandAsync(CancellationToken cancellationToken = default)
+        {
+            while(true){
+                int literalPos = m_Line.IndexOf('{',m_Position);
+                if(literalPos == -1){
+                    m_Position = m_Line.Length;
+
+                    return;
+                }
+
+                // Move to the literal header.
+                m_Position = literalPos;
+
+                // Parse "{N+}" without consuming a literal.
+                int pos = literalPos + 1;
+
+                while(pos < m_Line.Length && char.IsDigit(m_Line[pos])){
+                    pos++;
+                }
+
+                bool isLiteralPlus =
+                    pos < m_Line.Length &&
+                    m_Line[pos] == '+' &&
+                    pos + 1 < m_Line.Length &&
+                    m_Line[pos + 1] == '}';
+
+                // Normal literal ({N}) requires no draining because the client
+                // is still waiting for a continuation response.
+                if(!isLiteralPlus){
+                    m_Position = m_Line.Length;
+
+                    return;
+                }
+
+                await ReadLiteralAsync(Stream.Null,
+                    cancellationToken
+                );
+
+                // ReadLiteralAsync loads the next protocol line and resets
+                // m_Position. Continue scanning in case additional literal-plus
+                // arguments are present.
+            }
         }
 
         #endregion
@@ -692,6 +1010,10 @@ namespace LumiSoft.Net.IMAP
         /// Reads an IMAP quoted string. Handles IMAP escape sequences (\" and \\).
         /// Throws if the quoted string is not properly terminated.
         /// </summary>
+        /// <remarks>
+        /// IMAP quoted strings support the escape sequences <c>\"</c>
+        /// for a quotation mark and <c>\\</c> for a backslash.
+        /// </remarks>
         private string ReadQuotedString()
         {
             // Skip opening quote
@@ -725,113 +1047,6 @@ namespace LumiSoft.Net.IMAP
             }
 
             throw new ParseException("Unterminated quoted string.");
-        }
-
-        #endregion
-
-        #region method ReadLiteralAsync
-
-        /// <summary>
-        /// Reads an IMAP literal from the underlying stream. The reader position must be
-        /// at the opening '{' of a literal header, for example <c>{123}</c> or <c>{123+}</c>.
-        /// <para>
-        /// The method parses the literal header to determine the exact byte count and
-        /// whether the literal is a "literal+" (indicated by a trailing '+'). For normal
-        /// literals, the server side must send a continuation response (<c>"+ Continue"</c>)
-        /// before the client begins transmitting the literal payload.
-        /// </para>
-        /// <para>
-        /// A safety limit is applied to string‑type literals: if the literal size exceeds
-        /// 32 KB, a <see cref="ParseException"/> is thrown. This protects the parser from
-        /// allocating excessively large buffers when handling mailbox names or other
-        /// small astring‑based tokens. Larger message‑body literals are expected to be
-        /// handled by higher‑level streaming logic outside this reader.
-        /// </para>
-        /// </summary>
-        /// <param name="cancellationToken">
-        /// A cancellation token that can be used to cancel the read operation.
-        /// </param>
-        /// <returns>
-        /// A byte array containing the literal payload exactly as transmitted by the
-        /// peer. The caller is responsible for interpreting the payload according to
-        /// the IMAP command or response context.
-        /// </returns>
-        /// <exception cref="ParseException">
-        /// Thrown if the literal header is malformed, missing its size, missing the
-        /// closing brace, or if the literal size exceeds the 32 KB safety limit.
-        /// </exception>
-        /// <exception cref="IOException">
-        /// Thrown if the underlying stream is closed before the next protocol line
-        /// can be read after the literal payload.
-        /// </exception>
-        private async Task<byte[]> ReadLiteralAsync(CancellationToken cancellationToken = default)
-        {
-            // Parse header: "{N}" or "{N+}"
-            m_Position++; // skip '{'
-
-            int start = m_Position;
-            while(m_Position < m_Line.Length && char.IsDigit(m_Line[m_Position])){
-                m_Position++;
-            }
-
-            if(m_Position == start){
-                throw new ParseException("Invalid literal header: missing size.");
-            }
-
-            int size = int.Parse(m_Line.Substring(start, m_Position - start));
-
-            // Literal+ indicator.
-            bool isLiteralPluss = false;
-            if(PeekIs('+')){
-                isLiteralPluss = true;
-                m_Position++;
-            }
-            if(!PeekIs('}')){
-                throw new ParseException("Invalid literal header: missing closing '}'.");
-            }
-
-            m_Position++; // skip '}'
-
-            // Safety limit for string literals (32 KB)
-            if(size > 32 * 1024){
-                throw new ParseException($"Literal size {size} exceeds 32 KB limit.");
-            }
-
-            // Client mode
-            if(m_pImapClient != null){
-                // Read literal payload
-                byte[] buffer = new byte[size];
-                await m_pImapClient.TcpStream.ReadExactlyAsync(buffer,cancellationToken);
-
-                string logText = Encoding.UTF8.GetString(buffer).Trim().Replace("\r","<CR>").Replace("\n","<LF>");
-                m_pImapClient.LogAddRead(buffer.Length,$"Literal {buffer.Length} bytes: {logText}");
-               
-
-                // After literal payload, next protocol line begins
-                ReadLineResult readLine = await m_pImapClient.TcpStream.ReadLineAsync(m_LineBuffer,SizeExceededAction.JunkAndThrowException,cancellationToken);
-                if(readLine.BytesInBuffer == 0){
-                    throw new IOException("Connection was closed.");
-                }
-                m_Line =  readLine.LineUtf8!;
-                m_Position = 0;
-
-                m_pImapClient.LogAddRead(readLine.BytesInBuffer,m_Line);
-
-                return buffer;
-            }
-            // Server mode
-            else{
-                // Server standard literal reading, we need to send + Continue for client.
-                if(!isLiteralPluss){/*
-                    await m_pStream.WriteLineAsync("+ Continue\r\n",cancellationToken);
-
-                    if(m_pLogger != null){
-                        m_pLogger.AddWrite(12,"+ Continue\r\n");
-                    }*/
-                }
-
-                throw new NotImplementedException("ReadLiteralAsync server mode nor implemented.");
-            }
         }
 
         #endregion

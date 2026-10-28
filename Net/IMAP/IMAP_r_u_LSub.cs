@@ -217,72 +217,55 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP wire-format representation of this LSUB response using
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>, which leaves the mailbox name
-        /// in Unicode without applying modified UTF-7 encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>LSUB</c> response with UTF-8 mailbox names allowed.
         /// </summary>
+        /// <returns>
+        /// A string containing the serialized IMAP
+        /// <c>LSUB</c> response.
+        /// </returns>
         /// <remarks>
-        /// <para>
-        /// When <see cref="IMAP_Mailbox_Encoding.None"/> is used, the mailbox name is
-        /// emitted exactly as stored in the object, using Unicode characters. This
-        /// corresponds to IMAP UTF-8 mode as defined in RFC 6855, where servers that
-        /// advertise UTF8=ACCEPT or UTF8=ONLY allow mailbox names to be transmitted
-        /// directly in UTF-8 without modified UTF-7 encoding.
-        /// </para>
-        /// <para>
-        /// This overload is intended for debugging, logging, or use with IMAP servers
-        /// that support UTF-8 mailbox names. For compatibility with legacy IMAP
-        /// servers that require modified UTF-7, use
-        /// <see cref="ToString(IMAP_Mailbox_Encoding)"/> with the appropriate encoding.
-        /// </para>
+        /// This method is equivalent to calling
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Converts this LSUB response to its IMAP wire-format representation,
-        /// including attribute list, hierarchy delimiter, and encoded mailbox name.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>LSUB</c> response.
         /// </summary>
-        /// <param name="encoding">
-        /// Specifies how the mailbox name should be encoded. When set to
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>, the mailbox name is emitted
-        /// in Unicode (UTF-8 on the wire) without applying modified UTF-7 encoding.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A string containing the IMAP <c>LSUB</c> response in protocol format,
-        /// terminated with CRLF. The output includes the attribute list, the
-        /// hierarchy delimiter (quoted when present, or the atom <c>NIL</c> when
-        /// no delimiter exists), and the mailbox name encoded according to the
-        /// specified <paramref name="encoding"/>.
+        /// A string containing the IMAP <c>LSUB</c> response terminated
+        /// with CRLF. The output includes the mailbox attributes,
+        /// hierarchy delimiter, and mailbox name.
         /// </returns>
         /// <remarks>
+        /// The output format follows RFC 3501 section 7.2.3.
         /// <para>
-        /// The LSUB response format is defined in RFC 3501 section 7.2.3. The
-        /// hierarchy delimiter follows the LIST/LSUB grammar:
-        /// </para>
-        /// <code>
-        /// quoted-delimiter = DQUOTE *CHAR DQUOTE / "NIL"
-        /// </code>
-        /// <para>
-        /// This means that delimiter characters are emitted as quoted strings
-        /// (for example <c>"/"</c> or <c>"."</c>), while the absence of a delimiter
-        /// is represented by the unquoted atom <c>NIL</c>.
+        /// The hierarchy delimiter is emitted as a quoted string when a
+        /// delimiter exists or as the atom <c>NIL</c> when no delimiter
+        /// is defined.
         /// </para>
         /// <para>
-        /// LSUB responses describe mailboxes to which the user is subscribed.
-        /// They do not indicate message counts or structural hierarchy beyond
-        /// the presence of the mailbox in the subscription list.
+        /// LSUB responses describe mailboxes to which the user is
+        /// subscribed.
         /// </para>
         /// <para>
-        /// The mailbox name is encoded using
-        /// <see cref="IMAP_Utils.EncodeMailbox(string, IMAP_Mailbox_Encoding)"/>,
-        /// which applies modified UTF-7 when required for compatibility with
-        /// legacy IMAP servers.
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names are encoded as
+        /// required for IMAP servers that do not permit UTF-8 mailbox
+        /// names in protocol responses.
         /// </para>
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             // Example:    S: * LSUB (\Noselect) "/" ~/Mail/foo
 
@@ -298,7 +281,7 @@ namespace LumiSoft.Net.IMAP
             }
             retVal.Append(") ");
             retVal.Append(m_Delimiter != null ? "\"" + m_Delimiter + "\" " : "NIL ");
-            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,encoding));
+            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed));
             retVal.Append("\r\n");
 
             return retVal.ToString();

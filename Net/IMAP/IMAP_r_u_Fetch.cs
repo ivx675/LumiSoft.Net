@@ -66,7 +66,7 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region method ParseAsync
+        #region static method ParseAsync
 
         /// <summary>
         /// Parses a single IMAP <c>FETCH</c> response and constructs an
@@ -176,24 +176,15 @@ namespace LumiSoft.Net.IMAP
         #endregion
 
 
-        #region override method ToStreamAsync
+        #region override method ToString
 
         /// <summary>
-        /// Starts writing response to the specified stream.
+        /// Returns FETCH response as string.
         /// </summary>
-        /// <param name="session">Owner IMAP session.</param>
-        /// <param name="stream">Stream where to store response.</param>
-        /// <param name="mailboxEncoding">Specifies how mailbox name is encoded.</param>
-        /// <param name="completedAsyncCallback">Callback to be called when this method completes asynchronously.</param>
-        /// <returns>Returns true is method completed asynchronously(the completedAsyncCallback is raised upon completion of the operation).
-        /// Returns false if operation completed synchronously.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        protected override bool ToStreamAsync(IMAP_Session? session,Stream stream,IMAP_Mailbox_Encoding mailboxEncoding,EventHandler<EventArgs<Exception?>>? completedAsyncCallback)
+        /// <returns>Returns FETCH response as string.</returns>
+        /// <exception cref="NotImplementedException">Raised when response conatians data-item which can't be represented as string.</exception>
+        public override string ToString()
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
             StringBuilder buffer = new StringBuilder();
             buffer.Append("* " + m_MsgSeqNo + " FETCH (");
 
@@ -205,7 +196,7 @@ namespace LumiSoft.Net.IMAP
                 }
 
                 if(dataItem is IMAP_t_Fetch_r_i_Flags){
-                    buffer.Append("FLAGS (" + ((IMAP_t_Fetch_r_i_Flags)dataItem).Flags.ToString() + ")");
+                    buffer.Append("FLAGS (" + string.Join(' ',((IMAP_t_Fetch_r_i_Flags)dataItem).Flags) + ")");
                 }
                 else if(dataItem is IMAP_t_Fetch_r_i_Uid){
                     buffer.Append("UID " + ((IMAP_t_Fetch_r_i_Uid)dataItem).Uid.ToString());
@@ -216,50 +207,8 @@ namespace LumiSoft.Net.IMAP
             }
 
             buffer.Append(")\r\n");
-            
-            string responseS = buffer.ToString();
-            byte[] response  = Encoding.UTF8.GetBytes(responseS);
 
-            // Log.
-            if(session != null){
-                session.LogAddWrite(response.Length,responseS.TrimEnd());
-            }
-
-            // Starts writing response to stream.
-            IAsyncResult ar = stream.BeginWrite(
-                response,
-                0,
-                response.Length,
-                delegate(IAsyncResult r){                    
-                    if(r.CompletedSynchronously){
-                        return;
-                    }
-
-                    try{
-                        stream.EndWrite(r);
-
-                        if(completedAsyncCallback != null){
-                            completedAsyncCallback(this,new EventArgs<Exception?>(null));
-                        }
-                    }
-                    catch(Exception x){
-                        if(completedAsyncCallback != null){
-                            completedAsyncCallback(this,new EventArgs<Exception?>(x));
-                        }
-                    }
-                },
-                null
-            );
-            // Completed synchronously, process result.
-            if(ar.CompletedSynchronously){
-                stream.EndWrite(ar);
-
-                return false;
-            }
-            // Completed asynchronously, stream.BeginWrite AsyncCallback will continue processing.
-            else{
-                return true;
-            }
+            return buffer.ToString();
         }
 
         #endregion

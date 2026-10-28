@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>ANSWERED</c> search key is defined by RFC 3501 as selecting all
+    /// The <c>ANSWERED</c> search key is defined by RFC 9051 as selecting all
     /// messages that have been replied to. A message carries the <c>\Answered</c>
     /// flag when the user or client has indicated that a response has been sent.
     /// </para>
@@ -31,10 +31,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>ANSWERED</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Answered"/> instance representing the
@@ -46,13 +46,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>ANSWERED</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Answered Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Answered Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"ANSWERED",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'ANSWERED' key.");
             }
@@ -74,7 +74,7 @@ namespace LumiSoft.Net.IMAP
         /// that selects all messages flagged as answered.
         /// </returns>
         /// <remarks>
-        /// The <c>ANSWERED</c> search key is defined by RFC 3501 and filters
+        /// The <c>ANSWERED</c> search key is defined by RFC 9051 and filters
         /// messages that have been replied to. When included in a <c>SEARCH</c>
         /// or <c>UID SEARCH</c> command, the server returns only those messages
         /// carrying the <c>\Answered</c> flag.

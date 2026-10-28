@@ -3,122 +3,262 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.Mail;
-
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class provides data for <b cref="IMAP_Session.Fetch">IMAP_Session.Fetch</b> event.
+    /// Represents a callback used by <see cref="IMAP_e_Fetch"/> to supply
+    /// FETCH data for a message to the IMAP session.
+    /// </summary>
+    /// <param name="message">
+    /// The message for which FETCH data is being supplied.
+    /// </param>
+    /// <param name="messageStream">
+    /// The complete RFC 5322 message stream, or <see langword="null"/>
+    /// if the current FETCH request does not require message content.
+    /// </param>
+    /// <param name="envelope">
+    /// The parsed message envelope, or <see langword="null"/> if the
+    /// current FETCH request does not require envelope data.
+    /// </param>
+    /// <param name="bodyStructure">
+    /// The parsed MIME body structure, or <see langword="null"/> if the
+    /// current FETCH request does not require body structure data.
+    /// </param>
+    /// <returns>
+    /// A task representing the asynchronous operation.
+    /// </returns>
+    /// <remarks>
+    /// This callback is invoked by <see cref="IMAP_e_Fetch.AddDataAsync"/>
+    /// whenever a FETCH event handler supplies data for a message. The
+    /// IMAP session uses the provided information to generate the
+    /// corresponding FETCH response.
+    /// </remarks>
+    internal delegate Task FetchDataAsyncCallback(
+        IMAP_MessageInfo message,
+        Stream? messageStream,
+        IMAP_t_Envelope? envelope,
+        IMAP_t_BodyStructure? bodyStructure
+    );
+
+    /// <summary>
+    /// Provides data for the <see cref="IMAP_Session.FetchAsync"/>
+    /// event.
     /// </summary>
     /// <remarks>
-    /// IMAP FETCH handler application should provide requested data for each message in <see cref="IMAP_e_Fetch.MessagesInfo"/>
-    /// by calling <see cref="IMAP_e_Fetch.AddData(IMAP_MessageInfo,Mail_Message)"/> method.
+    /// This event allows an application to supply message data for
+    /// IMAP FETCH requests.
+    /// <para>
+    /// The IMAP session determines which information is required to
+    /// satisfy the FETCH request and exposes the requirements through
+    /// the <see cref="RequiresMessageStream"/>,
+    /// <see cref="RequiresEnvelope"/>, and
+    /// <see cref="RequiresBodyStructure"/> properties.
+    /// </para>
+    /// <para>
+    /// Event handlers should call <see cref="AddDataAsync"/> for each
+    /// message that is to be included in the FETCH response.
+    /// </para>
+    /// <para>
+    /// A handler may supply:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>
+    /// <description>
+    /// The complete RFC 5322 message stream.
+    /// </description>
+    /// </item>
+    /// <item>
+    /// <description>
+    /// A parsed <see cref="IMAP_t_Envelope"/> instance.
+    /// </description>
+    /// </item>
+    /// <item>
+    /// <description>
+    /// A parsed <see cref="IMAP_t_BodyStructure"/> instance.
+    /// </description>
+    /// </item>
+    /// </list>
+    /// <para>
+    /// Envelope and body structure information may be returned from
+    /// application caches to avoid reparsing the message stream for
+    /// every FETCH operation.
+    /// </para>
+    /// <para>
+    /// Some FETCH requests require the fetched messages to be marked
+    /// with the <c>\Seen</c> flag. This requirement is exposed through
+    /// the <see cref="SetSeen"/> property. When the property is
+    /// <see langword="true"/>, the event handler is responsible for
+    /// persisting the corresponding flag update in the message store.
+    /// </para>
     /// </remarks>
     public class IMAP_e_Fetch : EventArgs
     {
-        #region class e_NewMessageData
+
+        private IMAP_r_ServerStatus    m_pResponse;
+        private FetchDataAsyncCallback m_pAddDataCallback;
 
         /// <summary>
-        /// This class provides data for <b cref="IMAP_e_Fetch.NewMessageData">IMAP_Session.NewMessageData</b> event.
+        /// Initializes a new <see cref="IMAP_e_Fetch"/> instance containing
+        /// information about a FETCH operation.
         /// </summary>
-        internal class e_NewMessageData : EventArgs
-        {            
-            private IMAP_MessageInfo m_pMsgInfo;
-            private Mail_Message?    m_pMsgData = null;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="msgInfo">Message info.</param>
-            /// <param name="msgData">Message data stream.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>msgInfo</b> is null reference.</exception>
-            public e_NewMessageData(IMAP_MessageInfo msgInfo,Mail_Message? msgData)
-            {
-                if(msgInfo == null){
-                    throw new ArgumentNullException("msgInfo");
-                }
-
-                m_pMsgInfo = msgInfo;
-                m_pMsgData = msgData;
-            }
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets message info.
-            /// </summary>
-            public IMAP_MessageInfo MessageInfo
-            {
-                get{ return m_pMsgInfo; }
-            }
-
-            /// <summary>
-            /// Gets message data stream.
-            /// </summary>
-            public Mail_Message? MessageData
-            {
-                get{ return m_pMsgData; }
-            }
-
-            #endregion
-        }
-
-        #endregion
-
-        private IMAP_r_ServerStatus m_pResponse;
-        private IMAP_MessageInfo[]  m_pMessagesInfo;
-        private IMAP_Fetch_DataType m_FetchDataType = IMAP_Fetch_DataType.FullMessage;
-
-        /// <summary>
-        /// Default constructor.
-        /// </summary>
-        /// <param name="messagesInfo">Messages info.</param>
-        /// <param name="fetchDataType">Fetch data type(Specifies what data AddData method expects).</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>messagesInfo</b> or <b>response</b> is null reference.</exception>
-        internal IMAP_e_Fetch(IMAP_MessageInfo[] messagesInfo,IMAP_Fetch_DataType fetchDataType,IMAP_r_ServerStatus response)
+        /// <param name="session">
+        /// The IMAP session processing the FETCH command.
+        /// </param>
+        /// <param name="messages">
+        /// The messages included in the FETCH operation.
+        /// </param>
+        /// <param name="requireMessageStream">
+        /// Specifies whether the FETCH request requires access to the
+        /// complete message stream.
+        /// </param>
+        /// <param name="requireEnvelope">
+        /// Specifies whether the FETCH request requires envelope data.
+        /// </param>
+        /// <param name="requireBodyStructure">
+        /// Specifies whether the FETCH request requires MIME body structure
+        /// data.
+        /// </param>
+        /// <param name="setSeen">
+        /// Specifies whether the FETCH operation requires the fetched
+        /// messages to be marked with the <c>\Seen</c> flag.
+        /// </param>
+        /// <param name="response">
+        /// The default server response associated with the FETCH operation.
+        /// </param>
+        /// <param name="addDataCallback">
+        /// Callback invoked when the event handler supplies FETCH data for a
+        /// message through <see cref="AddDataAsync"/>.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="session"/>,
+        /// <paramref name="messages"/>,
+        /// <paramref name="response"/>, or
+        /// <paramref name="addDataCallback"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <remarks>
+        /// Event handlers should use the requirement flags to determine what
+        /// information must be supplied for each message. If
+        /// <paramref name="setSeen"/> is <see langword="true"/>, the event
+        /// handler is responsible for persisting the corresponding
+        /// <c>\Seen</c> flag update in the underlying message store.
+        /// </remarks>
+        internal IMAP_e_Fetch(
+            IMAP_Session session,
+            IMAP_MessageInfo[] messages,
+            bool requireMessageStream,
+            bool requireEnvelope,
+            bool requireBodyStructure,
+            bool setSeen,
+            IMAP_r_ServerStatus response,
+            FetchDataAsyncCallback addDataCallback)
         {
-            if(messagesInfo == null){
-                throw new ArgumentNullException("messagesInfo");
+            if(session == null){
+                throw new ArgumentNullException(nameof(session));
+            }
+            if(messages == null){
+                throw new ArgumentNullException(nameof(messages));
             }
             if(response == null){
-                throw new ArgumentNullException("response");
+                throw new ArgumentNullException(nameof(response));
+            }
+            if(addDataCallback == null){
+                throw new ArgumentNullException(nameof(addDataCallback));
             }
 
-            m_pMessagesInfo = messagesInfo;
-            m_FetchDataType = fetchDataType;
-            m_pResponse     = response;
+            Session               = session;
+            Messages              = messages;
+            m_pResponse           = response;
+            RequiresMessageStream = requireMessageStream;
+            RequiresEnvelope      = requireEnvelope;
+            RequiresBodyStructure = requireBodyStructure;
+            SetSeen               = setSeen;
+            m_pAddDataCallback    = addDataCallback;
         }
 
 
         #region method AddData
 
         /// <summary>
-        /// Adds specified message for FETCH response processing.
+        /// Adds FETCH data for the specified message.
         /// </summary>
-        /// <param name="msgInfo">IMAP message info.</param>
-        internal void AddData(IMAP_MessageInfo msgInfo)
+        /// <param name="message">
+        /// The message for which FETCH data is being supplied.
+        /// </param>
+        /// <param name="messageStream">
+        /// The complete RFC 5322 message stream, or
+        /// <see langword="null"/> if the current FETCH request does not
+        /// require message content.
+        /// </param>
+        /// <param name="envelope">
+        /// The parsed message envelope, or
+        /// <see langword="null"/> if the current FETCH request does not
+        /// require envelope data.
+        /// </param>
+        /// <param name="bodyStructure">
+        /// The parsed MIME body structure, or
+        /// <see langword="null"/> if the current FETCH request does not
+        /// require body structure data.
+        /// </param>
+        /// <returns>
+        /// A task representing the asynchronous operation.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="message"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when required FETCH data has not been supplied. For
+        /// example, when <see cref="RequiresMessageStream"/>,
+        /// <see cref="RequiresEnvelope"/>, or
+        /// <see cref="RequiresBodyStructure"/> is
+        /// <see langword="true"/> and the corresponding parameter is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <remarks>
+        /// Event handlers should call this method once for each message
+        /// included in the FETCH response.
+        /// <para>
+        /// The IMAP session immediately processes the supplied data and
+        /// generates the corresponding FETCH response data.
+        /// </para>
+        /// <para>
+        /// If a non-null <paramref name="messageStream"/> is supplied,
+        /// the stream must remain valid for the duration of this method
+        /// call. When the returned task completes, the IMAP session has
+        /// finished reading the stream and the caller may safely dispose
+        /// it.
+        /// </para>
+        /// <para>
+        /// When <see cref="SetSeen"/> is <see langword="true"/>, the event
+        /// handler should ensure that the supplied message is marked with
+        /// the <c>\Seen</c> flag in the underlying message store before
+        /// returning from this method.
+        /// </para>
+        /// </remarks>
+        public async Task AddDataAsync(IMAP_MessageInfo message,Stream? messageStream,IMAP_t_Envelope? envelope,IMAP_t_BodyStructure? bodyStructure)
         {
-            OnNewMessageData(msgInfo,null);
-        }
+            ArgumentNullException.ThrowIfNull(message);
 
-        /// <summary>
-        /// Adds specified message for FETCH response processing.
-        /// </summary>
-        /// <param name="msgInfo">IMAP message info which message data it is.</param>
-        /// <param name="msgData">Message data. NOTE: This value must be as specified by <see cref="IMAP_e_Fetch.FetchDataType"/>.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>msgInfo</b> or <b>msgData</b> is null reference.</exception>
-        public void AddData(IMAP_MessageInfo msgInfo,Mail_Message msgData)
-        {
-            if(msgInfo == null){
-                throw new ArgumentNullException("msgInfo");
+            if(RequiresMessageStream && messageStream == null){
+                throw new InvalidOperationException("Message stream is required.");
             }
-            if(msgData == null){
-                throw new ArgumentNullException("msgData");
+            if(messageStream != null && !messageStream.CanRead){
+                throw new ArgumentException("Message stream must support reading.",nameof(messageStream));
+            }
+            if(messageStream != null && !messageStream.CanSeek){
+                throw new ArgumentException("Message stream must support seeking.",nameof(messageStream));
             }
 
-            OnNewMessageData(msgInfo,msgData);
+            if(RequiresEnvelope && envelope == null){
+                throw new InvalidOperationException("Envelope is required.");
+            }
+
+            if(RequiresBodyStructure && bodyStructure == null){
+                throw new InvalidOperationException("Body structure is required.");
+            }
+
+            await m_pAddDataCallback(message,messageStream,envelope,bodyStructure);
         }
 
         #endregion
@@ -127,9 +267,19 @@ namespace LumiSoft.Net.IMAP.Server
         #region Properties impelementation
 
         /// <summary>
-        /// Gets or sets IMAP server response to this operation.
+        /// Gets the IMAP session associated with this FETCH operation.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when null reference value set.</exception>
+        public IMAP_Session Session
+        {
+            get;
+        }
+
+        /// <summary>
+        /// Gets or sets the server response for this FETCH operation.
+        /// </summary>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when a null value is assigned.
+        /// </exception>
         public IMAP_r_ServerStatus Response
         {
             get{ return m_pResponse; }
@@ -144,45 +294,74 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets messages info.
+        /// Gets a value indicating whether the FETCH request requires
+        /// access to the complete RFC 5322 message stream.
         /// </summary>
-        public IMAP_MessageInfo[] MessagesInfo
+        /// <remarks>
+        /// Event handlers must provide a message stream when this
+        /// property is <see langword="true"/>.
+        /// </remarks>
+        public bool RequiresMessageStream
         {
-            get{ return m_pMessagesInfo; }
+            get;
         }
 
         /// <summary>
-        /// Gets fetch data type(Specifies what data AddData method expects).
+        /// Gets a value indicating whether the FETCH request requires
+        /// envelope data.
         /// </summary>
-        public IMAP_Fetch_DataType FetchDataType
+        /// <remarks>
+        /// Event handlers should provide an
+        /// <see cref="IMAP_t_Envelope"/> instance when this property
+        /// is <see langword="true"/>. Implementations may return a
+        /// cached envelope to avoid reparsing the message.
+        /// </remarks>
+        public bool RequiresEnvelope
         {
-            get{ return m_FetchDataType; }
+            get;
         }
 
-        #endregion
-
-        #region Events implementation
-
         /// <summary>
-        /// This event is raised when new message-info/message-data is added for FETCH processing.
+        /// Gets a value indicating whether the FETCH request requires
+        /// MIME body structure data.
         /// </summary>
-        internal event EventHandler<IMAP_e_Fetch.e_NewMessageData>? NewMessageData = null;
-
-        #region method OnNewMessageData
-
-        /// <summary>
-        /// Raises <b>NewMessageData</b> event.
-        /// </summary>
-        /// <param name="msgInfo">IMAP message info which message data it is.</param>
-        /// <param name="msgData">Message data. NOTE: This value must be as specified by <see cref="IMAP_e_Fetch.FetchDataType"/>.</param>
-        private void OnNewMessageData(IMAP_MessageInfo msgInfo,Mail_Message? msgData)
+        /// <remarks>
+        /// Event handlers should provide an
+        /// <see cref="IMAP_t_BodyStructure"/> instance when this
+        /// property is <see langword="true"/>. Implementations may
+        /// return a cached body structure to avoid reparsing the
+        /// message stream.
+        /// </remarks>
+        public bool RequiresBodyStructure
         {
-            if(this.NewMessageData != null){
-                this.NewMessageData(this,new e_NewMessageData(msgInfo,msgData));
-            }
+            get;
         }
 
-        #endregion
+        /// <summary>
+        /// Gets a value indicating whether the fetched messages should be
+        /// marked with the <c>\Seen</c> flag.
+        /// </summary>
+        /// <remarks>
+        /// When <see langword="true"/>, the event handler should persist
+        /// the corresponding message state change.
+        /// </remarks>
+        public bool SetSeen
+        {
+            get;
+        }
+
+        /// <summary>
+        /// Gets the messages included in this FETCH operation.
+        /// </summary>
+        /// <remarks>
+        /// The event handler should call <see cref="AddDataAsync"/>
+        /// for each message that is to be included in the FETCH
+        /// response.
+        /// </remarks>
+        public IMAP_MessageInfo[] Messages
+        {
+            get;
+        }
 
         #endregion
     }

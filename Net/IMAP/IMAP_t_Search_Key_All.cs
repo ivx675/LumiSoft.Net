@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>ALL</c> search key is defined by RFC 3501 as the most permissive
+    /// The <c>ALL</c> search key is defined by RFC 9051 as the most permissive
     /// search criterion. When used in a <c>SEARCH</c> or <c>UID SEARCH</c>
     /// command, it instructs the server to return all messages without applying
     /// any additional filtering.
@@ -37,10 +37,10 @@ namespace LumiSoft.Net.IMAP
         #region static method Parse
 
         /// <summary>
-        /// Parses the IMAP <c>ALL</c> search key from the provided <see cref="StringReader"/>.
+        /// Parses the IMAP <c>ALL</c> search key from the provided <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// An instance of <see cref="IMAP_t_Search_Key_All"/> representing the
@@ -53,18 +53,18 @@ namespace LumiSoft.Net.IMAP
         /// Thrown when the next token is not the IMAP <c>ALL</c> search key.
         /// </exception>
         /// <remarks>
-        /// The <c>ALL</c> search key is defined by RFC 3501 as selecting every message
+        /// The <c>ALL</c> search key is defined by RFC 9051 as selecting every message
         /// in the currently selected mailbox. This method validates that the next
         /// token in the input stream matches <c>ALL</c> (case‑insensitive) and returns
         /// the corresponding search‑key object.
         /// </remarks>
-        internal static IMAP_t_Search_Key_All Parse(StringReader r)
+        internal static IMAP_t_Search_Key_All Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"ALL",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'ALL' key.");
             }
@@ -83,7 +83,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns>
         /// The string <c>"ALL"</c>, which instructs the IMAP server to match every
         /// message in the currently selected mailbox. This is the most permissive
-        /// search key and is defined by RFC 3501 as selecting all messages without
+        /// search key and is defined by RFC 9051 as selecting all messages without
         /// restriction.
         /// </returns>
         public override string ToString()

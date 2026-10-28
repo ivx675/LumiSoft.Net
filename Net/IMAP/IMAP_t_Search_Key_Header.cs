@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>HEADER</c> search key is defined by RFC 3501. It matches messages
+    /// The <c>HEADER</c> search key is defined by RFC 9051. It matches messages
     /// that contain a header field with the specified field-name (as defined in
     /// RFC 2822) and whose header field value — the text appearing after the
     /// colon — contains the specified string using a case-insensitive substring
@@ -39,7 +39,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <param name="value">
         /// The value to match within the specified header field. Matching is
-        /// performed as a case‑insensitive substring search, as defined by RFC 3501.
+        /// performed as a case‑insensitive substring search, as defined by RFC 9051.
         /// </param>
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="fieldName"/> or <paramref name="value"/>
@@ -66,57 +66,55 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses the IMAP <c>HEADER</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH <c>HEADER</c> key from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to
+        /// parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Header"/> instance containing the
-        /// parsed header field name and value.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Header"/> instance representing the
+        /// parsed <c>HEADER</c> search key.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown when the next token is not <c>HEADER</c>, or when either the
-        /// field name or value cannot be parsed as valid IMAP strings.
+        /// Thrown when the next token is not <c>HEADER</c>, when the header
+        /// field name is invalid, or when the search string cannot be parsed
+        /// as a valid IMAP string.
         /// </exception>
         /// <remarks>
+        /// The <c>HEADER</c> search key matches messages whose specified
+        /// header field contains the supplied string. Matching is
+        /// case-insensitive.
         /// <para>
-        /// The <c>HEADER</c> search key is defined by RFC 3501 and selects messages
-        /// whose specified header field contains the given value, using a
-        /// case‑insensitive substring match.
+        /// The header field name is read as an IMAP atom. The search string
+        /// is an IMAP string and may be supplied as an atom, quoted string,
+        /// or literal.
         /// </para>
         /// <para>
-        /// Both arguments are IMAP strings and may be supplied either as quoted
-        /// strings or as literals. Parsing is performed using
-        /// <see cref="IMAP_Utils.ReadString(StringReader)"/>, which supports both
-        /// formats. This allows the <c>HEADER</c> key to contain two literals.
+        /// A zero-length search string matches all messages that contain the
+        /// specified header field, regardless of the field's value.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Header Parse(StringReader r)
+        internal static async Task<IMAP_t_Search_Key_Header> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"HEADER",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'HEADER' key.");
             }
-            string? fieldName = IMAP_Utils.ReadString(r);
-            if(fieldName == null){
-                throw new ParseException("Parse error: Invalid 'HEADER' field-name value.");
-            }
-            string? value = IMAP_Utils.ReadString(r);
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'HEADER' string value.");
-            }
+            string fieldName = await r.ReadStringAsync() ?? "";
+            string value = await r.ReadStringAsync() ?? "";
 
             return new IMAP_t_Search_Key_Header(fieldName,value);
         }
@@ -133,7 +131,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns>
         /// A string of the form <c>HEADER "field-name" "value"</c>, selecting
         /// messages whose specified header field contains the given value,
-        /// using a case‑insensitive substring match as defined by RFC 3501.
+        /// using a case‑insensitive substring match as defined by RFC 9051.
         /// </returns>
         /// <remarks>
         /// <para>
@@ -162,7 +160,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>HEADER</c> search key is defined by RFC 3501 and selects messages
+        /// The <c>HEADER</c> search key is defined by RFC 9051 and selects messages
         /// whose specified header field contains the given value, using a
         /// case‑insensitive substring match.
         /// </para>
@@ -210,7 +208,7 @@ namespace LumiSoft.Net.IMAP
         /// <para>
         /// The value represents the case‑insensitive substring to search for within
         /// the specified header field’s text (the portion appearing after the colon),
-        /// as defined by RFC 3501.
+        /// as defined by RFC 9051.
         /// </para>
         /// <para>
         /// A zero‑length value matches all messages that contain the specified

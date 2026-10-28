@@ -7,14 +7,24 @@ using LumiSoft.Net.IMAP.Client;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// Represents the IMAP <c>OLD</c> search key, which matches messages that
-    /// do not carry the <c>\Recent</c> flag.
+    /// Represents the IMAP <c>OLD</c> search key, which matches messages
+    /// that do not carry the <c>\Recent</c> flag.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>OLD</c> search key is defined by RFC 3501 and selects messages
-    /// that are not newly delivered to the mailbox. It is effectively the
-    /// inverse of the <c>RECENT</c> search key.
+    /// The <c>OLD</c> search key is defined by RFC 3501 and selects
+    /// messages that are not newly delivered to the mailbox. It is
+    /// effectively the inverse of the <c>RECENT</c> search key.
+    /// </para>
+    /// <para>
+    /// This search key is obsolete in IMAP4rev2 (RFC 9051) because the
+    /// <c>\Recent</c> message flag has been removed from the protocol.
+    /// New applications should not rely on the presence of the
+    /// <c>OLD</c> search key.
+    /// </para>
+    /// <para>
+    /// Support for this search key is retained only for compatibility
+    /// with IMAP4rev1 clients.
     /// </para>
     /// </remarks>
     public class IMAP_t_Search_Key_Old : IMAP_t_Search_Key
@@ -31,10 +41,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>OLD</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Old"/> instance representing
@@ -46,13 +56,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>OLD</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Old Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Old Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"OLD",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'OLD' key.");
             }

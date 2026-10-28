@@ -5,7 +5,10 @@ using System.Text;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// This is class represents IMAP server <b>CAPABILITY</b> optional response code. Defined in RFC 3501 7.1.
+    /// Represents the IMAP CAPABILITY response code.
+    /// Defined by RFC 9051 as a response code carrying a capability list,
+    /// commonly used in tagged OK responses to advertise the capabilities
+    /// available in the current session state.
     /// </summary>
     public class IMAP_t_orc_Capability : IMAP_t_orc
     {
@@ -62,7 +65,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns></returns>
         public override string ToString()
         {
-            return "CAPABILITY (" + Net_Utils.ArrayToString(m_pCapabilities," ") + ")";
+            return "CAPABILITY " + string.Join(' ',m_pCapabilities);
         }
 
         #endregion

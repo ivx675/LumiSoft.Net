@@ -20,6 +20,7 @@ namespace LumiSoft.Net.IMAP.Server
         /// </summary>
         public IMAP_Server()
         {
+            this.SessionIdleTimeout = 30 * 60;
         }
 
 

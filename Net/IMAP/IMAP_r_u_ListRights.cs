@@ -217,69 +217,62 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP wire‑format representation of this LISTRIGHTS response
-        /// using <see cref="IMAP_Mailbox_Encoding.None"/> for mailbox encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// LISTRIGHTS response with UTF-8 mailbox names allowed.
         /// </summary>
         /// <returns>
-        /// A string containing the serialized LISTRIGHTS untagged response in IMAP
-        /// protocol format.
+        /// A string containing the serialized IMAP
+        /// <c>LISTRIGHTS</c> response.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// This overload is a convenience method that calls
-        /// <see cref="ToString(IMAP_Mailbox_Encoding)"/> with
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>. It produces the same output as
-        /// the encoding‑aware version, except that mailbox names are emitted without
-        /// IMAP UTF‑7 encoding.
-        /// </para>
-        /// <para>
-        /// The returned string includes the mailbox name, identifier, required rights,
-        /// and any optional rights, formatted according to RFC 4314.
-        /// </para>
+        /// This method is equivalent to calling
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Converts this LISTRIGHTS response to its IMAP wire‑format representation.
+        /// Returns the IMAP wire-format representation of this
+        /// LISTRIGHTS response.
         /// </summary>
-        /// <param name="encoding">
-        /// The mailbox encoding to use when serializing the folder name. The value
-        /// determines how the mailbox is encoded (typically IMAP UTF‑7) before being
-        /// written to the output string.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A string containing the IMAP LISTRIGHTS untagged response in protocol
-        /// format, including the mailbox name, identifier, required rights, and any
-        /// optional rights returned by the server.
+        /// A string containing the IMAP <c>LISTRIGHTS</c> untagged
+        /// response in protocol format, including the mailbox name,
+        /// identifier, required rights, and any optional rights.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// The output format follows RFC 4314 and has the form:
-        /// </para>
+        /// The output format follows RFC 4314:
         /// <code>
-        /// * LISTRIGHTS &lt;mailbox&gt; &lt;identifier&gt; &lt;required&gt; [ &lt;optional&gt; ... ]
+        /// * LISTRIGHTS &lt;mailbox&gt; &lt;identifier&gt;
+        ///   &lt;required-rights&gt; [ &lt;optional-rights&gt; ... ]
         /// </code>
         /// <para>
-        /// Optional rights are emitted as individual IMAP atoms separated by spaces.
-        /// If no optional rights are present, the response omits the optional rights
-        /// section entirely. Required rights may be an empty string.
+        /// Optional rights are emitted as individual IMAP atoms
+        /// separated by spaces. If no optional rights are present,
+        /// the optional rights portion of the response is omitted.
         /// </para>
         /// <para>
-        /// This method does not perform any normalization or interpretation of rights.
-        /// All values are serialized exactly as stored in the object.
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names are encoded as
+        /// required for IMAP servers that do not permit UTF-8 mailbox
+        /// names in protocol responses.
         /// </para>
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             // Example: S: * LISTRIGHTS ~/Mail/saved smith "" l r swicdkxte
 
             StringBuilder retVal = new StringBuilder();
 
             retVal.Append("* LISTRIGHTS ");
-            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName, encoding));
+            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed));
             retVal.Append(" ");
             retVal.Append(m_Identifier);
             retVal.Append(" ");

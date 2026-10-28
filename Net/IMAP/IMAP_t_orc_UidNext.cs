@@ -9,13 +9,13 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     public class IMAP_t_orc_UidNext : IMAP_t_orc
     {
-        private int m_UidNext = 0;
+        private long m_UidNext = 0;
 
         /// <summary>
         /// Default constructor.
         /// </summary>
         /// <param name="uidNext">Next UID value.</param>
-        public IMAP_t_orc_UidNext(int uidNext)
+        public IMAP_t_orc_UidNext(long uidNext)
         {
             m_UidNext = uidNext;
         }
@@ -68,7 +68,7 @@ namespace LumiSoft.Net.IMAP
         /// <summary>
         /// Gets next message predicted UID value.
         /// </summary>
-        public int UidNext
+        public long UidNext
         {
             get{ return m_UidNext; }
         }

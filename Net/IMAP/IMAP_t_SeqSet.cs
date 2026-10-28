@@ -81,6 +81,7 @@ namespace LumiSoft.Net.IMAP
         /// <param name="value">Sequence-set string.</param>
         /// <returns>Returns parse sequence set.</returns>
         /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
+		/// <exception cref="ParseException">Is raised when <b>value</b> is not valid seq-set value.</exception>
         public static IMAP_t_SeqSet Parse(string value)
         {
             if(value == null){

@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>SEEN</c> search key is defined by RFC 3501 and selects messages
+    /// The <c>SEEN</c> search key is defined by RFC 9051 and selects messages
     /// that have already been read or otherwise marked as seen by the client.
     /// </para>
     /// </remarks>
@@ -30,10 +30,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>SEEN</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Seen"/> instance representing
@@ -45,13 +45,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>SEEN</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Seen Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Seen Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"SEEN",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'SEEN' key.");
             }
@@ -72,7 +72,7 @@ namespace LumiSoft.Net.IMAP
         /// <c>\Seen</c> flag set.
         /// </returns>
         /// <remarks>
-        /// The <c>SEEN</c> search key is defined by RFC 3501 and selects messages
+        /// The <c>SEEN</c> search key is defined by RFC 9051 and selects messages
         /// that have already been read or otherwise marked as seen by the client.
         /// </remarks>
         public override string ToString()
@@ -93,7 +93,7 @@ namespace LumiSoft.Net.IMAP
         /// The command builder receiving the serialized search key.
         /// </param>
         /// <remarks>
-        /// The <c>SEEN</c> search key is a flag‑type criterion defined by RFC 3501.
+        /// The <c>SEEN</c> search key is a flag‑type criterion defined by RFC 9051.
         /// It carries no associated value and is emitted as a fixed keyword token
         /// in IMAP <c>SEARCH</c> and <c>UID SEARCH</c> commands.
         /// </remarks>

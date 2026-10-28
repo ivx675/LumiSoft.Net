@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>KEYWORD</c> search key is defined by RFC 3501 and matches messages
+    /// The <c>KEYWORD</c> search key is defined by RFC 9051 and matches messages
     /// whose flags include the specified keyword. The keyword argument is an
     /// IMAP string and may be represented as an atom, a quoted string, or an
     /// IMAP literal.
@@ -36,7 +36,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The <c>KEYWORD</c> search key selects messages that have the specified
-        /// keyword set, as defined by RFC 3501.
+        /// keyword set, as defined by RFC 9051.
         /// </para>
         /// </remarks>
         public IMAP_t_Search_Key_Keyword(string value)
@@ -53,10 +53,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>KEYWORD</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Keyword"/> instance containing the
@@ -72,25 +72,22 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The <c>KEYWORD</c> search key selects messages that have the specified
-        /// keyword (flag) set, as defined by RFC 3501. The keyword argument is an
+        /// keyword (flag) set, as defined by RFC 9051. The keyword argument is an
         /// IMAP string and may be represented as an atom, a quoted string, or an
         /// IMAP literal.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Keyword Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Keyword Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"KEYWORD",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'KEYWORD' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'KEYWORD' value.");
-            }
+            string value = r.ReadAtom();
 
             return new IMAP_t_Search_Key_Keyword(value);
         }
@@ -111,7 +108,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The <c>KEYWORD</c> search key selects messages that have the specified
-        /// keyword (flag) set, as defined by RFC 3501. The keyword is an IMAP
+        /// keyword (flag) set, as defined by RFC 9051. The keyword is an IMAP
         /// string and may be represented as an atom, a quoted string, or an IMAP
         /// literal when serialized through <c>ToCommandBuilder</c>.
         /// </para>
@@ -140,7 +137,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>KEYWORD</c> search key is defined by RFC 3501 and selects messages
+        /// The <c>KEYWORD</c> search key is defined by RFC 9051 and selects messages
         /// that have the specified keyword (flag) set. The flag argument is an IMAP
         /// string and may be represented as an atom, a quoted string, or an IMAP
         /// literal.
@@ -168,7 +165,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The value represents the keyword that must be present on a message for
-        /// the <c>KEYWORD</c> search key to match, as defined by RFC 3501.
+        /// the <c>KEYWORD</c> search key to match, as defined by RFC 9051.
         /// </para>
         /// </remarks>
         public string Value

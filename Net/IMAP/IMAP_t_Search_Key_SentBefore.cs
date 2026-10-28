@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>SENTBEFORE</c> search key is defined by RFC 3501 and compares the
+    /// The <c>SENTBEFORE</c> search key is defined by RFC 9051 and compares the
     /// message’s *envelope date*—the date found in the message header—to the
     /// provided value. Messages whose envelope date is strictly earlier than
     /// the given date satisfy the search criterion.
@@ -20,7 +20,7 @@ namespace LumiSoft.Net.IMAP
     /// </remarks>
     public class IMAP_t_Search_Key_SentBefore : IMAP_t_Search_Key
     {
-        private DateTime m_Date;
+        private DateOnly m_Date;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="IMAP_t_Search_Key_SentBefore"/>
@@ -31,7 +31,7 @@ namespace LumiSoft.Net.IMAP
         /// Messages whose envelope date is strictly earlier than this value will
         /// satisfy the search criterion.
         /// </param>
-        public IMAP_t_Search_Key_SentBefore(DateTime value)
+        public IMAP_t_Search_Key_SentBefore(DateOnly value)
         {
             m_Date = value;
         }
@@ -41,10 +41,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>SENTBEFORE</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_SentBefore"/> instance containing
@@ -68,27 +68,17 @@ namespace LumiSoft.Net.IMAP
         /// using <see cref="IMAP_Utils.ParseDate"/>.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_SentBefore Parse(StringReader r)
+        internal static IMAP_t_Search_Key_SentBefore Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"SENTBEFORE",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'SENTBEFORE' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'SENTBEFORE' value.");
-            }
-            DateTime date;
-            try{
-                date = IMAP_Utils.ParseDate(value);
-            }
-            catch{
-                throw new ParseException("Parse error: Invalid 'SENTBEFORE' value.");
-            }
+            DateOnly date = r.ReadDate();
 
             return new IMAP_t_Search_Key_SentBefore(date);
         }
@@ -108,7 +98,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>SENTBEFORE</c> search key is defined by RFC 3501 and compares
+        /// The <c>SENTBEFORE</c> search key is defined by RFC 9051 and compares
         /// the message’s *envelope* date (the date in the message header), not
         /// the internal IMAP date. The comparison is performed at day granularity.
         /// </para>
@@ -135,7 +125,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>SENTBEFORE</c> search key is defined by RFC 3501 and compares
+        /// The <c>SENTBEFORE</c> search key is defined by RFC 9051 and compares
         /// the message’s *envelope* date (the date in the message header) to the
         /// specified value. Messages whose envelope date is earlier than the
         /// given date satisfy the criterion.
@@ -164,9 +154,9 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// Messages whose envelope date is strictly earlier than this value will
         /// satisfy the <c>SENTBEFORE</c> search criterion. The comparison is
-        /// performed at day granularity, as defined by RFC 3501.
+        /// performed at day granularity, as defined by RFC 9051.
         /// </remarks>
-        public DateTime Date
+        public DateOnly Date
         {
             get{ return m_Date; }
         }

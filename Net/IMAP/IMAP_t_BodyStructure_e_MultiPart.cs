@@ -27,7 +27,7 @@ namespace LumiSoft.Net.IMAP
         private string?                      m_Location            = null;
         private IMAP_t_BodyStructure_e[]     m_pBodyParts;
 
-        private IMAP_t_BodyStructure_e_MultiPart(
+        internal IMAP_t_BodyStructure_e_MultiPart(
             MIME_h_ContentType contentType,
             MIME_h_ContentDisposition? contentDisposition,
             string? language,

@@ -11,13 +11,14 @@ A cross‑platform .NET networking library providing **client and server compone
  
 - **POP3 Client** (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, APOP, TOP, USER, UIDL, RESP-CODES, UTF8,Socks5, http-connect)
 
-- **IMAP Client** (STARTTLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, IDLE, LITERAL+, UIDPLUS, Gmail extensions, Socks5, http-connect)
+- **IMAP Client** (STARTTLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5/NTLM/XOAUTH/XOAUTH2, IDLE, LITERAL+, UIDPLUS, ENABLE, UTF8=ACCEPT, Gmail extensions, Socks5, http-connect)
 
 - **SMTP Server** (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5, SIZE, DSN, CHUNKING, ENHANCEDSTATUSCODES)
 
 - **POP3 Server** (STLS, SASL PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5, TOP, USER, UIDL)
 
-- **IMAP Server**
+- **IMAP Server** (STARTTLS, AUTH PLAIN/LOGIN/CRAM-MD5/DIGEST-MD5, IMAP4rev2, NAMESPACE, QUOTA, ACL, IDLE, ENABLE, UTF8=ACCEPT, SASL-IR, UIDPLUS)
+- 
 - **MIME** message creation and parsing
 
 ### Networking Components
@@ -31,6 +32,12 @@ A cross‑platform .NET networking library providing **client and server compone
 ---
 
 ## Version History
+
+### 10.4.0 (28.10.2026)
+
+#### IMAP Server
+- Complete rewrite with fully modern async/await implementation 
+- Added usage example, see Examples link below
 
 ### 10.3.0 (08.10.2026)
 

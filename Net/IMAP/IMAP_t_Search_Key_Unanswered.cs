@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>UNANSWERED</c> search key is defined by RFC 3501 and selects
+    /// The <c>UNANSWERED</c> search key is defined by RFC 9051 and selects
     /// messages that have not been replied to. It is the logical inverse of
     /// the <c>ANSWERED</c> search key.
     /// </para>
@@ -31,10 +31,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>UNANSWERED</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Unanswered"/> instance representing
@@ -46,13 +46,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>UNANSWERED</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Unanswered Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Unanswered Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"UNANSWERED",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'UNANSWERED' key.");
             }
@@ -73,7 +73,7 @@ namespace LumiSoft.Net.IMAP
         /// the <c>\Answered</c> flag set.
         /// </returns>
         /// <remarks>
-        /// The <c>UNANSWERED</c> search key is defined by RFC 3501 and selects
+        /// The <c>UNANSWERED</c> search key is defined by RFC 9051 and selects
         /// messages that have not been replied to. As a flag‑type search key, it
         /// carries no associated value and is serialized as a fixed keyword in
         /// IMAP <c>SEARCH</c> and <c>UID SEARCH</c> commands.
@@ -97,7 +97,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>UNANSWERED</c> search key is defined by RFC 3501 and matches
+        /// The <c>UNANSWERED</c> search key is defined by RFC 9051 and matches
         /// messages that do not carry the <c>\Answered</c> flag.
         /// </para>
         /// <para>

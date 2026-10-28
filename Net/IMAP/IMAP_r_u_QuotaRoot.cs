@@ -213,71 +213,60 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP wire‑format representation of this
-        /// <c>QUOTAROOT</c> response using <see cref="IMAP_Mailbox_Encoding.None"/>
-        /// for mailbox and quota‑root encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>QUOTAROOT</c> response with UTF-8 mailbox names and quota
+        /// roots allowed.
         /// </summary>
         /// <returns>
-        /// A string containing the serialized <c>QUOTAROOT</c> response,
-        /// terminated with CRLF, suitable for logging or transmission.
+        /// A string containing the serialized IMAP
+        /// <c>QUOTAROOT</c> response.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// This method is a convenience overload that formats the response
-        /// without applying IMAP UTF‑7 encoding to mailbox names or quota roots.
-        /// It is equivalent to calling:
-        /// </para>
-        /// <code>
-        /// ToString(IMAP_Mailbox_Encoding.None)
-        /// </code>
-        /// <para>
-        /// The resulting output follows the syntax defined in RFC 2087:
-        /// </para>
-        /// <code>
-        /// * QUOTAROOT &lt;mailbox&gt; &lt;root1&gt; [&lt;root2&gt; ...]\r\n
-        /// </code>
+        /// This method is equivalent to calling
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Converts this <c>QUOTAROOT</c> response to its IMAP wire‑format
-        /// representation using the specified mailbox encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>QUOTAROOT</c> response.
         /// </summary>
-        /// <param name="encoding">
-        /// The mailbox encoding to use when serializing the mailbox name and
-        /// quota roots. This is typically IMAP UTF‑7 for servers that require
-        /// encoded mailbox names.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names and quota roots are
+        /// permitted in the generated IMAP response.
         /// </param>
         /// <returns>
-        /// A string containing the IMAP‑formatted <c>QUOTAROOT</c> response,
-        /// terminated with CRLF, suitable for transmission to an IMAP client
-        /// or for logging.
+        /// A string containing the IMAP <c>QUOTAROOT</c> response in
+        /// protocol format, terminated with CRLF.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// The serialized form follows the syntax defined in RFC 2087:
-        /// </para>
+        /// The output format follows RFC 2087:
         /// <code>
-        /// * QUOTAROOT &lt;mailbox&gt; &lt;root1&gt; [&lt;root2&gt; ...]\r\n
+        /// * QUOTAROOT &lt;mailbox&gt; &lt;root1&gt; [&lt;root2&gt; ...]
         /// </code>
         /// <para>
-        /// The mailbox name is encoded using the specified
-        /// <paramref name="encoding"/>. Each quota root is also encoded and
-        /// emitted as a quoted IMAP <em>astring</em>. If the response contains
-        /// no quota roots, only the mailbox name is emitted.
+        /// The response contains the mailbox name followed by zero or
+        /// more quota roots associated with the mailbox.
+        /// </para>
+        /// <para>
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names and quota roots are
+        /// encoded as required for IMAP servers that do not permit
+        /// UTF-8 mailbox names in protocol responses.
         /// </para>
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             // Example:    S: * QUOTAROOT INBOX ""
 
             StringBuilder retVal = new StringBuilder();
-            retVal.Append("* QUOTAROOT " + IMAP_Utils.EncodeMailbox(m_FolderName,encoding));
+            retVal.Append("* QUOTAROOT " + IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed));
             foreach(string root in m_QuotaRoots){
-                retVal.Append(" " + IMAP_Utils.EncodeMailbox(root,encoding) + "");
+                retVal.Append(" " + IMAP_Utils.EncodeMailbox(root,utf8Allowed) + "");
             }
             retVal.Append("\r\n");
 

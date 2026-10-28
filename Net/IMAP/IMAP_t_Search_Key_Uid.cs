@@ -13,7 +13,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>UID</c> search key is defined by RFC 3501 and uses the same
+    /// The <c>UID</c> search key is defined by RFC 9051 and uses the same
     /// sequence‑set grammar as standard IMAP sequence‑sets, but operates on
     /// stable message UIDs rather than ephemeral message sequence numbers.
     /// </para>
@@ -36,7 +36,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>UID</c> search key is defined by RFC 3501 and restricts the
+        /// The <c>UID</c> search key is defined by RFC 9051 and restricts the
         /// search to messages whose unique identifiers fall within the provided
         /// sequence‑set.
         /// </para>
@@ -55,10 +55,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>UID</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Uid"/> instance containing the
@@ -73,27 +73,24 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>UID</c> search key is defined by RFC 3501 and restricts the
+        /// The <c>UID</c> search key is defined by RFC 9051 and restricts the
         /// search to messages whose unique identifiers fall within the specified
         /// sequence‑set. UID sequence‑sets follow the same grammar as standard
         /// IMAP sequence‑sets but operate on stable message UIDs.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Uid Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Uid Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"UID",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'UID' key.");
             }
-            r.ReadToFirstChar();
-            string value = r.QuotedReadToDelimiter(' ');
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'UID' value.");
-            }
+            
+            string value = r.ReadAtom();
             
             try{
                 return new IMAP_t_Search_Key_Uid(IMAP_t_SeqSet.Parse(value));
@@ -118,7 +115,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>UID</c> search key is defined by RFC 3501 and restricts the
+        /// The <c>UID</c> search key is defined by RFC 9051 and restricts the
         /// search to messages whose unique identifiers fall within the specified
         /// sequence‑set.
         /// </para>
@@ -142,7 +139,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>UID</c> search key is defined by RFC 3501 and restricts the
+        /// The <c>UID</c> search key is defined by RFC 9051 and restricts the
         /// search to messages whose unique identifiers fall within the specified
         /// sequence‑set.
         /// </para>

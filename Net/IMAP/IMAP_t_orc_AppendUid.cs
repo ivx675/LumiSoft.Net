@@ -5,22 +5,27 @@ using System.Text;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// This is class represents IMAP server <b>APPENDUID</b> optional response code. Defined in RFC 4315.
+    /// Represents the IMAP APPENDUID optional response code defined in
+    /// RFC 4315.
     /// </summary>
     public class IMAP_t_orc_AppendUid : IMAP_t_orc
     {
-        private long m_MailboxUid = 0;
-        private int  m_MessageUid = 0;
+        private long m_UidValidity = 0;
+        private int  m_MessageUid  = 0;
 
         /// <summary>
         /// Default constructor.
         /// </summary>
-        /// <param name="mailboxUid">Mailbox UID value.</param>
-        /// <param name="msgUid">Message UID value.</param>
-        public IMAP_t_orc_AppendUid(long mailboxUid,int msgUid)
+        /// <param name="folderUidValidity">
+        /// The UIDVALIDITY value of the destination mailbox.
+        /// </param>
+        /// <param name="messageUid">
+        /// The UID assigned to the appended message.
+        /// </param>
+        public IMAP_t_orc_AppendUid(long folderUidValidity,int messageUid)
         {
-            m_MailboxUid = mailboxUid;
-            m_MessageUid = msgUid;
+            m_UidValidity = folderUidValidity;
+            m_MessageUid  = messageUid;
         }
 
 
@@ -46,15 +51,15 @@ namespace LumiSoft.Net.IMAP
                   mailbox with that UID.
             */
 
-            string[] code_mailboxUid_msgUid = r.ReadParenthesized().Split(new char[]{' '},3);
-            if(!string.Equals("APPENDUID",code_mailboxUid_msgUid[0],StringComparison.InvariantCultureIgnoreCase)){
+            string[] code_uidValidity_messageUid = r.ReadParenthesized().Split(new char[]{' '},3);
+            if(!string.Equals("APPENDUID",code_uidValidity_messageUid[0],StringComparison.InvariantCultureIgnoreCase)){
                 throw new ArgumentException("Invalid APPENDUID response value.","r");
             }
-            if(code_mailboxUid_msgUid.Length != 3){
+            if(code_uidValidity_messageUid.Length != 3){
                 throw new ArgumentException("Invalid APPENDUID response value.","r");
             }
 
-            return new IMAP_t_orc_AppendUid(Convert.ToInt64(code_mailboxUid_msgUid[1]),Convert.ToInt32(code_mailboxUid_msgUid[2]));
+            return new IMAP_t_orc_AppendUid(Convert.ToInt64(code_uidValidity_messageUid[1]),Convert.ToInt32(code_uidValidity_messageUid[2]));
         }
 
         #endregion
@@ -68,7 +73,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns></returns>
         public override string ToString()
         {
-            return "APPENDUID " + m_MailboxUid + " " + m_MessageUid;
+            return "APPENDUID " + m_UidValidity + " " + m_MessageUid;
         }
 
         #endregion
@@ -77,15 +82,15 @@ namespace LumiSoft.Net.IMAP
         #region Properties implementation
 
         /// <summary>
-        /// Gets mailbox(folder) UID value.
+        /// Gets the UIDVALIDITY value of the destination folder.
         /// </summary>
-        public long MailboxUid
+        public long FolderUidValidity
         {
-            get{ return m_MailboxUid; }
+            get{ return m_UidValidity; }
         }
 
         /// <summary>
-        /// Gets message UID value.
+        /// Gets the UID assigned to the appended message.
         /// </summary>
         public int MessageUid
         {

@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Parenthesized groups are defined by RFC 3501 as a mechanism for
+    /// Parenthesized groups are defined by RFC 9051 as a mechanism for
     /// controlling operator precedence within IMAP SEARCH expressions.
     /// A group may contain any number of search keys, including nested
     /// groups or logical operators such as <c>OR</c> and <c>NOT</c>.
@@ -42,7 +42,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// Parenthesized groups are defined by RFC 3501 as composite search
+        /// Parenthesized groups are defined by RFC 9051 as composite search
         /// expressions that control operator precedence. A group may contain any
         /// number of search keys, including nested groups or logical operators
         /// such as <c>OR</c> and <c>NOT</c>.
@@ -61,53 +61,63 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses a parenthesized IMAP search‑key group from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH key group from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the group to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the start of the
+        /// group to parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Group"/> instance containing all
-        /// search keys found inside the parenthesized expression.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Group"/> instance representing the
+        /// parsed search-key group.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Thrown when the group is malformed, contains an invalid search
+        /// key, or a parenthesized group is not properly terminated.
         /// </exception>
         /// <remarks>
-        /// <para>
-        /// Parenthesized groups are defined by RFC 3501 as composite search
-        /// expressions that control operator precedence. A group may contain any
-        /// number of search keys, including nested groups or logical operators
-        /// such as <c>OR</c> and <c>NOT</c>.
-        /// </para>
-        /// <para>
-        /// If the reader begins with an opening parenthesis, the method extracts
-        /// the full parenthesized substring using <c>ReadParenthesized</c> and
-        /// parses its contents as a standalone search expression. Each contained
-        /// search key is parsed by delegating to
-        /// <see cref="IMAP_t_Search_Key.ParseKey(StringReader)"/>.
-        /// </para>
+        /// Parenthesized groups are composite SEARCH expressions that
+        /// contain one or more search keys. Groups may contain nested
+        /// groups and logical operators such as <c>OR</c> and <c>NOT</c>.
         /// </remarks>
-        public static IMAP_t_Search_Key_Group Parse(StringReader r)
+        internal static async Task<IMAP_t_Search_Key_Group> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
-
-            // Remove parenthesis, if any.
-            if(r.StartsWith("(")){
-                r = new StringReader(r.ReadParenthesized());
-            }            
-
+                    
             List<IMAP_t_Search_Key> keys = new List<IMAP_t_Search_Key>();
 
-            r.ReadToFirstChar();
-            while(r.Available > 0){
-                keys.Add(IMAP_t_Search_Key.ParseKey(r));
+            if(r.PeekIs('(')) {
+                r.ReadChar();
+
+                while(true){
+                    if(!r.HasMore){
+                        throw new ParseException("Parse error: Unterminated SEARCH key group.");
+                    }
+
+                    if(r.PeekIs(')')){
+                        r.ReadChar();
+
+                        break;
+                    }
+
+                    keys.Add(await IMAP_t_Search_Key.ParseKeyAsync(r));
+                }
+
+            }
+            else{
+                while(r.HasMore){
+                    keys.Add(await IMAP_t_Search_Key.ParseKeyAsync(r));
+                }
             }
 
             return new IMAP_t_Search_Key_Group(keys.ToArray());
@@ -128,7 +138,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// Parenthesized groups are defined by RFC 3501 as composite search
+        /// Parenthesized groups are defined by RFC 9051 as composite search
         /// expressions that control operator precedence. A group may contain any
         /// number of search keys, including nested groups or logical operators
         /// such as <c>OR</c> and <c>NOT</c>.
@@ -168,7 +178,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// Parenthesized groups are defined by RFC 3501 as a way to combine
+        /// Parenthesized groups are defined by RFC 9051 as a way to combine
         /// multiple search keys into a single composite expression. Grouping
         /// affects operator precedence, allowing complex expressions such as
         /// <c>(OR FROM "alice" TO "bob")</c> or nested logical constructs.
@@ -203,7 +213,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Parenthesized groups are defined by RFC 3501 as composite search
+        /// Parenthesized groups are defined by RFC 9051 as composite search
         /// expressions that control operator precedence. A group may contain any
         /// number of search keys, including nested groups or logical operators
         /// such as <c>OR</c> and <c>NOT</c>.

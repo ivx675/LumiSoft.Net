@@ -1,8 +1,9 @@
-﻿using System;
-using System.IO;
+﻿using LumiSoft.Net.IMAP.Client;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
-using LumiSoft.Net.IMAP.Client;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace LumiSoft.Net.IMAP
 {
@@ -12,14 +13,14 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>BEFORE</c> search key is defined by RFC 3501 and selects all
+    /// The <c>BEFORE</c> search key is defined by RFC 9051 and selects all
     /// messages with an internal date strictly earlier than the given day.
     /// The comparison is performed at day granularity.
     /// </para>
     /// </remarks>
     public class IMAP_t_Search_Key_Before : IMAP_t_Search_Key
     {
-        private DateTime m_Date;
+        private DateOnly m_Date;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="IMAP_t_Search_Key_Before"/>
@@ -30,7 +31,7 @@ namespace LumiSoft.Net.IMAP
         /// internal date is strictly earlier than this value will match the
         /// search criterion.
         /// </param>
-        public IMAP_t_Search_Key_Before(DateTime date)
+        public IMAP_t_Search_Key_Before(DateOnly date)
         {
             m_Date = date;
         }
@@ -40,10 +41,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>BEFORE</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Before"/> instance containing the
@@ -56,27 +57,18 @@ namespace LumiSoft.Net.IMAP
         /// Thrown when the next token is not <c>BEFORE</c> or when the date
         /// value cannot be parsed using IMAP date syntax.
         /// </exception>
-        internal static IMAP_t_Search_Key_Before Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Before Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string? word = r.ReadAtom();
             if(!string.Equals(word,"BEFORE",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'BEFORE' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'BEFORE' value.");
-            }
-            DateTime date;
-            try{
-                date = IMAP_Utils.ParseDate(value);
-            }
-            catch{
-                throw new ParseException("Parse error: Invalid 'BEFORE' value.");
-            }
+            
+            DateOnly date = r.ReadDate();
 
             return new IMAP_t_Search_Key_Before(date);
         }
@@ -96,7 +88,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>BEFORE</c> search key is defined by RFC 3501 and filters messages
+        /// The <c>BEFORE</c> search key is defined by RFC 9051 and filters messages
         /// whose internal date (the server‑assigned message date) is strictly earlier
         /// than the given day. The comparison is performed at day granularity.
         /// </para>
@@ -140,9 +132,9 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// Messages whose internal date is strictly earlier than this value
         /// will match the <c>BEFORE</c> search criterion. The date is interpreted
-        /// at day granularity, as defined by RFC 3501.
+        /// at day granularity, as defined by RFC 9051.
         /// </remarks>
-        public DateTime Date
+        public DateOnly Date
         {
             get{ return m_Date; }
         }

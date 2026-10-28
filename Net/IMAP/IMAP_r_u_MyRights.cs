@@ -175,66 +175,63 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP wire‑format representation of this MYRIGHTS response
-        /// using <see cref="IMAP_Mailbox_Encoding.None"/> for mailbox encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>MYRIGHTS</c> response with UTF-8 mailbox names allowed.
         /// </summary>
         /// <returns>
-        /// A string containing the serialized MYRIGHTS untagged response in IMAP
-        /// protocol format.
+        /// A string containing the serialized IMAP
+        /// <c>MYRIGHTS</c> response.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// This overload is a convenience method that calls
-        /// <see cref="ToString(IMAP_Mailbox_Encoding)"/> with
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>. It produces the same output as
-        /// the encoding‑aware version, except that mailbox names are emitted without
-        /// IMAP UTF‑7 encoding.
-        /// </para>
-        /// <para>
-        /// The returned string includes the mailbox name and the effective rights
-        /// granted to the authenticated user, formatted according to RFC 4314.
-        /// </para>
+        /// This method is equivalent to calling
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Converts this MYRIGHTS response to its IMAP wire‑format representation.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>MYRIGHTS</c> response.
         /// </summary>
-        /// <param name="encoding">
-        /// The mailbox encoding to use when serializing the folder name. This controls
-        /// how the mailbox is emitted (typically IMAP UTF‑7) in the resulting protocol
-        /// string.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A string containing the IMAP MYRIGHTS untagged response in protocol format,
-        /// including the mailbox name and the effective rights granted to the
-        /// authenticated user.
+        /// A string containing the IMAP <c>MYRIGHTS</c> untagged
+        /// response in protocol format, including the mailbox name and
+        /// the effective rights granted to the authenticated user.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// The output format follows RFC 4314 and has the form:
-        /// </para>
+        /// The output format follows RFC 4314:
         /// <code>
         /// * MYRIGHTS &lt;mailbox&gt; &lt;rights&gt;
         /// </code>
         /// <para>
-        /// The mailbox name is encoded using the specified <paramref name="encoding"/>.
-        /// Rights are serialized exactly as stored in the object. If the rights string
-        /// is empty, it is emitted as a quoted empty string (<c>""</c>) because an empty
-        /// atom is not valid in IMAP. Otherwise, rights are emitted as a bare atom
-        /// without surrounding quotes.
+        /// Rights are serialized exactly as stored in the object.
+        /// </para>
+        /// <para>
+        /// If the rights string is empty, it is emitted as a quoted
+        /// empty string (<c>""</c>) because IMAP does not permit empty
+        /// atoms. Otherwise, rights are emitted as an unquoted atom.
+        /// </para>
+        /// <para>
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names are encoded as
+        /// required for IMAP servers that do not permit UTF-8 mailbox
+        /// names in protocol responses.
         /// </para>
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             // Example: S: * MYRIGHTS INBOX rwiptsldaex
 
             StringBuilder retVal = new StringBuilder();
             retVal.Append("* MYRIGHTS ");
-            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName, encoding));
+            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed));
             retVal.Append(" ");
 
             // Rights:

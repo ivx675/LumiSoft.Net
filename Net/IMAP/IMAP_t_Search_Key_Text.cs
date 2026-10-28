@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>TEXT</c> search key is defined by RFC 3501 and performs a
+    /// The <c>TEXT</c> search key is defined by RFC 9051 and performs a
     /// case‑insensitive substring match across the entire message text,
     /// including both header fields and body content.
     /// </para>
@@ -35,7 +35,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>TEXT</c> search key is defined by RFC 3501 and accepts any IMAP
+        /// The <c>TEXT</c> search key is defined by RFC 9051 and accepts any IMAP
         /// string, including quoted strings and literals.
         /// </para>
         /// </remarks>
@@ -49,47 +49,43 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses the IMAP <c>TEXT</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH <c>TEXT</c> key from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to
+        /// parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Text"/> instance containing
-        /// the parsed string argument.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Text"/> instance representing the
+        /// parsed <c>TEXT</c> search key.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown when the next token is not <c>TEXT</c> or when the string
-        /// argument is missing or cannot be parsed.
+        /// Thrown when the next token is not <c>TEXT</c> or when the search
+        /// string cannot be parsed as a valid IMAP string.
         /// </exception>
         /// <remarks>
-        /// <para>
-        /// The <c>TEXT</c> search key is defined by RFC 3501 and performs a
-        /// case‑insensitive substring match across the entire message text,
-        /// including both headers and body.
-        /// </para>
+        /// The <c>TEXT</c> search key matches messages whose headers or body
+        /// contain the specified string. Matching is case-insensitive.
         /// </remarks>
-        internal static IMAP_t_Search_Key_Text Parse(StringReader r)
+        internal static async Task<IMAP_t_Search_Key_Text> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"TEXT",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'TEXT' key.");
             }
-            string? value = IMAP_Utils.ReadString(r);
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'TEXT' value.");
-            }
+            string value = await r.ReadStringAsync() ?? "";
 
             return new IMAP_t_Search_Key_Text(value);
         }
@@ -105,7 +101,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns>
         /// A string of the form <c>TEXT "value"</c>, selecting messages whose
         /// entire message text (headers and body) contains the specified text,
-        /// using a case‑insensitive substring match as defined by RFC 3501.
+        /// using a case‑insensitive substring match as defined by RFC 9051.
         /// </returns>
         /// <remarks>
         /// <para>
@@ -132,7 +128,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>TEXT</c> search key is defined by RFC 3501 and performs a
+        /// The <c>TEXT</c> search key is defined by RFC 9051 and performs a
         /// case‑insensitive substring match against the entire message text,
         /// including both headers and body.
         /// </para>
@@ -160,7 +156,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// <para>
         /// The value is matched as a case‑insensitive substring against the
-        /// entire message text (headers and body), as specified by RFC 3501.
+        /// entire message text (headers and body), as specified by RFC 9051.
         /// </para>
         /// </remarks>
         public string Value

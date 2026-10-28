@@ -5,29 +5,50 @@ using System.Text;
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class provides data for <b cref="IMAP_Session.MyRights">IMAP_Session.MyRights</b> event.
+    /// Provides data for the <see cref="IMAP_Session.MyRightsAsync"/>
+    /// event. This event allows the application to supply the effective
+    /// access rights of the authenticated user for a mailbox.
     /// </summary>
     public class IMAP_e_MyRights : EventArgs
     {
+        private IMAP_Session         m_pSession;
         private IMAP_r_u_MyRights?   m_pMyRightsResponse = null;
         private IMAP_r_ServerStatus  m_pResponse;
         private string               m_Folder;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new <see cref="IMAP_e_MyRights"/> instance
+        /// containing the mailbox name supplied by the client and the
+        /// response object used to return the command result.
         /// </summary>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <param name="response">Default IMAP server response.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>folder</b> or <b>response</b> is null reference.</exception>
-        internal IMAP_e_MyRights(string folder,IMAP_r_ServerStatus response)
+        /// <param name="session">
+        /// The IMAP session that is processing the MYRIGHTS command.
+        /// </param>
+        /// <param name="folder">
+        /// The mailbox whose effective access rights are being queried.
+        /// </param>
+        /// <param name="response">
+        /// The server response object used to return the result to the
+        /// client.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="session"/>,
+        /// <paramref name="folder"/>, or
+        /// <paramref name="response"/> is <see langword="null"/>.
+        /// </exception>
+        internal IMAP_e_MyRights(IMAP_Session session,string folder,IMAP_r_ServerStatus response)
         {
+            if(session == null){
+                throw new ArgumentNullException(nameof(session));
+            }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
             if(response == null){
-                throw new ArgumentNullException("response");
+                throw new ArgumentNullException(nameof(response));
             }
 
+            m_pSession  = session;
             m_Folder    = folder;
             m_pResponse = response;
         }
@@ -36,8 +57,24 @@ namespace LumiSoft.Net.IMAP.Server
         #region Properties implementation
 
         /// <summary>
-        /// Gets or sets MYRIGHTS response.
+        /// Gets the IMAP session associated with this event. The session provides access
+        /// to connection state, authentication status, and server-side context required
+        /// to process the current IMAP command.
         /// </summary>
+        public IMAP_Session Session
+        {
+            get{ return m_pSession; }
+        }
+
+        /// <summary>
+        /// Gets or sets the MYRIGHTS response that will be returned to the
+        /// client.
+        /// </summary>
+        /// <remarks>
+        /// The MYRIGHTS response contains the effective rights of the
+        /// authenticated user for the requested mailbox. A successful
+        /// MYRIGHTS operation should provide a value for this property.
+        /// </remarks>
         public IMAP_r_u_MyRights? MyRightsResponse
         {
             get{ return m_pMyRightsResponse; }
@@ -46,9 +83,12 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets or sets IMAP server response to this operation.
+        /// Gets or sets the <see cref="IMAP_r_ServerStatus"/> that will be
+        /// returned to the client for the MYRIGHTS command.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when null reference value set.</exception>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when a null value is assigned.
+        /// </exception>
         public IMAP_r_ServerStatus Response
         {
             get{ return m_pResponse; }
@@ -63,7 +103,7 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets folder name with optional path.
+        /// Gets the mailbox whose effective access rights are being queried.
         /// </summary>
         public string Folder
         {

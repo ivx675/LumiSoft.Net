@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>SMALLER</c> search key is defined by RFC 3501 and compares the
+    /// The <c>SMALLER</c> search key is defined by RFC 9051 and compares the
     /// message’s total size (in octets) to the provided numeric threshold.
     /// </para>
     /// <para>
@@ -36,7 +36,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>SMALLER</c> search key is defined by RFC 3501 and compares the
+        /// The <c>SMALLER</c> search key is defined by RFC 9051 and compares the
         /// message’s total size (in octets) to the provided numeric threshold.
         /// </para>
         /// </remarks>
@@ -50,10 +50,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>SMALLER</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Smaller"/> instance containing
@@ -68,24 +68,21 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>SMALLER</c> search key is defined by RFC 3501 and selects messages
+        /// The <c>SMALLER</c> search key is defined by RFC 9051 and selects messages
         /// whose size in octets is strictly less than the specified value.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Smaller Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Smaller Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"SMALLER",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'SMALLER' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'SMALLER' value.");
-            }
+            string value = r.ReadAtom();
             int size = 0;
             if(!int.TryParse(value,out size)){
                 throw new ParseException("Parse error: Invalid 'SMALLER' value.");
@@ -108,7 +105,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>SMALLER</c> search key is defined by RFC 3501 and compares the
+        /// The <c>SMALLER</c> search key is defined by RFC 9051 and compares the
         /// message’s total size (in octets) to the provided numeric threshold.
         /// </para>
         /// <para>
@@ -134,7 +131,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>SMALLER</c> search key is defined by RFC 3501 and selects messages
+        /// The <c>SMALLER</c> search key is defined by RFC 9051 and selects messages
         /// whose size in octets is strictly less than the specified value.
         /// </para>
         /// </remarks>
@@ -155,7 +152,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// Messages whose size in octets is strictly less than this value
-        /// will satisfy the <c>SMALLER</c> search criterion, as defined by RFC 3501.
+        /// will satisfy the <c>SMALLER</c> search criterion, as defined by RFC 9051.
         /// </remarks>
         public int Value
         {

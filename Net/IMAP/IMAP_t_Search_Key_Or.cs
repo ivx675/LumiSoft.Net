@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>OR</c> search key is defined by RFC 3501 and matches messages
+    /// The <c>OR</c> search key is defined by RFC 9051 and matches messages
     /// that satisfy <em>either</em> of its two operand search keys. IMAP
     /// SEARCH syntax requires exactly two operands for <c>OR</c>, making it
     /// the only binary logical operator in the SEARCH grammar.
@@ -46,7 +46,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>OR</c> search key is defined by RFC 3501 and performs logical
+        /// The <c>OR</c> search key is defined by RFC 9051 and performs logical
         /// disjunction between two search keys. It matches messages that satisfy
         /// <em>either</em> operand.
         /// </para>
@@ -68,50 +68,49 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses the IMAP <c>OR</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH <c>OR</c> key from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to
+        /// parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Or"/> instance containing the two
-        /// operand search keys combined by logical OR.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Or"/> instance representing the
+        /// parsed <c>OR</c> search key.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown when the next token is not <c>OR</c>, or when either operand
-        /// search key cannot be parsed.
+        /// Thrown when the next token is not <c>OR</c> or when either
+        /// operand search key cannot be parsed.
         /// </exception>
         /// <remarks>
+        /// The <c>OR</c> search key matches messages that satisfy either of
+        /// its two operand search keys.
         /// <para>
-        /// The <c>OR</c> search key is defined by RFC 3501 and matches messages
-        /// that satisfy <em>either</em> of its two operand search keys. IMAP
-        /// SEARCH syntax requires exactly two operands for <c>OR</c>.
-        /// </para>
-        /// <para>
-        /// After reading the <c>OR</c> token, parsing continues by delegating to
-        /// <see cref="IMAP_t_Search_Key.ParseKey(StringReader)"/> twice, once for
-        /// each operand. Each operand may itself be a composite search expression.
+        /// Unlike most SEARCH keys, <c>OR</c> requires exactly two operand
+        /// search keys which are parsed immediately following the
+        /// <c>OR</c> token.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Or Parse(StringReader r)
+        internal static async Task<IMAP_t_Search_Key_Or> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"OR",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'OR' key.");
             }
 
-            return new IMAP_t_Search_Key_Or(IMAP_t_Search_Key.ParseKey(r),IMAP_t_Search_Key.ParseKey(r));
+            return new IMAP_t_Search_Key_Or(await IMAP_t_Search_Key.ParseKeyAsync(r),await IMAP_t_Search_Key.ParseKeyAsync(r));
         }
 
         #endregion
@@ -130,7 +129,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>OR</c> search key is defined by RFC 3501 and matches messages
+        /// The <c>OR</c> search key is defined by RFC 9051 and matches messages
         /// that satisfy <em>either</em> of the two operand search keys. IMAP
         /// SEARCH syntax requires exactly two operands for <c>OR</c>.
         /// </para>
@@ -160,7 +159,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>OR</c> search key is defined by RFC 3501 and matches messages
+        /// The <c>OR</c> search key is defined by RFC 9051 and matches messages
         /// that satisfy <em>either</em> of the two operand search keys. It is the
         /// only binary logical operator in IMAP SEARCH syntax.
         /// </para>
@@ -188,7 +187,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// <para>
-        /// The <c>OR</c> search key, defined by RFC 3501, performs logical
+        /// The <c>OR</c> search key, defined by RFC 9051, performs logical
         /// disjunction between two operand search keys. A message matches the
         /// <c>OR</c> expression if it satisfies <em>either</em> operand.
         /// </para>
@@ -209,7 +208,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// <para>
-        /// The <c>OR</c> search key, defined by RFC 3501, performs logical
+        /// The <c>OR</c> search key, defined by RFC 9051, performs logical
         /// disjunction between two operand search keys. A message matches the
         /// <c>OR</c> expression if it satisfies either the first operand or this
         /// second operand.

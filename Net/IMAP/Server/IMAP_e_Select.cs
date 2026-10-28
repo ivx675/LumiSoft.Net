@@ -5,67 +5,107 @@ using System.Text;
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class provides data for <b cref="IMAP_Session.Select">IMAP_Session.Select</b> event.
+    /// Provides data for the <see cref="IMAP_Session.SelectAsync"/> event.
+    /// This event allows the application to select a mailbox and provide
+    /// the mailbox state information required by the IMAP SELECT command.
     /// </summary>
     public class IMAP_e_Select : EventArgs
     {
-        private string               m_CmdTag;
-        private IMAP_r_ServerStatus? m_pResponse       = null;
-        private string               m_Folder;
-        private bool                 m_IsReadOnly      = false;
-        private int                  m_FolderUID       = 0;
-        private List<string>         m_pFlags;
-        private List<string>         m_pPermanentFlags;
+        private IMAP_Session           m_pSession;
+        private IMAP_r_ServerStatus    m_pResponse;
+        private string                 m_Folder;
+        private int                    m_UidValidity = 0;
+        private string[]               m_pFlags;
+        private string[]               m_pPermanentFlags;
+        private List<IMAP_MessageInfo> m_pMessagesInfo = [];
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new <see cref="IMAP_e_Select"/> instance containing
+        /// the mailbox name supplied by the client and the response object
+        /// used to return the command result.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="folder">Folder name with optional path.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>cmdTag</b> or <b>folder</b> is null reference.</exception>
-        internal IMAP_e_Select(string cmdTag,string folder)
+        /// <param name="session">
+        /// The IMAP session that is processing the SELECT command.
+        /// </param>
+        /// <param name="folder">
+        /// The mailbox that the client requested to select.
+        /// </param>
+        /// <param name="response">
+        /// The server response object used to return the result to the client.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="session"/>,
+        /// <paramref name="folder"/>, or
+        /// <paramref name="response"/> is <see langword="null"/>.
+        /// </exception>
+        internal IMAP_e_Select(IMAP_Session session,string folder,IMAP_r_ServerStatus response)
         {
-            if(cmdTag == null){
-                throw new ArgumentNullException("cmdTag");
+            if(session == null){
+                throw new ArgumentNullException(nameof(session));
             }
             if(folder == null){
-                throw new ArgumentNullException("folder");
+                throw new ArgumentNullException(nameof(folder));
             }
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
+            }
+         
+            m_pSession  = session;
+            m_pResponse = response;
+            m_Folder    = folder;
 
-            m_CmdTag = cmdTag;
-            m_Folder = folder;
-
-            m_pFlags = new List<string>();
-            m_pPermanentFlags = new List<string>();
 
             // Add default falgs.
-            m_pFlags.AddRange(new string[]{"\\Answered","\\Flagged","\\Deleted","\\Seen","\\Draft"});
-            m_pPermanentFlags.AddRange(new string[]{"\\Answered","\\Flagged","\\Deleted","\\Seen","\\Draft"});
+            m_pFlags = new string[]{"\\Answered","\\Flagged","\\Deleted","\\Seen","\\Draft"};
+            m_pPermanentFlags = new string[]{"\\Answered","\\Flagged","\\Deleted","\\Seen","\\Draft"};
         }
 
 
         #region Properties implementation
-
+        
         /// <summary>
-        /// Gets command tag.
+        /// Gets the IMAP session associated with this event. The session provides access
+        /// to connection state, authentication status, and server-side context required
+        /// to process the current IMAP command.
         /// </summary>
-        public string CmdTag
+        public IMAP_Session Session
         {
-            get{ return m_CmdTag; }
+            get{ return m_pSession; }
         }
 
         /// <summary>
-        /// Gets or sets IMAP server error response to this operation. Value null means no error.
+        /// Gets or sets the <see cref="IMAP_r_ServerStatus"/> that will be
+        /// returned to the client for the SELECT command.
         /// </summary>
-        public IMAP_r_ServerStatus? ErrorResponse
+        /// <remarks>
+        /// Event handlers must assign a successful response when the mailbox
+        /// can be selected. A successful response should normally contain
+        /// either a <see cref="IMAP_t_orc_ReadWrite"/> or
+        /// <see cref="IMAP_t_orc_ReadOnly"/> response code indicating the
+        /// access mode of the selected mailbox.
+        ///
+        /// If the mailbox cannot be selected, for example because it does not
+        /// exist or the user lacks sufficient access rights, an appropriate
+        /// failure response should be assigned.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when a null value is assigned.
+        /// </exception>
+        public IMAP_r_ServerStatus Response
         {
             get{ return m_pResponse; }
 
-            set{ m_pResponse = value; }
+            set{
+                if(value == null){
+                    throw new ArgumentNullException(nameof(value));
+                }
+
+                m_pResponse = value;
+            }
         }
 
         /// <summary>
-        /// Gets folder name with optional path.
+        /// Gets the mailbox that the client requested to select.
         /// </summary>
         public string Folder
         {
@@ -73,39 +113,121 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets or sets if specified folder is read-only.
+        /// Gets or sets the mailbox version associated with the selected
+        /// mailbox.
         /// </summary>
-        public bool IsReadOnly
+        /// <remarks>
+        /// The value is used by the IMAP session to determine whether the
+        /// mailbox state has changed since the last synchronization.
+        /// <para>
+        /// The interpretation of the version value is
+        /// implementation-specific. The IMAP session treats the value as
+        /// opaque and compares it only for equality.
+        /// </para>
+        /// <para>
+        /// The value is typically initialized during SELECT or EXAMINE and
+        /// updated after successful mailbox synchronization.
+        /// </para>
+        /// </remarks>
+        public long Version
         {
-            get{ return m_IsReadOnly; }
-
-            set{ m_IsReadOnly = value; }
+            get;
+            set;
         }
 
         /// <summary>
-        /// Gets or sets folder UID value. Value 0 means not specified.
+        /// Gets or sets the UIDVALIDITY value of the selected mailbox.
         /// </summary>
-        public int FolderUID
+        /// <remarks>
+        /// UIDVALIDITY is used by clients to determine whether previously
+        /// cached message UIDs remain valid.
+        /// </remarks>
+        public int UidValidity
         {
-            get{ return m_FolderUID; }
+            get{ return m_UidValidity; }
 
-            set{ m_FolderUID = value; }
+            set{ m_UidValidity = value; }
         }
 
         /// <summary>
-        /// Gets folder supported flags collection.
+        /// Gets or sets the flags defined for the selected mailbox.
         /// </summary>
-        public List<string> Flags
+        /// <remarks>
+        /// The default value contains the standard system flags:
+        /// <c>\Answered</c>, <c>\Flagged</c>, <c>\Deleted</c>,
+        /// <c>\Seen</c>, and <c>\Draft</c>.
+        /// </remarks>
+        public string[] Flags
         {
             get{ return m_pFlags; }
+
+            set{ 
+                if(value == null){
+                    throw new ArgumentNullException(nameof(value));
+                }
+
+                m_pFlags = value; 
+            }
         }
 
         /// <summary>
-        /// Gets folder supported permanent flags collection.
+        /// Gets or sets the message flags that may be permanently modified
+        /// by the client in the selected mailbox.
         /// </summary>
-        public List<string> PermanentFlags
+        /// <remarks>
+        /// The default value contains the standard system flags:
+        /// <c>\Answered</c>, <c>\Flagged</c>, <c>\Deleted</c>,
+        /// <c>\Seen</c>, and <c>\Draft</c>.
+        /// </remarks>
+        public string[] PermanentFlags
         {
             get{ return m_pPermanentFlags; }
+
+            set{ 
+                if(value == null){
+                    throw new ArgumentNullException(nameof(value));
+                }
+
+                m_pPermanentFlags = value; 
+            }
+        }
+
+        /// <remarks>
+        /// Event handlers must populate this collection with metadata for all
+        /// messages currently contained in the mailbox.
+        /// <para>
+        /// The server caches this information for the lifetime of the selected
+        /// mailbox and uses it to service subsequent mailbox operations such
+        /// as FETCH, SEARCH, and sequence number to UID mapping without
+        /// repeatedly querying the underlying message store.
+        /// </para>
+        /// </remarks>
+        public List<IMAP_MessageInfo> MessagesInfo
+        {
+            get{ return m_pMessagesInfo; }
+        }
+
+
+        /// <summary>
+        /// Gets the predicted next UID value for the selected mailbox.
+        /// </summary>
+        /// <remarks>
+        /// The value is calculated from the highest UID present in
+        /// <see cref="MessagesInfo"/> plus one.
+        /// </remarks>
+        internal long UidNext
+        {
+            get{ 
+                long maxUID = 0;
+                foreach(IMAP_MessageInfo m in m_pMessagesInfo){
+                    if(m.UID > maxUID){
+                        maxUID = m.UID;
+                    }
+                }
+                maxUID++;
+                
+                return maxUID; 
+            }
         }
 
         #endregion

@@ -2,6 +2,7 @@
 using LumiSoft.Net.MIME;
 using System;
 using System.Collections.Generic;
+using System.Net.Mail;
 using System.Text;
 
 namespace LumiSoft.Net.IMAP 
@@ -212,8 +213,124 @@ namespace LumiSoft.Net.IMAP
         }
 
         #endregion
+
+        #region static method FromMessage
+
+        /// <summary>
+        /// Creates an <see cref="IMAP_t_Envelope"/> instance from the specified mail message.
+        /// </summary>
+        /// <param name="message">The source <see cref="Mail_Message"/> to convert.</param>
+        /// <returns>Returns a populated <see cref="IMAP_t_Envelope"/> instance.</returns>
+        /// <exception cref="ArgumentNullException">Is raised when <paramref name="message"/> is a null reference.</exception>
+        public static IMAP_t_Envelope FromMessage(Mail_Message message)
+        {
+            if(message == null){
+                throw new ArgumentNullException(nameof(message));
+            }            
+
+            return new IMAP_t_Envelope(
+                message.Date,
+                message.Subject,
+                message.From?.ToArray(),
+                message.Sender == null ? null : [message.Sender],
+                message.ReplyTo?.Mailboxes,
+                message.To?.Mailboxes,
+                message.Cc?.Mailboxes,
+                message.Bcc?.Mailboxes,
+                message.InReplyTo,
+                message.MessageID
+            );
+        }
+
+        #endregion
+
+
+        #region override method ToString
+
+        /// <summary>
+        /// Returns the IMAP ENVELOPE representation of this instance as a parenthesized 10-field tuple string 
+        /// adhering to RFC 9051 (excluding the 'ENVELOPE' keyword).
+        /// </summary>
+        /// <returns>A valid IMAP ENVELOPE string.</returns>
+        public override string ToString()
+        {
+            string dateStr = (Date == DateTime.MinValue) ? "NIL" : $"\"{Date:r}\"";
+            string subjectStr = string.IsNullOrEmpty(Subject) ? "NIL" : $"\"{EscapeString(Subject)}\"";
+            string inReplyToStr = string.IsNullOrEmpty(InReplyTo) ? "NIL" : $"\"{EscapeString(InReplyTo)}\"";
+            string messageIdStr = string.IsNullOrEmpty(MessageID) ? "NIL" : $"\"{EscapeString(MessageID)}\"";
+
+            return $"({dateStr} {subjectStr} " +
+                   $"{FormatAddressListString(From)} " +
+                   $"{FormatAddressListString(Sender)} " +
+                   $"{FormatAddressListString(ReplyTo)} " +
+                   $"{FormatAddressListString(To)} " +
+                   $"{FormatAddressListString(Cc)} " +
+                   $"{FormatAddressListString(Bcc)} " +
+                   $"{inReplyToStr} {messageIdStr})";
+        }
+
+        #endregion
+
+
+        #region static method EscapeString
+
+        private static string EscapeString(string value)
+        {
+            if(string.IsNullOrEmpty(value)){
+                return string.Empty;
+            }
+
+            return value
+                .Replace("\r", "") // Strip carriage returns
+                .Replace("\n", "") // Strip newlines
+                .Replace("\\", "\\\\")
+                .Replace("\"", "\\\"");
+        }
+
+        #endregion
+
+        #region static method FormatAddressListString
+
+        private static string FormatAddressListString(Mail_t_Mailbox[] mailboxes)
+        {
+            if(mailboxes == null || mailboxes.Length == 0){
+                return "NIL";
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append('(');
+            foreach (var mb in mailboxes){
+                // IMAP address structure: (name adl mailbox host)
+                sb.Append('(');
         
-        
+                // 1. Name (display name or NIL)
+                if(string.IsNullOrEmpty(mb.DisplayName)){
+                    sb.Append("NIL");
+                }
+                else{
+                    sb.Append('"').Append(EscapeString(mb.DisplayName)).Append('"');
+                }
+                sb.Append(' ');
+
+                // 2. ADL (Source Route) - obsolete, always NIL in modern mail
+                sb.Append("NIL");
+                sb.Append(' ');
+
+                // 3. Mailbox (local part) using built-in property
+                sb.Append('"').Append(EscapeString(mb.LocalPart)).Append('"');
+                sb.Append(' ');
+
+                // 4. Host (domain) using built-in property
+                sb.Append('"').Append(EscapeString(mb.Domain)).Append('"');
+
+                sb.Append(')');
+            }
+            sb.Append(')');
+
+            return sb.ToString();
+        }
+
+        #endregion        
         
         #region static method ParseAddressList
 

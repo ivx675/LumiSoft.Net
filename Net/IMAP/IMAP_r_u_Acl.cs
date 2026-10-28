@@ -195,38 +195,46 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP <c>ACL</c> untagged response line for this ACL object
-        /// using <see cref="IMAP_Mailbox_Encoding.None"/> for mailbox name encoding.
+        /// Returns the IMAP <c>ACL</c> untagged response line for this ACL
+        /// object with UTF-8 mailbox names allowed.
         /// </summary>
         /// <returns>
-        /// A string containing the serialized ACL response in IMAP protocol format,
-        /// beginning with <c>* ACL</c>, followed by the mailbox name and one or more
-        /// quoted identifier‑rights pairs, terminated with CRLF.
+        /// A string containing the serialized ACL response in IMAP
+        /// protocol format, beginning with <c>* ACL</c>, followed by the
+        /// mailbox name and one or more identifier-rights pairs,
+        /// terminated with CRLF.
         /// </returns>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Generates an IMAP <c>ACL</c> untagged response line representing this ACL object.
+        /// Returns the IMAP <c>ACL</c> untagged response line for this ACL
+        /// object.
         /// </summary>
-        /// <param name="encoding">
-        /// The mailbox name encoding to use when serializing the folder name
-        /// (typically IMAP UTF‑7).
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A string containing the serialized ACL response in IMAP protocol format,
-        /// beginning with <c>* ACL</c>, followed by the encoded mailbox name and
-        /// one or more quoted identifier‑rights pairs, terminated with CRLF.
+        /// A string containing the serialized ACL response in IMAP
+        /// protocol format, beginning with <c>* ACL</c>, followed by the
+        /// mailbox name and one or more identifier-rights pairs,
+        /// terminated with CRLF.
         /// </returns>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        /// <remarks>
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names are encoded as required
+        /// for non-UTF-8 IMAP responses.
+        /// </remarks>
+        public override string ToString(bool utf8Allowed)
         {
             // Example:    S: * ACL INBOX Fred rwipslda test rwipslda
 
             StringBuilder retVal = new StringBuilder();
             retVal.Append("* ACL ");
-            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,encoding));
+            retVal.Append(IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed));
             foreach(IMAP_t_Acl_Entry e in m_pEntries){
                 retVal.Append(" \"" + e.Identifier + "\" " + e.Rights + "");
             }

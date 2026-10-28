@@ -5,26 +5,42 @@ using System.Text;
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class provides data for <b cref="IMAP_Session.Rename">IMAP_Session.Rename</b> event.
+    /// Provides information about an IMAP RENAME command. This event-args
+    /// class is used with <see cref="IMAP_Session.RenameAsync"/> to process
+    /// mailbox rename requests before a response is returned to the client.
     /// </summary>
     public class IMAP_e_Rename : EventArgs
     {
-        private IMAP_r_ServerStatus? m_pResponse     = null;
-        private string               m_CmdTag;
-        private string               m_CurrentFolder;
-        private string               m_NewFolder;
+        private IMAP_Session        m_pSession;
+        private IMAP_r_ServerStatus m_pResponse;
+        private string              m_CurrentFolder;
+        private string              m_NewFolder;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="IMAP_e_Rename"/> class.
         /// </summary>
-        /// <param name="cmdTag">Command tag.</param>
-        /// <param name="currentFolder">Current folder name with optional path.</param>
-        /// <param name="newFolder">New folder name with optional path.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>cmdTag</b>,<b>currentFolder</b> or <b>newFolder</b> is null reference.</exception>
-        internal IMAP_e_Rename(string cmdTag,string currentFolder,string newFolder)
+        /// <param name="session">
+        /// The IMAP session that is processing the RENAME command.
+        /// </param>
+        /// <param name="currentFolder">
+        /// The name of the existing mailbox to be renamed.
+        /// </param>
+        /// <param name="newFolder">
+        /// The new name to assign to the mailbox.
+        /// </param>
+        /// <param name="response">
+        /// The response that will be returned to the client.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="session"/>,
+        /// <paramref name="currentFolder"/>,
+        /// <paramref name="newFolder"/>, or
+        /// <paramref name="response"/> is <see langword="null"/>.
+        /// </exception>
+        internal IMAP_e_Rename(IMAP_Session session,string currentFolder,string newFolder,IMAP_r_ServerStatus response)
         {
-            if(cmdTag == null){
-                throw new ArgumentNullException("cmdTag");
+            if(session == null){
+                throw new ArgumentNullException(nameof(session));
             }
             if(currentFolder == null){
                 throw new ArgumentNullException("currentFolder");
@@ -32,35 +48,48 @@ namespace LumiSoft.Net.IMAP.Server
             if(newFolder == null){
                 throw new ArgumentNullException("newFolder");
             }
+            if(response == null){
+                throw new ArgumentNullException(nameof(response));
+            }
 
-            m_CmdTag        = cmdTag;
+            m_pSession      = session;
             m_CurrentFolder = currentFolder;
             m_NewFolder     = newFolder;
+            m_pResponse     = response;
         }
 
 
         #region Properties impalementation
 
         /// <summary>
-        /// Gets or sets IMAP server response to this operation.
+        /// Gets the IMAP session associated with this event. The session provides access
+        /// to connection state, authentication status, and server-side context required
+        /// to process the current IMAP command.
         /// </summary>
-        public IMAP_r_ServerStatus? Response
+        public IMAP_Session Session
+        {
+            get{ return m_pSession; }
+        }
+
+        /// <summary>
+        /// Gets or sets the IMAP server response describing the outcome of the
+        /// RENAME command.
+        /// </summary>
+        public IMAP_r_ServerStatus Response
         {
             get{ return m_pResponse; }
 
-            set{ m_pResponse = value; }
+            set{
+                if(value == null){
+                    throw new ArgumentNullException(nameof(value));
+                }
+
+                m_pResponse = value;
+            }
         }
 
         /// <summary>
-        /// Gets IMAP command tag value.
-        /// </summary>
-        public string CmdTag
-        {
-            get{ return m_CmdTag; }
-        }
-
-        /// <summary>
-        /// Gets current folder name with optional path.
+        /// Gets the name of the mailbox the client requested to rename.
         /// </summary>
         public string CurrentFolder
         {
@@ -68,7 +97,7 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets new folder name with optional path.
+        /// Gets the new name requested for the mailbox.
         /// </summary>
         public string NewFolder
         {

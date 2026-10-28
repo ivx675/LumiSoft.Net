@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>BCC</c> search key is defined by RFC 3501 and filters messages
+    /// The <c>BCC</c> search key is defined by RFC 9051 and filters messages
     /// based on the contents of the <c>Bcc:</c> header field. The comparison is
     /// case-insensitive and typically performs substring matching.
     /// </para>
@@ -29,7 +29,7 @@ namespace LumiSoft.Net.IMAP
         /// The string used by the IMAP <c>BCC</c> search key. Messages whose
         /// <c>Bcc:</c> header field contains this value will match the search
         /// criterion. The comparison is case‑insensitive and typically performs
-        /// substring matching, as defined by RFC 3501.
+        /// substring matching, as defined by RFC 9051.
         /// </param>
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="value"/> is <c>null</c>.
@@ -44,37 +44,39 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses the IMAP <c>BCC</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH <c>BCC</c> key from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to
+        /// parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Bcc"/> instance containing the
-        /// parsed <c>BCC</c> value.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Bcc"/> instance representing the
+        /// parsed <c>BCC</c> search key.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown when the next token is not <c>BCC</c> or when the value
-        /// cannot be parsed as an IMAP string.
+        /// Thrown when the next token is not <c>BCC</c> or when the search
+        /// string cannot be parsed as a valid IMAP string.
         /// </exception>
-        internal static IMAP_t_Search_Key_Bcc Parse(StringReader r)
+        internal static async Task<IMAP_t_Search_Key_Bcc> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string? word = r.ReadAtom();
             if(!string.Equals(word,"BCC",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'BCC' key.");
             }
-            string? value = IMAP_Utils.ReadString(r);
+            string? value = await r.ReadStringAsync();
             if(value == null){
                 throw new ParseException("Parse error: Invalid 'BCC' value.");
             }
@@ -97,7 +99,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>BCC</c> search key is defined by RFC 3501 and filters messages
+        /// The <c>BCC</c> search key is defined by RFC 9051 and filters messages
         /// based on the contents of the <c>Bcc:</c> header field. The comparison
         /// is case‑insensitive and typically performs substring matching.
         /// </para>
@@ -142,7 +144,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// Messages whose <c>Bcc:</c> header field contains this value will match
         /// the search criterion. The comparison is case‑insensitive and typically
-        /// performs substring matching, as defined by RFC 3501.
+        /// performs substring matching, as defined by RFC 9051.
         /// </remarks>
         public string Value
         {

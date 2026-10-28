@@ -7,9 +7,9 @@ using LumiSoft.Net.IMAP.Client;
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// This class represents IMAP SEARCH <b>LARGER (n)</b> key. Defined in RFC 3501 6.4.4.
+    /// This class represents IMAP SEARCH <b>LARGER (n)</b> key. Defined in RFC 9051.
     /// </summary>
-    /// <remarks>Messages with an [RFC-2822] size larger than the specified number of octets.</remarks>
+    /// <remarks>Messages with an [RFC-2822] size larger than the specified number of bytes.</remarks>
     public class IMAP_t_Search_Key_Larger : IMAP_t_Search_Key
     {
         private int m_Value = 0;
@@ -25,7 +25,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>LARGER</c> search key is defined by RFC 3501 and compares the
+        /// The <c>LARGER</c> search key is defined by RFC 9051 and compares the
         /// message’s total size (in octets) to the provided numeric threshold.
         /// </para>
         /// </remarks>
@@ -39,10 +39,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>LARGER</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Larger"/> instance containing
@@ -57,27 +57,21 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>LARGER</c> search key is defined by RFC 3501 and selects messages
-        /// whose size in octets is strictly greater than the specified value.
-        /// </para>
-        /// <para>
-        /// The numeric argument is parsed using <see cref="int.TryParse(string,out int)"/>.
+        /// The <c>LARGER</c> search key is defined by RFC 9051 and selects messages
+        /// whose size in bytes is strictly greater than the specified value.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Larger Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Larger Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"LARGER",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'LARGER' key.");
             }
-            string? value = r.ReadWord();
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'LARGER' value.");
-            }
+            string value = r.ReadAtom();
             int size = 0;
             if(!int.TryParse(value,out size)){
                 throw new ParseException("Parse error: Invalid 'LARGER' value.");
@@ -100,7 +94,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>LARGER</c> search key is defined by RFC 3501 and compares the
+        /// The <c>LARGER</c> search key is defined by RFC 9051 and compares the
         /// message’s size (in octets) to the provided numeric threshold.
         /// </para>
         /// <para>
@@ -126,7 +120,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>LARGER</c> search key is defined by RFC 3501 and selects messages
+        /// The <c>LARGER</c> search key is defined by RFC 9051 and selects messages
         /// whose size in octets is strictly greater than the specified value.
         /// </para>
         /// <para>
@@ -151,7 +145,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// Messages whose size in octets is strictly greater than this value
-        /// will satisfy the <c>LARGER</c> search criterion, as defined by RFC 3501.
+        /// will satisfy the <c>LARGER</c> search criterion, as defined by RFC 9051.
         /// </remarks>
         public int Value
         {

@@ -10,15 +10,15 @@
     <Description>LumiSoft.Net is a cross‑platform .NET networking library providing full client and server implementations for SMTP, POP3, IMAP, and FTP, plus client‑only components for DNS,SMIME, MIME, WebDav, STUN, and UPnP.</Description>
     <AssemblyVersion></AssemblyVersion>
     <FileVersion></FileVersion>
-    <InformationalVersion>10.3.0</InformationalVersion>
-    <VersionPrefix>10.3.0</VersionPrefix>
+    <InformationalVersion>10.4.0</InformationalVersion>
+    <VersionPrefix>10.4.0</VersionPrefix>
     <PackageLicenseFile>license.txt</PackageLicenseFile>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>LumiSoft.Net.dll</PackageId>
     <PackageReadmeFile>readme.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/ivx675/LumiSoft.Net</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ivx675/LumiSoft.Net</RepositoryUrl>
-    <PackageTags>smtp;pop3;imap;ftp;dns;dns;mime;webdav;stun;upnp;networking;async;email;mail</PackageTags>
+    <PackageTags>smtp;smtpserver;pop3;pop3server;imap;imapserver;mailserver;ftp;dns;dns;mime;webdav;stun;upnp;networking;async;email;mail</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
@@ -45,7 +45,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.2" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
   </ItemGroup>
 
 </Project>

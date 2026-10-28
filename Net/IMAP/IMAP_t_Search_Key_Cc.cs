@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>CC</c> search key is defined by RFC 3501 and filters messages
+    /// The <c>CC</c> search key is defined by RFC 9051 and filters messages
     /// based on the contents of the <c>Cc:</c> header field. The comparison is
     /// case‑insensitive and typically performs substring matching.
     /// </para>
@@ -29,7 +29,7 @@ namespace LumiSoft.Net.IMAP
         /// The string used by the IMAP <c>CC</c> search key. Messages whose
         /// <c>Cc:</c> header field contains this value will match the search
         /// criterion. The comparison is case‑insensitive and typically performs
-        /// substring matching, as defined by RFC 3501.
+        /// substring matching, as defined by RFC 9051.
         /// </param>
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="value"/> is <c>null</c>.
@@ -44,40 +44,43 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses the IMAP <c>CC</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH <c>CC</c> key from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to
+        /// parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Cc"/> instance containing the
-        /// parsed <c>CC</c> value.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Cc"/> instance representing the
+        /// parsed <c>CC</c> search key.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown when the next token is not <c>CC</c> or when the value
-        /// cannot be parsed as an IMAP string.
+        /// Thrown when the next token is not <c>CC</c> or when the search
+        /// string cannot be parsed as a valid IMAP string.
         /// </exception>
-        internal static IMAP_t_Search_Key_Cc Parse(StringReader r)
+        /// <remarks>
+        /// The <c>CC</c> search key matches messages whose CC header
+        /// contains the specified string. Matching is case-insensitive.
+        /// </remarks>
+        internal static async Task<IMAP_t_Search_Key_Cc> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"CC",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'CC' key.");
             }
-            string? value = IMAP_Utils.ReadString(r);
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'CC' value.");
-            }
+            string value = await r.ReadStringAsync() ?? "";
 
             return new IMAP_t_Search_Key_Cc(value);
         }
@@ -135,7 +138,7 @@ namespace LumiSoft.Net.IMAP
         /// <remarks>
         /// Messages whose <c>Cc:</c> header field contains this value will match
         /// the search criterion. The comparison is case‑insensitive and typically
-        /// performs substring matching, as defined by RFC 3501.
+        /// performs substring matching, as defined by RFC 9051.
         /// </remarks>
         public string Value
         {

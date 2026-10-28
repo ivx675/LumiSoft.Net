@@ -1,49 +1,50 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Text;
 
 namespace LumiSoft.Net.IMAP
 {
     /// <summary>
-    /// Represents an untagged IMAP <c>STATUS</c> response as defined in
-    /// RFC 3501 section 7.2.4. A STATUS response provides selected metadata
-    /// about a mailbox without requiring the client to SELECT or EXAMINE it.
+    /// Represents an untagged IMAP <c>STATUS</c> response as defined by
+    /// RFC 9051. A STATUS response provides selected metadata about a
+    /// mailbox without requiring the client to SELECT or EXAMINE it.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The IMAP <c>STATUS</c> command allows a client to request specific
-    /// mailbox metadata items without changing the currently selected mailbox.
-    /// The client sends a command of the form:
+    /// mailbox metadata items without changing the currently selected
+    /// mailbox. The client sends a command of the form:
     /// </para>
     /// <code>
     /// A01 STATUS mailbox-name (MESSAGES UIDNEXT UNSEEN)
     /// </code>
     /// <para>
-    /// The server replies with an untagged STATUS response containing exactly
-    /// the items requested by the client:
+    /// The server replies with an untagged STATUS response containing the
+    /// requested status data items:
     /// </para>
     /// <code>
     /// * STATUS mailbox-name (MESSAGES 231 UIDNEXT 44292 UNSEEN 8)
     /// </code>
     /// <para>
-    /// All STATUS items are optional. Each item is represented in this class
-    /// using nullable fields (<c>int?</c>, <c>long?</c>) so that <c>null</c>
-    /// indicates that the item was not present in the server's response.
+    /// All STATUS data items are optional. Each item is represented in this
+    /// class using nullable values so that <c>null</c> indicates that the
+    /// corresponding item was not present in the server response.
     /// </para>
     /// <para>
-    /// Common STATUS items include:
+    /// IMAP4rev2 defines the following STATUS data items:
     /// </para>
     /// <list type="bullet">
-    ///   <item><description><c>MESSAGES</c> — Total number of messages.</description></item>
-    ///   <item><description><c>RECENT</c> — Messages with the <c>\Recent</c> flag.</description></item>
-    ///   <item><description><c>UIDNEXT</c> — Next UID to be assigned.</description></item>
-    ///   <item><description><c>UIDVALIDITY</c> — UID validity value of the mailbox.</description></item>
-    ///   <item><description><c>UNSEEN</c> — Messages without the <c>\Seen</c> flag.</description></item>
+    ///   <item><description><c>MESSAGES</c> - Total number of messages in the mailbox.</description></item>
+    ///   <item><description><c>UIDNEXT</c> - Next UID to be assigned.</description></item>
+    ///   <item><description><c>UIDVALIDITY</c> - UID validity value of the mailbox.</description></item>
+    ///   <item><description><c>UNSEEN</c> - Number of messages without the <c>\Seen</c> flag.</description></item>
+    ///   <item><description><c>DELETED</c> - Number of messages with the <c>\Deleted</c> flag.</description></item>
+    ///   <item><description><c>SIZE</c> - Total size, in bytes, of all messages in the mailbox.</description></item>
     /// </list>
     /// <para>
-    /// This class stores the mailbox name in decoded Unicode form. Encoding
-    /// (modified UTF‑7 or UTF‑8) is applied only when generating the wire‑format
-    /// response via <see cref="ToString(IMAP_Mailbox_Encoding)"/>.
+    /// For compatibility with IMAP4rev1 servers, the obsolete
+    /// <c>RECENT</c> status data item may also be present.
     /// </para>
     /// <para>
     /// This class derives from <see cref="IMAP_r_u"/>, the base type for all
@@ -54,43 +55,50 @@ namespace LumiSoft.Net.IMAP
     {
         private string m_FolderName   = "";
         private int?   m_MessageCount = null;
-        private int?   m_RecentCount  = null;
         private long?  m_UidNext      = null;
         private long?  m_UidValidity  = null;
         private int?   m_UnseenCount  = null;
+        private int?   m_DeletedCount = null;
+        private long?  m_Size         = null;
+        private int?   m_RecentCount  = null;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="IMAP_r_u_Status"/> class
-        /// using the mailbox name and the optional STATUS metadata values returned
-        /// by the IMAP server.
+        /// using the mailbox name and the optional STATUS data items returned by
+        /// the IMAP server.
         /// </summary>
         /// <param name="folder">
-        /// The decoded mailbox name associated with this STATUS response. The value
-        /// must be a non-empty string and may originate from a quoted or modified
-        /// UTF‑7 encoded name in the raw IMAP response.
+        /// The mailbox name associated with this STATUS response.
         /// </param>
         /// <param name="messagesCount">
         /// The total number of messages in the mailbox (<c>MESSAGES</c>), or
         /// <c>null</c> if the server did not include this item.
         /// </param>
-        /// <param name="recentCount">
-        /// The number of messages with the <c>\Recent</c> flag (<c>RECENT</c>), or
-        /// <c>null</c> if the server did not include this item.
-        /// </param>
         /// <param name="uidNext">
-        /// The next unique identifier (UID) that will be assigned to the next
-        /// message delivered to the mailbox (<c>UIDNEXT</c>), or <c>null</c> if
-        /// omitted by the server.
+        /// The next unique identifier (UID) that will be assigned to a new
+        /// message in the mailbox (<c>UIDNEXT</c>), or <c>null</c> if omitted by
+        /// the server.
         /// </param>
         /// <param name="folderUidValidity">
-        /// The UID validity value of the mailbox (<c>UIDVALIDITY</c>). This acts as
-        /// a version identifier for the mailbox’s UID sequence and is commonly used
-        /// by clients to determine whether cached UIDs remain valid. May be
+        /// The UID validity value of the mailbox (<c>UIDVALIDITY</c>). May be
         /// <c>null</c> if the server did not include this item.
         /// </param>
         /// <param name="unseenCount">
-        /// The number of messages that do not have the <c>\Seen</c> flag
+        /// The number of messages that do not have the <c>\Seen</c> flag set
         /// (<c>UNSEEN</c>), or <c>null</c> if omitted by the server.
+        /// </param>
+        /// <param name="deletedCount">
+        /// The number of messages that have the <c>\Deleted</c> flag set
+        /// (<c>DELETED</c>), or <c>null</c> if omitted by the server.
+        /// </param>
+        /// <param name="size">
+        /// The total size, in bytes, of all messages in the mailbox
+        /// (<c>SIZE</c>), or <c>null</c> if omitted by the server.
+        /// </param>
+        /// <param name="recentCount">
+        /// The number of messages that have the <c>\Recent</c> flag set
+        /// (<c>RECENT</c>), or <c>null</c> if the server did not include this
+        /// item.
         /// </param>
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="folder"/> is <c>null</c>.
@@ -100,17 +108,18 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// All STATUS items are optional. IMAP servers include only the items
-        /// explicitly requested by the client. Nullable parameters reflect this
-        /// behavior directly.
+        /// All STATUS data items are optional. IMAP servers include only the
+        /// items explicitly requested by the client. Nullable parameters reflect
+        /// this behavior directly.
         /// </para>
         /// <para>
-        /// This constructor is typically invoked by the STATUS parser after decoding
-        /// the mailbox name and extracting the STATUS data items from the server’s
-        /// response.
+        /// The <c>DELETED</c> and <c>SIZE</c> status data items were introduced
+        /// by IMAP4rev2 (RFC 9051). The <c>RECENT</c> status data item is
+        /// obsolete in IMAP4rev2 but may still be returned by servers for
+        /// compatibility with IMAP4rev1 clients.
         /// </para>
         /// </remarks>
-        public IMAP_r_u_Status(string folder,int? messagesCount,int? recentCount,long? uidNext,long? folderUidValidity,int? unseenCount)
+        public IMAP_r_u_Status(string folder,int? messagesCount,long? uidNext,long? folderUidValidity,int? unseenCount,int? deletedCount,long? size,int? recentCount)
         {
             if(folder == null){
                 throw new ArgumentNullException("folder");
@@ -121,10 +130,12 @@ namespace LumiSoft.Net.IMAP
 
             m_FolderName   = folder;
             m_MessageCount = messagesCount;
-            m_RecentCount  = recentCount;
             m_UidNext      = uidNext;
             m_UidValidity  = folderUidValidity;
             m_UnseenCount  = unseenCount;
+            m_DeletedCount = deletedCount;
+            m_Size         = size;
+            m_RecentCount  = recentCount;
         }
 
 
@@ -133,29 +144,36 @@ namespace LumiSoft.Net.IMAP
         /// <summary>
         /// Parses an IMAP STATUS untagged response using the supplied
         /// <see cref="_IMAP_Reader"/>. STATUS responses provide selected metadata
-        /// about a mailbox without requiring the client to SELECT it, as defined in
-        /// RFC 3501 section 7.2.4.
+        /// about a mailbox without requiring the client to SELECT or EXAMINE it,
+        /// as defined by RFC 9051.
         /// </summary>
         /// <param name="imapReader">
         /// The lexical IMAP reader positioned at the start of a STATUS untagged
         /// response.
         /// </param>
         /// <param name="cancellationToken">
-        /// Optional cancellation token used when reading the mailbox name, which may
-        /// be encoded as a literal.
+        /// Optional cancellation token used when reading the mailbox name, which
+        /// may be encoded as a literal.
         /// </param>
         /// <returns>
-        /// A fully parsed <see cref="IMAP_r_u_Status"/> instance containing the mailbox
-        /// name and the available STATUS item values.
+        /// A fully parsed <see cref="IMAP_r_u_Status"/> instance containing the
+        /// mailbox name and the STATUS data items present in the response.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown if <paramref name="imapReader"/> is <c>null</c>.
+        /// Thrown when <paramref name="imapReader"/> is <c>null</c>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown if the STATUS response is syntactically invalid, contains <c>NIL</c>
-        /// where an astring or number is required, or violates RFC 3501 structural
-        /// rules.
+        /// Thrown when the STATUS response is syntactically invalid, contains
+        /// <c>NIL</c> where a mailbox name or numeric status value is required,
+        /// or otherwise violates the STATUS response grammar.
         /// </exception>
+        /// <remarks>
+        /// STATUS responses may contain any combination of the defined status
+        /// data items, including <c>MESSAGES</c>, <c>UIDNEXT</c>,
+        /// <c>UIDVALIDITY</c>, <c>UNSEEN</c>, <c>DELETED</c>, and
+        /// <c>SIZE</c>. For compatibility with IMAP4rev1 servers, the obsolete
+        /// <c>RECENT</c> status data item may also be present.
+        /// </remarks>
         internal async static Task<IMAP_r_u_Status> Parse(_IMAP_Reader imapReader,CancellationToken cancellationToken = default)
         {
             if(imapReader == null){
@@ -163,7 +181,7 @@ namespace LumiSoft.Net.IMAP
             }
 
             /*
-                IMAP STATUS response (RFC 3501 section 7.2.4)
+                IMAP STATUS response (RFC 9051 section 7.2.4)
 
                 The STATUS command returns selected metadata about a mailbox without
                 requiring the client to SELECT it. The server sends a single untagged
@@ -175,20 +193,41 @@ namespace LumiSoft.Net.IMAP
                         S: A042 OK STATUS completed
 
                 Response format:
-                    * STATUS <mailbox-name> (<item1> <value1> <item2> <value2> ...)
+                    * STATUS <mailbox-name>
+                        (<item1> <value1> <item2> <value2> ...)
 
-                Valid STATUS items:
-                    MESSAGES     - Total number of messages in the mailbox.
-                    RECENT       - Number of messages with the \Recent flag.
-                    UIDNEXT      - Next UID that will be assigned to a new message.
-                    UIDVALIDITY  - UID validity value for the mailbox.
-                    UNSEEN       - Number of messages without the \Seen flag.
+                IMAP4rev2 STATUS items:
+                    MESSAGES
+                        Total number of messages in the mailbox.
+
+                    UIDNEXT
+                        Next UID that will be assigned to a new message.
+
+                    UIDVALIDITY
+                        UID validity value for the mailbox.
+
+                    UNSEEN
+                        Number of messages without the \Seen flag.
+
+                    DELETED
+                        Number of messages with the \Deleted flag.
+
+                    SIZE
+                        Total size, in bytes, of all messages in the mailbox.
+
+                Legacy IMAP4rev1 STATUS item:
+                    RECENT
+                        Number of messages with the \Recent flag.
+                        Obsolete in IMAP4rev2 but may still be returned for
+                        compatibility with older clients.
 
                 Notes:
                 - STATUS never includes mailbox attributes or hierarchy delimiters.
-                - Mailbox names may require modified UTF-7 unless UTF8=ACCEPT/ONLY is active.
-                - Only the items explicitly requested by the client appear in the response.
-                - Values are always integers.
+                - Mailbox names may require modified UTF-7 unless UTF8=ACCEPT or
+                  UTF8=ONLY is active.
+                - Only the items explicitly requested by the client appear in the
+                  response.
+                - All STATUS values are non-negative integers.
             */
 
             // *
@@ -213,6 +252,8 @@ namespace LumiSoft.Net.IMAP
             long? uidNext   = null;
             long? folderUid = null;
             int?  unseen    = null;
+            int?  deleted   = null;
+            int?  size      = null;
             string[] items  = imapReader.ReadParenthesized().Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
             if(items.Length % 2 != 0){
                 throw new ParseException($"Invalid STATUS response: {imapReader.Text}");
@@ -221,9 +262,6 @@ namespace LumiSoft.Net.IMAP
                 try{
                     if(items[i].Equals("MESSAGES",StringComparison.OrdinalIgnoreCase)){
                         messages = Convert.ToInt32(items[i + 1]);
-                    }
-                    else if(items[i].Equals("RECENT",StringComparison.OrdinalIgnoreCase)){
-                        recent = Convert.ToInt32(items[i + 1]);
                     }
                     else if(items[i].Equals("UIDNEXT",StringComparison.OrdinalIgnoreCase)){
                         uidNext = Convert.ToInt64(items[i + 1]);
@@ -234,13 +272,22 @@ namespace LumiSoft.Net.IMAP
                     else if(items[i].Equals("UNSEEN",StringComparison.OrdinalIgnoreCase)){
                         unseen = Convert.ToInt32(items[i + 1]);
                     }
+                    else if(items[i].Equals("DELETED",StringComparison.OrdinalIgnoreCase)){
+                        deleted = Convert.ToInt32(items[i + 1]);
+                    }
+                    else if(items[i].Equals("SIZE",StringComparison.OrdinalIgnoreCase)){
+                        size = Convert.ToInt32(items[i + 1]);
+                    }
+                    else if(items[i].Equals("RECENT",StringComparison.OrdinalIgnoreCase)){
+                        recent = Convert.ToInt32(items[i + 1]);
+                    }
                 }
                 catch{
                     throw new ParseException($"Invalid STATUS response: {imapReader.Text}");
                 }
             }
 
-            return new IMAP_r_u_Status(folder,messages,recent,uidNext,folderUid,unseen);
+            return new IMAP_r_u_Status(folder,messages,uidNext,folderUid,unseen,deleted,size,recent);
         }
 
         #endregion
@@ -249,79 +296,66 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP wire‑format representation of this <c>STATUS</c>
-        /// response using <see cref="IMAP_Mailbox_Encoding.None"/>, which emits
-        /// the mailbox name in Unicode without applying modified UTF‑7 encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>STATUS</c> response with UTF-8 mailbox names allowed.
         /// </summary>
+        /// <returns>
+        /// A string containing the serialized IMAP
+        /// <c>STATUS</c> response.
+        /// </returns>
         /// <remarks>
-        /// <para>
-        /// This overload is a convenience method that produces a STATUS response
-        /// suitable for debugging, logging, or use with IMAP servers that support
-        /// UTF‑8 mailbox names (RFC 6855, UTF8=ACCEPT/ONLY). The mailbox name is
-        /// encoded exactly as stored in the object without conversion to modified
-        /// UTF‑7.
-        /// </para>
-        /// <para>
-        /// For compatibility with legacy IMAP servers that require modified UTF‑7,
-        /// use <see cref="ToString(IMAP_Mailbox_Encoding)"/> and specify the desired
-        /// encoding explicitly.
-        /// </para>
+        /// This method is equivalent to calling
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Builds the IMAP <c>STATUS</c> response in wire format using the specified
-        /// mailbox encoding. Only STATUS items that have values are included.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>STATUS</c> response.
         /// </summary>
-        /// <param name="encoding">
-        /// The encoding to use for the mailbox name. This is typically modified UTF‑7
-        /// for legacy IMAP servers or UTF‑8 when the server advertises UTF8=ACCEPT/ONLY.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 mailbox names are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A correctly formatted IMAP <c>STATUS</c> response line ending with CRLF.
+        /// A string containing the IMAP <c>STATUS</c> response in
+        /// protocol format, terminated with CRLF.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// The IMAP <c>STATUS</c> response reports selected metadata about a mailbox
-        /// without requiring the client to SELECT it. The general form is:
-        /// </para>
+        /// The output format follows RFC 9051:
         /// <code>
-        /// * STATUS mailbox-name (item1 value1 item2 value2 ...)
+        /// * STATUS mailbox
+        ///   (item1 value1 item2 value2 ...)
         /// </code>
         /// <para>
-        /// STATUS items are optional. Only items whose corresponding fields have
-        /// values (non‑null) are emitted. This matches the behavior of the IMAP
-        /// <c>STATUS</c> command, where the server includes only the items explicitly
-        /// requested by the client.
+        /// Only status data items that have values are included in the
+        /// generated response.
         /// </para>
         /// <para>
-        /// Valid STATUS items include:
+        /// The following status data items may be emitted:
+        /// <c>MESSAGES</c>, <c>UIDNEXT</c>,
+        /// <c>UIDVALIDITY</c>, <c>UNSEEN</c>,
+        /// <c>DELETED</c>, <c>SIZE</c>, and
+        /// <c>RECENT</c>.
         /// </para>
-        /// <list type="bullet">
-        ///   <item><description><c>MESSAGES</c> — Total number of messages.</description></item>
-        ///   <item><description><c>RECENT</c> — Messages with the <c>\Recent</c> flag.</description></item>
-        ///   <item><description><c>UIDNEXT</c> — Next UID to be assigned.</description></item>
-        ///   <item><description><c>UIDVALIDITY</c> — UID validity value of the mailbox.</description></item>
-        ///   <item><description><c>UNSEEN</c> — Messages without the <c>\Seen</c> flag.</description></item>
-        /// </list>
         /// <para>
-        /// The mailbox name is encoded using <see cref="IMAP_Utils.EncodeMailbox"/> and
-        /// may require modified UTF‑7 depending on server capabilities.
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, mailbox names are encoded as
+        /// required for IMAP servers that do not permit UTF-8 mailbox
+        /// names in protocol responses.
         /// </para>
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             // Example:    S: * STATUS blurdybloop (MESSAGES 231 UIDNEXT 44292)
 
             var items = new List<string>();
             if (m_MessageCount.HasValue){
                 items.Add($"MESSAGES {m_MessageCount.Value}");
-            }
-            if (m_RecentCount.HasValue){
-                items.Add($"RECENT {m_RecentCount.Value}");
             }
             if (m_UidNext.HasValue){
                 items.Add($"UIDNEXT {m_UidNext.Value}");
@@ -331,10 +365,19 @@ namespace LumiSoft.Net.IMAP
             }
             if (m_UnseenCount.HasValue){
                 items.Add($"UNSEEN {m_UnseenCount.Value}");
+            }            
+            if (m_DeletedCount.HasValue){
+                items.Add($"DELETED {m_DeletedCount.Value}");
+            }            
+            if (m_Size.HasValue){
+                items.Add($"SIZE {m_Size.Value}");
+            }
+            if (m_RecentCount.HasValue){
+                items.Add($"RECENT {m_RecentCount.Value}");
             }
 
-            string mailbox     = IMAP_Utils.EncodeMailbox(m_FolderName, encoding);
-            string statusItems = string.Join(" ", items);
+            string mailbox     = IMAP_Utils.EncodeMailbox(m_FolderName,utf8Allowed);
+            string statusItems = string.Join(" ",items);
 
             return $"* STATUS {mailbox} ({statusItems})\r\n";
         }
@@ -383,29 +426,6 @@ namespace LumiSoft.Net.IMAP
         public int? MessagesCount
         {
             get{ return m_MessageCount; }
-        }
-
-        /// <summary>
-        /// Gets the number of messages in the mailbox that have the <c>\Recent</c>
-        /// flag set (<c>RECENT</c>), or <c>null</c> if the server did not include
-        /// this item in the <c>STATUS</c> response.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// The <c>RECENT</c> data item corresponds to the number of messages that
-        /// the server considers newly delivered to the mailbox since the last time
-        /// it was opened. It is one of the optional fields that may appear in an
-        /// IMAP <c>STATUS</c> response (RFC 3501 section 7.2.4).
-        /// </para>
-        /// <para>
-        /// IMAP servers include only the STATUS items explicitly requested by the
-        /// client. When the server omits <c>RECENT</c>, this property will be
-        /// <c>null</c>.
-        /// </para>
-        /// </remarks>
-        public int? RecentCount
-        {
-            get{ return m_RecentCount;}
         }
 
         /// <summary>
@@ -489,6 +509,83 @@ namespace LumiSoft.Net.IMAP
         public int? UnseenCount
         {
             get{ return m_UnseenCount; }
+        }
+
+        /// <summary>
+        /// Gets the number of messages in the mailbox that have the
+        /// <c>\Deleted</c> flag set (<c>DELETED</c>), or <c>null</c> if the
+        /// server did not include this item in the <c>STATUS</c> response.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The <c>DELETED</c> status data item represents the number of messages
+        /// currently marked with the <c>\Deleted</c> flag in the mailbox.
+        /// </para>
+        /// <para>
+        /// The <c>DELETED</c> status data item was introduced by IMAP4rev2
+        /// (RFC 9051).
+        /// </para>
+        /// <para>
+        /// IMAP servers include only the STATUS items explicitly requested by the
+        /// client. When the server omits <c>DELETED</c>, this property will be
+        /// <c>null</c>.
+        /// </para>
+        /// </remarks>
+        public int? DeletedCount
+        {
+            get{ return m_DeletedCount; }
+        }
+
+        /// <summary>
+        /// Gets the total size, in bytes, of all messages in the mailbox
+        /// (<c>SIZE</c>), or <c>null</c> if the server did not include this item
+        /// in the <c>STATUS</c> response.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The <c>SIZE</c> status data item represents the total size, in bytes,
+        /// of all messages contained in the mailbox.
+        /// </para>
+        /// <para>
+        /// The <c>SIZE</c> status data item was introduced by IMAP4rev2
+        /// (RFC 9051).
+        /// </para>
+        /// <para>
+        /// IMAP servers include only the STATUS items explicitly requested by the
+        /// client. When the server omits <c>SIZE</c>, this property will be
+        /// <c>null</c>.
+        /// </para>
+        /// </remarks>
+        public long? Size
+        {
+            get{ return m_Size; }
+        }
+
+        /// <summary>
+        /// Gets the number of messages in the mailbox that have the <c>\Recent</c>
+        /// flag set (<c>RECENT</c>), or <c>null</c> if the server did not include
+        /// this item in the <c>STATUS</c> response.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The <c>RECENT</c> status data item represents the number of messages
+        /// that have the <c>\Recent</c> flag set in the mailbox. This status item
+        /// was defined by IMAP4rev1 (RFC 3501) and may still be returned by
+        /// servers for compatibility with older clients.
+        /// </para>
+        /// <para>
+        /// The <c>RECENT</c> status data item and the <c>\Recent</c> flag are
+        /// obsolete in IMAP4rev2 (RFC 9051).
+        /// </para>
+        /// <para>
+        /// IMAP servers include only the STATUS items explicitly requested by the
+        /// client. When the server omits <c>RECENT</c>, this property will be
+        /// <c>null</c>.
+        /// </para>
+        /// </remarks>
+        public int? RecentCount
+        {
+            get{ return m_RecentCount;}
         }
 
         #endregion

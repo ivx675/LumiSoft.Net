@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>DELETED</c> search key is defined by RFC 3501 and selects all
+    /// The <c>DELETED</c> search key is defined by RFC 9051 and selects all
     /// messages that have been flagged for deletion. Such messages are not
     /// removed immediately; they remain in the mailbox until an explicit
     /// <c>EXPUNGE</c> command is issued.
@@ -37,10 +37,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses the IMAP <c>DELETED</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_Deleted"/> instance representing
@@ -52,13 +52,13 @@ namespace LumiSoft.Net.IMAP
         /// <exception cref="ParseException">
         /// Thrown when the next token is not the IMAP <c>DELETED</c> search key.
         /// </exception>
-        internal static IMAP_t_Search_Key_Deleted Parse(StringReader r)
+        internal static IMAP_t_Search_Key_Deleted Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"DELETED",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'DELETED' key.");
             }
@@ -99,7 +99,7 @@ namespace LumiSoft.Net.IMAP
         /// This implementation emits the search key as a simple string token,
         /// since <c>DELETED</c> does not carry any associated value. Flag‑type
         /// search keys rely on fixed keyword serialization as defined by
-        /// RFC 3501.
+        /// RFC 9051.
         /// </remarks>
         internal override void ToCommandBuilder(CommandBuilder builder)
         {

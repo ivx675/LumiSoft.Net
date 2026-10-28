@@ -5,37 +5,57 @@ using System.Text;
 namespace LumiSoft.Net.IMAP.Server
 {
     /// <summary>
-    /// This class represents IMAP message info.
+    /// Represents mailbox message information maintained by the IMAP
+    /// session.
     /// </summary>
+    /// <remarks>
+    /// This class contains metadata used by the IMAP session for
+    /// message selection, mailbox synchronization, SEARCH processing,
+    /// flag tracking, and generation of IMAP responses.
+    /// </remarks>
     public class IMAP_MessageInfo
     {
         private string   m_ID;
         private long     m_UID    = 0;
         private string[] m_pFlags;
-        private int      m_Size   = 0;
+        private long     m_Size   = 0;
         private DateTime m_InternalDate;
-        private int      m_SeqNo  = 1;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new <see cref="IMAP_MessageInfo"/> instance.
         /// </summary>
-        /// <param name="id">Message ID.</param>
-        /// <param name="uid">Message IMAP UID value.</param>
-        /// <param name="flags">Message flags.</param>
-        /// <param name="size">Message size in bytes.</param>
-        /// <param name="internalDate">Message IMAP internal date.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>id</b> or <b>flags</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public IMAP_MessageInfo(string id,long uid,string[] flags,int size,DateTime internalDate)
+        /// <param name="id">
+        /// Application-defined message identifier.
+        /// </param>
+        /// <param name="uid">
+        /// The IMAP UID assigned to the message.
+        /// </param>
+        /// <param name="flags">
+        /// The message flags.
+        /// </param>
+        /// <param name="size">
+        /// The message size in octets.
+        /// </param>
+        /// <param name="internalDate">
+        /// The IMAP INTERNALDATE value.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="id"/> or
+        /// <paramref name="flags"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when one or more arguments contain invalid values.
+        /// </exception>
+        public IMAP_MessageInfo(string id,long uid,string[] flags,long size,DateTime internalDate)
         {
             if(id == null){
                 throw new ArgumentNullException("id");
             }
             if(id == string.Empty){
-                throw new ArgumentException("Argument 'id' value must be specified.","id");
+                throw new ArgumentException("Argument 'id' value must be specified.",nameof(id));
             }
             if(uid < 1){
-                throw new ArgumentException("Argument 'uid' value must be >= 1.","uid");
+                throw new ArgumentException("Argument 'uid' value must be >= 1.",nameof(uid));
             }
             if(flags == null){
                 throw new ArgumentNullException("flags");
@@ -52,10 +72,15 @@ namespace LumiSoft.Net.IMAP.Server
         #region method ContainsFlag
 
         /// <summary>
-        /// Gets if this message info contains specified message flag.
+        /// Determines whether the message contains the specified flag.
         /// </summary>
-        /// <param name="flag">Message flag.</param>
-        /// <returns>Returns true if message info contains specified message flag.</returns>
+        /// <param name="flag">
+        /// The flag to look for.
+        /// </param>
+        /// <returns>
+        /// <see langword="true"/> if the message contains the specified
+        /// flag; otherwise, <see langword="false"/>.
+        /// </returns>
         public bool ContainsFlag(string flag)
         {
             if(flag == null){
@@ -73,39 +98,46 @@ namespace LumiSoft.Net.IMAP.Server
 
         #endregion
 
-
-        #region method FlagsToImapString
+        #region method FlagsEqual
 
         /// <summary>
-        /// Flags to IMAP flags string.
+        /// Determines whether the specified flags are equal to this
+        /// message's current flags.
         /// </summary>
-        /// <returns>Returns IMAP flags string.</returns>
-        internal string FlagsToImapString()
+        /// <param name="flags">
+        /// The flags to compare against the current message flags.
+        /// </param>
+        /// <returns>
+        /// <see langword="true"/> if both flag collections contain the
+        /// same flags; otherwise, <see langword="false"/>.
+        /// </returns>
+        /// <remarks>
+        /// Flag comparisons are performed case-insensitively and are
+        /// independent of flag order.
+        /// </remarks>
+        public bool FlagsEqual(string[] flags)
         {
-            StringBuilder retVal = new StringBuilder();
-            retVal.Append("(");
-            for(int i=0;i<m_pFlags.Length;i++){
-                if(i > 0){
-                    retVal.Append(" ");
-                }
-
-                retVal.Append("\\" + m_pFlags[i]);
-            }
-            retVal.Append(")");
-
-            return retVal.ToString();
+            return new HashSet<string>(m_pFlags,StringComparer.OrdinalIgnoreCase).SetEquals(flags);
         }
 
         #endregion
 
+
         #region method UpdateFlags
 
         /// <summary>
-        /// Updates IMAP message flags.
+        /// Updates the message flags.
         /// </summary>
-        /// <param name="setType">Flags set type.</param>
-        /// <param name="flags">IMAP message flags.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>flags</b> is null reference.</exception>
+        /// <param name="setType">
+        /// Specifies how the supplied flags are applied.
+        /// </param>
+        /// <param name="flags">
+        /// The flags to add, remove, or replace.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="flags"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         internal void UpdateFlags(IMAP_Flags_SetType setType,string[] flags)
         {
             if(flags == null){
@@ -129,7 +161,7 @@ namespace LumiSoft.Net.IMAP.Server
         #region Properties implementation
 
         /// <summary>
-        /// Gets message ID value.
+        /// Gets the application-defined message identifier.
         /// </summary>
         public string ID
         {
@@ -137,7 +169,7 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets message IMAP UID value.
+        /// Gets the IMAP UID assigned to the message.
         /// </summary>
         public long UID
         {
@@ -145,38 +177,31 @@ namespace LumiSoft.Net.IMAP.Server
         }
 
         /// <summary>
-        /// Gets message flags.
+        /// Gets the message flags.
         /// </summary>
+        /// <remarks>
+        /// The returned array contains the current IMAP system and
+        /// keyword flags associated with the message.
+        /// </remarks>
         public string[] Flags
         {
             get{ return m_pFlags; }
         }
 
         /// <summary>
-        /// Gets message size in bytes.
+        /// Gets the message size in bytes.
         /// </summary>
-        public int Size
+        public long Size
         {
             get{ return m_Size; }
         }
 
         /// <summary>
-        /// Gets message IMAP internal date.
+        /// Gets the IMAP INTERNALDATE value of the message.
         /// </summary>
         public DateTime InternalDate
         {
             get{ return m_InternalDate; }
-        }
-
-
-        /// <summary>
-        /// Gets or sets message one-based sequnece number.
-        /// </summary>
-        internal int SeqNo
-        {
-            get{ return m_SeqNo; }
-
-            set{ m_SeqNo = value; }
         }
         
         #endregion

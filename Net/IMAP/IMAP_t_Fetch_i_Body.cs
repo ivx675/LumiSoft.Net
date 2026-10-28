@@ -1,4 +1,5 @@
-﻿using System;
+﻿using LumiSoft.Net.IMAP.Client;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -107,6 +108,317 @@ namespace LumiSoft.Net.IMAP
             m_MaxCount = maxCount;
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="IMAP_t_Fetch_i_Body"/> class.
+        /// </summary>
+        /// <param name="isPeek">Indicates whether this is a BODY.PEEK operation (does not set the \Seen flag).</param>
+        /// <param name="partSpecifier">The MIME part specifier (e.g., "1.2"), or null if none.</param>
+        /// <param name="sectionType">The section type (e.g., "HEADER", "TEXT", "HEADER.FIELDS"), or null if none.</param>
+        /// <param name="headerFields">The header fields specified for a HEADER.FIELDS section, or null.</param>
+        /// <param name="headerFieldsNot">The header fields specified for a HEADER.FIELDS.NOT section, or null.</param>
+        /// <param name="offset">The starting octet offset for partial fetches, or null.</param>
+        /// <param name="maxCount">The maximum number of octets to fetch in a partial request, or null.</param>
+        internal IMAP_t_Fetch_i_Body(bool isPeek,string? partSpecifier,string? sectionType,string[]? headerFields,string[]? headerFieldsNot,long? offset,long? maxCount)
+        {
+            IsPeek          = isPeek;
+            PartSpecifier   = partSpecifier;
+            SectionType     = sectionType;
+            HeaderFields    = headerFields;
+            HeaderFieldsNot = headerFieldsNot;
+            m_Offset        = offset;
+            m_MaxCount      = maxCount;
+
+            // Build section string.
+            var sb = new System.Text.StringBuilder();
+            bool hasPart = !string.IsNullOrEmpty(PartSpecifier);
+            bool hasSection = !string.IsNullOrEmpty(SectionType);
+            if(hasPart){
+                sb.Append(PartSpecifier);
+                if(hasSection){
+                    sb.Append('.');
+                    sb.Append(SectionType);
+                }
+            }
+            else if (hasSection){
+                sb.Append(SectionType);
+            }
+            // Append header fields filter if specified
+            if(HeaderFields != null && HeaderFields.Length > 0){
+                sb.Append(" (");
+                sb.Append(string.Join(" ", HeaderFields));
+                sb.Append(')');
+            }
+            else if (HeaderFieldsNot != null && HeaderFieldsNot.Length > 0){
+                sb.Append(" HEADER.FIELDS.NOT (");
+                sb.Append(string.Join(" ", HeaderFieldsNot));
+                sb.Append(')');
+            }
+            m_Section = sb.ToString();
+        }
+
+
+        #region static method ParseAsync
+
+        /// <summary>
+        /// Parses a FETCH <c>BODY</c> or <c>BODY.PEEK</c> data item from the
+        /// specified <see cref="_IMAP_Reader"/>.
+        /// </summary>
+        /// <param name="imapReader">
+        /// The <see cref="_IMAP_Reader"/> positioned at the FETCH data item
+        /// to parse.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// A cancellation token that can be used to cancel asynchronous
+        /// parsing operations.
+        /// </param>
+        /// <returns>
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Fetch_i_Body"/> instance representing the
+        /// parsed FETCH data item.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="imapReader"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Thrown when the FETCH attribute is not a valid
+        /// <c>BODY</c> or <c>BODY.PEEK</c> specification, a body section
+        /// is malformed, a header field list is invalid, or a partial
+        /// fetch specification cannot be parsed.
+        /// </exception>
+        /// <remarks>
+        /// Supports all standard RFC 9051 BODY section forms including
+        /// part specifiers, HEADER, TEXT, MIME,
+        /// HEADER.FIELDS, HEADER.FIELDS.NOT, and optional partial-fetch
+        /// specifiers.
+        /// <para>
+        /// HEADER.FIELDS and HEADER.FIELDS.NOT field names are parsed
+        /// using IMAP astring rules and therefore may be represented as
+        /// atoms, quoted strings, or literals.
+        /// </para>
+        /// <para>
+        /// This method performs complete BODY section parsing and
+        /// validation and returns a normalized representation that can
+        /// be consumed directly by FETCH processing logic.
+        /// </para>
+        /// </remarks>
+        internal static async Task<IMAP_t_Fetch_i_Body> ParseAsync(_IMAP_Reader imapReader,CancellationToken cancellationToken = default)
+        {
+            /*
+            RFC 9051 FETCH BODY syntax:
+
+                BODY[<section>]
+                BODY[<section>]<offset>
+                BODY[<section>]<offset.length>
+
+                BODY.PEEK[<section>]
+                BODY.PEEK[<section>]<offset>
+                BODY.PEEK[<section>]<offset.length>
+
+            Supported section forms:
+
+                BODY[]
+                BODY[HEADER]
+                BODY[TEXT]
+                BODY[MIME]
+
+                BODY[1]
+                BODY[1.2]
+                BODY[1.2.3]
+
+                BODY[1.HEADER]
+                BODY[1.TEXT]
+                BODY[1.MIME]
+
+                BODY[HEADER.FIELDS (...)]
+                BODY[HEADER.FIELDS.NOT (...)]
+
+                BODY[1.HEADER.FIELDS (...)]
+                BODY[1.HEADER.FIELDS.NOT (...)]
+
+            HEADER.FIELDS and HEADER.FIELDS.NOT field-name lists
+            are parsed and validated by this method. Field names
+            are accepted using IMAP astring syntax and therefore
+            may be supplied as atoms, quoted strings, or literals.
+
+            BODY and BODY.PEEK share the same parsing logic and
+            section syntax. The only semantic difference is that
+            BODY.PEEK does not implicitly set the \Seen flag.
+
+            This method performs full BODY/BODY.PEEK section parsing
+            and validation. The returned object contains a normalized
+            representation of the requested section so FETCH execution
+            code does not need to reparse section syntax.
+            */
+
+            ArgumentNullException.ThrowIfNull(imapReader);
+
+            bool isPeek = false;
+
+            string atom = imapReader.ReadAtom();
+            if(string.Equals(atom,"BODY",StringComparison.OrdinalIgnoreCase)){
+            }
+            else if(string.Equals(atom,"BODY.PEEK",StringComparison.OrdinalIgnoreCase)){
+                isPeek = true;
+            }
+            else{
+                throw new ParseException("Expected 'BODY' or 'BODY.PEEK'.");
+            }
+
+            string?   partSpecifier   = null;
+            string?   sectionType     = null;
+            string[]? headerFields    = null;
+            string[]? headerFieldsNot = null;
+            long?     offset          = null;
+            long?     count           = null;
+
+            if(imapReader.PeekIs('[')){
+                imapReader.ReadChar();
+            }
+            else{
+                throw new ParseException("Expected '[' for BODY.");
+            }
+
+            if(imapReader.PeekIs(']')){
+                imapReader.ReadChar();
+            }
+            else{
+                // Read the full section atom (e.g., "1.2.HEADER.FIELDS" or "HEADER" or "1.2")
+                string sectionToken = imapReader.ReadAtom();
+    
+                // Check if this section type requires a header field list
+                bool isHeaderFields = sectionToken.EndsWith("HEADER.FIELDS", StringComparison.OrdinalIgnoreCase);
+                bool isHeaderFieldsNot = sectionToken.EndsWith("HEADER.FIELDS.NOT", StringComparison.OrdinalIgnoreCase);
+    
+                string baseSection = sectionToken;
+                if(isHeaderFields || isHeaderFieldsNot){
+                    // Strip off ".HEADER.FIELDS" or ".HEADER.FIELDS.NOT" to isolate any preceding part specifier (e.g., "1.2")
+                    int suffixLen = isHeaderFields ? "HEADER.FIELDS".Length : "HEADER.FIELDS.NOT".Length;
+                    baseSection = sectionToken.Substring(0,sectionToken.Length - suffixLen);
+                    if (baseSection.EndsWith('.')){
+                        baseSection = baseSection.Substring(0,baseSection.Length - 1);
+                    }
+        
+                    sectionType = isHeaderFields ? "HEADER.FIELDS" : "HEADER.FIELDS.NOT";
+                    List<string> targetList = new List<string>();
+
+                    // Expect opening parenthesis for the field list (ReadAtom automatically consumes leading whitespace)
+                    if(!imapReader.PeekIs('(')){
+                        throw new ParseException("Expected '(' for header fields list.");
+                    }
+                    imapReader.ReadChar();
+
+                    while(true){
+                        if(!imapReader.HasMore){
+                            throw new ParseException("Unexpected end of stream while parsing header fields.");
+                        }
+                        if(imapReader.PeekIs(')')){
+                            imapReader.ReadChar();
+                            break;
+                        }
+
+                        string? fieldName = await imapReader.ReadStringAsync();
+                        if(fieldName != null){
+                            targetList.Add(fieldName);
+                        }
+                    }
+
+                    if(isHeaderFields){
+                        headerFields = targetList.ToArray();
+                    }
+                    else{
+                        headerFieldsNot = targetList.ToArray();
+                    }
+                }
+                else{
+                    // Determine section type from the end of the token if it's not a header fields query
+                    if(sectionToken.EndsWith(".HEADER", StringComparison.OrdinalIgnoreCase)){
+                        sectionType = "HEADER";
+                        baseSection = sectionToken.Substring(0, sectionToken.Length - ".HEADER".Length);
+                    }
+                    else if(sectionToken.EndsWith(".TEXT", StringComparison.OrdinalIgnoreCase)){
+                        sectionType = "TEXT";
+                        baseSection = sectionToken.Substring(0, sectionToken.Length - ".TEXT".Length);
+                    }
+                    else if(sectionToken.EndsWith(".MIME", StringComparison.OrdinalIgnoreCase)){
+                        sectionType = "MIME";
+                        baseSection = sectionToken.Substring(0, sectionToken.Length - ".MIME".Length);
+                    }
+                    else if(string.Equals(sectionToken, "HEADER", StringComparison.OrdinalIgnoreCase)){
+                        sectionType = "HEADER";
+                        baseSection = string.Empty;
+                    }
+                    else if(string.Equals(sectionToken, "TEXT", StringComparison.OrdinalIgnoreCase)){
+                        sectionType = "TEXT";
+                        baseSection = string.Empty;
+                    }
+                    else if(string.Equals(sectionToken, "MIME", StringComparison.OrdinalIgnoreCase)){
+                        sectionType = "MIME";
+                        baseSection = string.Empty;
+                    }
+                    else {
+                        // If it doesn't end with a known keyword, the entire token is treated as a part specifier (e.g., "1.2.3")
+                        baseSection = sectionToken;
+                        sectionType = null; 
+                    }
+                }
+
+                // Validate and store the part specifier if present
+                if(!string.IsNullOrEmpty(baseSection)){
+                    string[] partParts = baseSection.Split('.');
+                    foreach(string part in partParts){
+                        if(!int.TryParse(part, out _)){
+                            throw new ParseException($"Invalid body part specifier: {part}");
+                        }
+                    }
+                    partSpecifier = baseSection;
+                }
+
+                if(!imapReader.PeekIs(']')){
+                    throw new ParseException("Expected ']' at the end of BODY section.");
+                }
+                imapReader.ReadChar();
+            }
+
+            if(imapReader.PeekIs('<')){
+                string partialAtom = imapReader.ReadAtom();
+
+                if(!partialAtom.StartsWith('<') || !partialAtom.EndsWith('>')){
+                    throw new ParseException("Invalid BODY partial section format.");
+                }
+
+                string inner = partialAtom.Substring(1, partialAtom.Length - 2);
+                string[] offset_count = inner.Split('.');
+
+                if(long.TryParse(offset_count[0], out long offsetValue)){
+                    offset = offsetValue;
+                }
+                else{
+                    throw new ParseException("Invalid BODY partial section offset.");
+                }
+
+                if(offset_count.Length == 2){
+                    if(long.TryParse(offset_count[1], out long countValue)){
+                        count = countValue;
+                    }
+                    else{
+                        throw new ParseException("Invalid BODY partial section count.");
+                    }
+                }
+                else if(offset_count.Length > 2){
+                    throw new ParseException("Invalid BODY partial section format.");
+                }
+            }
+
+            if(string.Equals(sectionType,"MIME",StringComparison.OrdinalIgnoreCase) && partSpecifier == null){
+                throw new ParseException("MIME section specifiers require a part number (e.g., BODY[1.MIME]).");
+            }
+
+            return new IMAP_t_Fetch_i_Body(isPeek,partSpecifier,sectionType,headerFields,headerFieldsNot,offset,count);
+        }
+
+        #endregion
+
 
         #region override method ToString
 
@@ -156,6 +468,41 @@ namespace LumiSoft.Net.IMAP
             }
 
             return retVal.ToString();
+        }
+
+        #endregion
+
+
+        #region method GetBodySignature
+
+        /// <summary>
+        /// Generates a canonical string signature representing this body request for deduplication.
+        /// </summary>
+        internal string GetBodySignature()
+        {
+            var sb = new StringBuilder();
+            sb.Append(IsPeek ? "PEEK:" : "BODY:");
+            sb.Append(PartSpecifier ?? string.Empty);
+            sb.Append(':');
+            sb.Append(SectionType ?? string.Empty);
+            sb.Append(':');
+            sb.Append(m_Offset?.ToString() ?? "null");
+            sb.Append(':');
+            sb.Append(m_MaxCount?.ToString() ?? "null");
+
+            if(HeaderFields != null){
+                sb.Append(":HF[");
+                sb.Append(string.Join(",", HeaderFields));
+                sb.Append(']');
+            }
+
+            if(HeaderFieldsNot != null){
+                sb.Append(":HFN[");
+                sb.Append(string.Join(",", HeaderFieldsNot));
+                sb.Append(']');
+            }
+
+            return sb.ToString();
         }
 
         #endregion
@@ -219,6 +566,47 @@ namespace LumiSoft.Net.IMAP
         public long? MaxCount
         {
             get{ return m_MaxCount; }
+        }
+
+
+        /// <summary>
+        /// Gets a value indicating whether this is a BODY.PEEK operation.
+        /// </summary>
+        internal bool IsPeek
+        {
+            get;
+        }
+
+        /// <summary>
+        /// Gets the MIME part specifier (e.g., "1.2"), or null if none.
+        /// </summary>
+        internal string? PartSpecifier
+        {
+            get;
+        }
+
+        /// <summary>
+        /// Gets the section type (e.g., "HEADER", "TEXT"), or null if none.
+        /// </summary>
+        internal string? SectionType
+        {
+            get;
+        }
+
+        /// <summary>
+        /// Gets the header fields specified for a HEADER.FIELDS section, or null.
+        /// </summary>
+        internal string[]? HeaderFields
+        {
+            get;
+        }
+
+        /// <summary>
+        /// Gets the header fields specified for a HEADER.FIELDS.NOT section, or null.
+        /// </summary>
+        internal string[]? HeaderFieldsNot
+        {
+            get;
         }
 
         #endregion

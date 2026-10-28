@@ -91,7 +91,7 @@ namespace LumiSoft.Net.IMAP
         #endregion
 
 
-		#region method ParseDate
+		#region static method ParseDate
 
 		/// <summary>
 		/// Parses IMAP date time from string.
@@ -332,6 +332,66 @@ namespace LumiSoft.Net.IMAP
 
         #region static method EncodeMailbox
 
+		/// <summary>
+		/// Encodes the specified mailbox name for inclusion in an IMAP
+		/// protocol response.
+		/// </summary>
+		/// <param name="mailbox">
+		/// The mailbox name to encode.
+		/// </param>
+		/// <param name="utf8Allowed">
+		/// Specifies whether UTF-8 mailbox names are permitted in the
+		/// generated IMAP response.
+		/// </param>
+		/// <returns>
+		/// An IMAP quoted string containing the encoded mailbox name.
+		/// </returns>
+		/// <exception cref="ArgumentNullException">
+		/// Thrown when <paramref name="mailbox"/> is
+		/// <see langword="null"/>.
+		/// </exception>
+		/// <remarks>
+		/// When <paramref name="utf8Allowed"/> is
+		/// <see langword="false"/>, the mailbox name is encoded using
+		/// IMAP modified UTF-7.
+		/// <para>
+		/// Any embedded quotation marks and backslashes are escaped
+		/// according to IMAP quoted-string rules.
+		/// </para>
+		/// <para>
+		/// The returned value is always enclosed in double quotation
+		/// marks and is therefore ready for direct inclusion in an IMAP
+		/// protocol response.
+		/// </para>
+		/// </remarks>
+		public static string EncodeMailbox(string mailbox,bool utf8Allowed)
+        {
+            if(mailbox == null){
+                throw new ArgumentNullException("mailbox");
+            }
+
+            /* RFC 6855 3.
+                quoted        = DQUOTE *uQUOTED-CHAR DQUOTE
+                uQUOTED-CHAR  = QUOTED-CHAR / UTF8-2 / UTF8-3 / UTF8-4
+            */
+
+            string encoded;
+			if(!utf8Allowed){
+				encoded = IMAP_Utils.Encode_IMAP_UTF7_String(mailbox);
+			}
+			else{
+				encoded = mailbox;
+			}
+
+			// Escape \ inside the mailbox name
+			encoded = encoded.Replace("\\", "\\\\");
+			// Escape internal quotes inside the mailbox name
+			encoded = encoded.Replace("\"", "\\\"");
+
+			// Wrap in IMAP quoted string
+			return "\"" + encoded + "\"";
+        }
+
         /// <summary>
         /// Encodes mailbox name.
         /// </summary>
@@ -361,6 +421,8 @@ namespace LumiSoft.Net.IMAP
 				encoded = mailbox;
 			}
 
+			// Escape \ inside the mailbox name
+			encoded = encoded.Replace("\\", "\\\\");
 			// Escape internal quotes inside the mailbox name
 			encoded = encoded.Replace("\"", "\\\"");
 
@@ -540,50 +602,6 @@ namespace LumiSoft.Net.IMAP
 
 
         #endregion
-
-        #region static method IsValidLiteralHeader
-
-        /// <summary>
-        /// Determines whether the specified string is a valid IMAP literal or literal+ header.
-        /// </summary>
-        /// <param name="header">Literal header string, e.g. "{12}" or "{12+}".</param>
-        /// <returns>
-        /// True if the header is a syntactically valid literal or literal+ header; otherwise false.
-        /// </returns>
-        public static bool IsValidLiteralHeader(string header)
-		{
-			if (string.IsNullOrEmpty(header)){
-				return false;
-			}
-
-			// Must be at least "{0}" → length >= 3
-			if (header.Length < 3 || header[0] != '{' || header[^1] != '}'){
-				return false;
-			}
-
-			// Extract inner part: "12" or "12+"
-			string inner = header.Substring(1, header.Length - 2);
-
-
-			// Check for literal+
-			if (inner.EndsWith("+", StringComparison.Ordinal)){
-				inner = inner.Substring(0, inner.Length - 1);
-			}
-
-			// Must be digits only
-			if (!int.TryParse(inner, out int count)){
-				return false;
-			}
-
-			// RFC: literal count must be >= 0
-			if (count < 0){
-				return false;
-			}
-
-			return true;
-		}
-
-		#endregion
 
 
 

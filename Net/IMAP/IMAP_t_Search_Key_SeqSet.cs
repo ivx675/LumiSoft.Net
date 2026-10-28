@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// IMAP sequence sets are defined by RFC 3501 and represent message
+    /// IMAP sequence sets are defined by RFC 9051 and represent message
     /// number ranges or lists, such as <c>1:10</c>, <c>1,2,4:7</c>, or
     /// <c>*</c>. Sequence sets are structural tokens and are never quoted in
     /// SEARCH or FETCH commands.
@@ -40,7 +40,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// IMAP sequence sets are defined by RFC 3501 and represent message
+        /// IMAP sequence sets are defined by RFC 9051 and represent message
         /// number ranges or lists, such as <c>1:10</c>, <c>1,2,4:7</c>, or
         /// <c>*</c>. Sequence sets are structural tokens and are never quoted in
         /// SEARCH or FETCH commands.
@@ -60,10 +60,10 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Parses an IMAP sequence‑set search key from the provided
-        /// <see cref="StringReader"/>.
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the sequence‑set to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the sequence‑set to parse.
         /// </param>
         /// <returns>
         /// A new <see cref="IMAP_t_Search_Key_SeqSet"/> instance containing the
@@ -77,23 +77,19 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// IMAP sequence sets are defined by RFC 3501 and represent message
+        /// IMAP sequence sets are defined by RFC 9051 and represent message
         /// number ranges or lists, such as <c>1:10</c>, <c>1,2,4:7</c>, or
         /// <c>*</c>. Sequence sets are structural tokens and are never quoted in
         /// IMAP SEARCH or FETCH commands.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_SeqSet Parse(StringReader r)
+        internal static IMAP_t_Search_Key_SeqSet Parse(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            r.ReadToFirstChar();
-            string value = r.QuotedReadToDelimiter(' ');
-            if(value == null){
-                throw new ParseException("Parse error: Invalid 'sequence-set' value.");
-            }
+            string value = r.ReadAtom();
             
             try{
                 return new IMAP_t_Search_Key_SeqSet(IMAP_t_SeqSet.Parse(value));
@@ -118,7 +114,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// IMAP sequence sets are defined by RFC 3501 and represent message
+        /// IMAP sequence sets are defined by RFC 9051 and represent message
         /// number ranges or lists. They are structural tokens and are never
         /// quoted in SEARCH or FETCH commands.
         /// </para>
@@ -146,7 +142,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// IMAP sequence sets are defined by RFC 3501 and represent message
+        /// IMAP sequence sets are defined by RFC 9051 and represent message
         /// number ranges or lists, such as <c>1:10</c>, <c>1,2,4:7</c>, or
         /// <c>*</c>. Sequence sets are structural tokens and are never quoted in
         /// IMAP SEARCH or FETCH commands.
@@ -171,7 +167,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// <para>
-        /// IMAP sequence sets are defined by RFC 3501 and represent message
+        /// IMAP sequence sets are defined by RFC 9051 and represent message
         /// number ranges or lists, such as <c>1:10</c>, <c>1,2,4:7</c>, or
         /// <c>*</c>. Sequence sets are structural tokens and are never quoted in
         /// SEARCH or FETCH commands.

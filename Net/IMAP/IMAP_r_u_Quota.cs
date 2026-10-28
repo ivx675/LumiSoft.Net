@@ -206,67 +206,59 @@ namespace LumiSoft.Net.IMAP
         #region override method ToString
 
         /// <summary>
-        /// Returns the IMAP <c>QUOTA</c> response string for this object using
-        /// <see cref="IMAP_Mailbox_Encoding.None"/>. This overload provides a
-        /// convenient default serialization that emits the quota root without
-        /// IMAP UTF‑7 encoding.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>QUOTA</c> response with UTF-8 quota roots allowed.
         /// </summary>
         /// <returns>
-        /// A properly formatted IMAP QUOTA response string terminated with CRLF.
+        /// A string containing the serialized IMAP
+        /// <c>QUOTA</c> response.
         /// </returns>
         /// <remarks>
-        /// <para>
         /// This method is equivalent to calling
-        /// <c>ToString(IMAP_Mailbox_Encoding.None)</c>. The quota root is emitted
-        /// as a raw Unicode string, while all resource entries are serialized
-        /// according to RFC 2087.
-        /// </para>
-        /// <para>
-        /// The resulting output conforms to the standard QUOTA response format:
-        /// </para>
-        /// <code>
-        /// * QUOTA &lt;quotaroot&gt; (&lt;resource&gt; &lt;usage&gt; &lt;limit&gt; ...)
-        /// </code>
+        /// <see cref="ToString(bool)"/> with
+        /// <see langword="true"/>.
         /// </remarks>
         public override string ToString()
         {
-            return ToString(IMAP_Mailbox_Encoding.None);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Returns the IMAP <c>QUOTA</c> response string for this object using the
-        /// specified mailbox encoding. The output conforms to the syntax defined in
-        /// RFC 2087 and represents the quota root and all associated resource
-        /// usage/limit triplets.
+        /// Returns the IMAP wire-format representation of this
+        /// <c>QUOTA</c> response.
         /// </summary>
-        /// <param name="encoding">
-        /// The mailbox encoding to apply when serializing the quota root. This value
-        /// controls whether the quota root is emitted as IMAP UTF‑7 or left as a
-        /// Unicode string.
+        /// <param name="utf8Allowed">
+        /// Specifies whether UTF-8 quota roots are permitted in the
+        /// generated IMAP response.
         /// </param>
         /// <returns>
-        /// A properly formatted IMAP QUOTA response string terminated with CRLF.
+        /// A string containing the IMAP <c>QUOTA</c> response in
+        /// protocol format, terminated with CRLF.
         /// </returns>
         /// <remarks>
-        /// <para>
-        /// QUOTA responses have the general form:
-        /// </para>
+        /// The output format follows RFC 2087:
         /// <code>
-        /// * QUOTA &lt;quotaroot&gt; (&lt;resource&gt; &lt;usage&gt; &lt;limit&gt; ...)
+        /// * QUOTA &lt;quotaroot&gt;
+        ///   (&lt;resource&gt; &lt;usage&gt; &lt;limit&gt; ...)
         /// </code>
         /// <para>
-        /// The <c>quotaroot</c> value is encoded using the specified mailbox encoding.
-        /// Each quota entry is serialized as a resource triplet consisting of the
-        /// resource name, current usage, and maximum allowed usage. Multiple entries
-        /// are separated by a single space.
+        /// Each quota entry is emitted as a resource triplet consisting
+        /// of the resource name, current usage, and maximum permitted
+        /// usage.
+        /// </para>
+        /// <para>
+        /// When <paramref name="utf8Allowed"/> is
+        /// <see langword="false"/>, quota roots are encoded as required
+        /// for IMAP servers that do not permit UTF-8 mailbox names in
+        /// protocol responses.
         /// </para>
         /// </remarks>
-        public override string ToString(IMAP_Mailbox_Encoding encoding)
+        public override string ToString(bool utf8Allowed)
         {
             // Example:    S: * QUOTA "" (STORAGE 10 512)
 
             StringBuilder retVal = new StringBuilder();
-            retVal.Append("* QUOTA " + IMAP_Utils.EncodeMailbox(m_QuotaRoot,encoding) + " (");
+            retVal.Append("* QUOTA " + IMAP_Utils.EncodeMailbox(m_QuotaRoot,utf8Allowed) + " (");
             for(int i=0;i<m_pEntries.Length;i++){
                 if(i > 0){
                     retVal.Append(" ");

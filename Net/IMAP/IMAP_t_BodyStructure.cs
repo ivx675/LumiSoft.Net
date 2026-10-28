@@ -1,4 +1,5 @@
-﻿using LumiSoft.Net.MIME;
+﻿using LumiSoft.Net.Mail;
+using LumiSoft.Net.MIME;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -6,7 +7,7 @@ using System.Text;
 namespace LumiSoft.Net.IMAP 
 {
     /// <summary>
-    /// Represents a BODYSTRUCTURE element as defined by IMAP RFC 3501.
+    /// Represents a BODYSTRUCTURE element as defined by IMAP RFC 9051.
     /// </summary>
     /// <remarks>
     /// A BODYSTRUCTURE element describes the MIME structure of a message. This
@@ -113,6 +114,52 @@ namespace LumiSoft.Net.IMAP
 
         #endregion
 
+        #region static method FromMessage
+
+        /// <summary>
+        /// Creates an <see cref="IMAP_t_BodyStructure"/> from a Mail_Message.
+        /// </summary>
+        /// <param name="message">The source <see cref="Mail_Message"/>.</param>
+        /// <returns>Returns a populated <see cref="IMAP_t_BodyStructure"/> instance.</returns>
+        public static IMAP_t_BodyStructure FromMessage(Mail_Message message)
+        {
+            if(message == null){
+                throw new ArgumentNullException(nameof(message));
+            }
+
+            IMAP_t_BodyStructure_e rootEntity = ConvertMimeEntity(message);
+
+            return new IMAP_t_BodyStructure(rootEntity);
+        }
+
+        #endregion
+
+
+        #region override method ToString
+
+        /// <summary>
+        /// Returns a valid IMAP BODYSTRUCTURE string representation of the message tree 
+        /// (excluding the 'BODYSTRUCTURE' keyword).
+        /// </summary>
+        /// <returns>A valid IMAP BODYSTRUCTURE parenthesized string.</returns>
+        public override string ToString()
+        {
+            if(m_pMessage == null){
+                return "NIL";
+            }
+
+            // Delegate serialization depending on whether it's a single-part or multi-part entity
+            if(m_pMessage is IMAP_t_BodyStructure_e_SinglePart singlePart){
+                return SinglePartToString(singlePart);
+            }
+            else if (m_pMessage is IMAP_t_BodyStructure_e_MultiPart multiPart){
+                return MultiPartToString(multiPart);
+            }
+
+            return "NIL";
+        }
+
+        #endregion
 
         #region method GetAttachments
 
@@ -156,6 +203,303 @@ namespace LumiSoft.Net.IMAP
             }
 
             return retVal.ToArray();
+        }
+
+        #endregion
+
+        
+        #region static method ConvertMimeEntity
+
+        /// <summary>
+        /// Recursively converts a MIME entity into its corresponding IMAP body structure representation (<see cref="IMAP_t_BodyStructure_e"/>).
+        /// </summary>
+        /// <param name="entity">The <see cref="MIME_Entity"/> to convert.</param>
+        /// <returns>An <see cref="IMAP_t_BodyStructure_e"/> instance representing either a multi-part container or a single-part body structure.</returns>
+        private static IMAP_t_BodyStructure_e ConvertMimeEntity(MIME_Entity entity)
+        {
+            // Check if it's a multipart entity
+            if (entity.Body is MIME_b_Multipart multipartBody){
+                var childEntities = new List<IMAP_t_BodyStructure_e>();
+                foreach(MIME_Entity subEntity in multipartBody.BodyParts){
+                    childEntities.Add(ConvertMimeEntity(subEntity));
+                }
+
+                return new IMAP_t_BodyStructure_e_MultiPart(
+                    contentType: entity.ContentType ?? new MIME_h_ContentType("multipart/mixed"),
+                    contentDisposition: entity.ContentDisposition,
+                    language: null,
+                    location: null,
+                    bodyParts: childEntities.ToArray()
+                );
+            }
+
+            // Check if it's a nested MESSAGE/RFC822 embedded message part
+            IMAP_t_Envelope? innerEnvelope = null;
+            IMAP_t_BodyStructure? innerBodyStructure = null;
+
+            if(entity.Body is MIME_b_MessageRfc822 rfc822Body && rfc822Body.Message != null){
+                innerEnvelope = IMAP_t_Envelope.FromMessage(rfc822Body.Message);
+                innerBodyStructure = FromMessage(rfc822Body.Message);
+            }
+
+            int contentSize = 0;
+            if(entity.Body is MIME_b_SinglepartBase b1){
+                contentSize =  b1.EncodedDataSize;
+            }
+
+            int linesCount = 0;
+            if(entity.Body is MIME_b_Text b2){
+                linesCount = b2.Text.Split('\n').Length;
+            }
+
+            // Single-part entity
+            return new IMAP_t_BodyStructure_e_SinglePart(
+                contentType: entity.ContentType ?? new MIME_h_ContentType("text/plain"),
+                contentId: entity.ContentID,
+                contentDescription: entity.ContentDescription,
+                contentTransferEncoding: entity.ContentTransferEncoding ?? "7BIT",
+                contentSize: contentSize,
+                linesCount: linesCount,
+                envelope: innerEnvelope,
+                bodyStructure: innerBodyStructure,
+                md5: null,
+                contentDisposition: entity.ContentDisposition,
+                language: null,
+                location: null
+            );
+        }
+
+        #endregion
+
+        #region static method SinglePartToString
+
+        /// <summary>
+        /// Serializes an IMAP single-part body structure entity into its corresponding RFC-compliant IMAP string representation.
+        /// </summary>
+        /// <param name="sp">The <see cref="IMAP_t_BodyStructure_e_SinglePart"/> instance to serialize.</param>
+        /// <returns>A parenthesized string representing the single-part body structure and all its required fields.</returns>
+        private static string SinglePartToString(IMAP_t_BodyStructure_e_SinglePart sp)
+        {
+            /*
+                IMAP4rev2 (RFC 9051) Single-Part BODYSTRUCTURE Syntax:
+                ("TYPE" "SUBTYPE" (parameters) id desc encoding size [lines] [envelope bodystructure] md5 (disposition) language location)
+         
+                Field Sequence:
+                  1. type        - Content-Type major type (e.g., "TEXT", "APPLICATION")
+                  2. subtype     - Content-Type subtype (e.g., "PLAIN", "OCTET-STREAM")
+                  3. parameters  - Content-Type parameters list (attribute-value pairs) or NIL
+                  4. id          - Content-ID string or NIL
+                  5. description - Content-Description string or NIL
+                  6. encoding    - Content-Transfer-Encoding (e.g., "7BIT", "BASE64")
+                  7. size        - Body size in octets (number)
+                  8. lines       - Line count (mandatory for TEXT/* and MESSAGE/RFC822 types)
+                  9. env/body    - Nested Envelope and BodyStructure (only for MESSAGE/RFC822)
+                 10. md5         - MD5 checksum string or NIL
+                 11. disposition - Content-Disposition structure (type and parameters) or NIL
+                 12. language    - Content-Language string/list or NIL
+                 13. location    - Content-Location string or NIL
+            */
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append('(');
+
+            // 1 & 2. Type & Subtype
+            string type = "TEXT";
+            string subType = "PLAIN";
+            if(sp.ContentType != null){
+                if (!string.IsNullOrEmpty(sp.ContentType.Type)) type = sp.ContentType.Type.ToUpperInvariant();
+                if (!string.IsNullOrEmpty(sp.ContentType.SubType)) subType = sp.ContentType.SubType.ToUpperInvariant();
+            }
+
+            sb.Append($"\"{type}\" \"{subType}\" ");
+
+            // 3. Parameters (body-fld-param)
+            if(sp.ContentType != null && sp.ContentType.Parameters.Count > 0){
+                sb.Append('(');
+                bool first = true;
+                foreach (var param in sp.ContentType.Parameters){
+                    if(!first){
+                        sb.Append(' ');
+                    }
+
+                    string paramName = EscapeString(param.Name);
+                    string? val = param.Value;
+                    if(val == null){
+                        sb.Append($"\"{paramName}\" NIL");
+                    }
+                    else{
+                        sb.Append($"\"{paramName}\" \"{EscapeString(val)}\"");
+                    }
+                    first = false;
+                }
+                sb.Append(") ");
+            }
+            else{
+                sb.Append("NIL ");
+            }
+
+            // 4. ID (body-fld-id)
+            if (string.IsNullOrEmpty(sp.ContentID)) sb.Append("NIL ");
+            else sb.Append($"\"{EscapeString(sp.ContentID)}\" ");
+
+            // 5. Description (body-fld-desc)
+            if (string.IsNullOrEmpty(sp.ContentDescription)) sb.Append("NIL ");
+            else sb.Append($"\"{EscapeString(sp.ContentDescription)}\" ");
+
+            // 6. Encoding (body-fld-enc)
+            string encoding = !string.IsNullOrEmpty(sp.ContentTransferEncoding) ? sp.ContentTransferEncoding.ToUpperInvariant() : "7BIT";
+            sb.Append($"\"{encoding}\" ");
+
+            // 7. Size (body-fld-octets)
+            sb.Append($"{sp.ContentSize} ");
+
+            // 8. Lines (for TEXT or MESSAGE/RFC822)
+            bool isText = string.Equals("TEXT", type, StringComparison.OrdinalIgnoreCase);
+            bool isMessageRfc822 = string.Equals("MESSAGE", type, StringComparison.OrdinalIgnoreCase) && string.Equals("RFC822", subType, StringComparison.OrdinalIgnoreCase);
+
+            if (isText || isMessageRfc822){
+                int lines = sp.LinesCount.HasValue ? sp.LinesCount.Value : 0;
+                sb.Append($"{lines} ");
+            }
+
+            // 9. MESSAGE/RFC822 specific fields (Envelope & BodyStructure)
+            if(isMessageRfc822){
+                if (sp.Envelope != null) sb.Append($"{sp.Envelope} ");
+                else sb.Append("NIL ");
+
+                if (sp.BodyStructure != null) sb.Append($"{sp.BodyStructure} ");
+                else sb.Append("NIL ");
+            }
+
+            // 10. MD5 (body-fld-md5)
+            if (string.IsNullOrEmpty(sp.Md5)) sb.Append("NIL ");
+            else sb.Append($"\"{EscapeString(sp.Md5)}\" ");
+
+            // 11. Content-Disposition (body-fld-dsp)
+            if(sp.ContentDisposition == null){
+                sb.Append("NIL");
+            }
+            else{
+                string dispType = EscapeString(sp.ContentDisposition.DispositionType.ToUpperInvariant());
+                sb.Append($"(\"{dispType}\" ");
+                
+                if(sp.ContentDisposition.Parameters.Count > 0){
+                    sb.Append('(');
+                    bool first = true;
+                    foreach (var param in sp.ContentDisposition.Parameters){
+                        if(!first){
+                            sb.Append(' ');
+                        }
+
+                        string paramName = EscapeString(param.Name);
+                        string? val = param.Value;
+                        if(val == null){
+                            sb.Append($"\"{paramName}\" NIL");
+                        }
+                        else{
+                            sb.Append($"\"{paramName}\" \"{EscapeString(val)}\"");
+                        }
+                        first = false;
+                    }
+                    sb.Append(')');
+                }
+                else{
+                    sb.Append("NIL");
+                }
+                sb.Append(')');
+            }
+
+            // 12. Language (body-fld-lang)
+            if (string.IsNullOrEmpty(sp.Language)) sb.Append(" NIL");
+            else sb.Append($" \"{EscapeString(sp.Language)}\"");
+
+            // 13. Location (body-fld-loc)
+            if (string.IsNullOrEmpty(sp.Location)) sb.Append(" NIL");
+            else sb.Append($" \"{EscapeString(sp.Location)}\"");
+
+            sb.Append(')');
+
+            return sb.ToString();
+        }
+
+        #endregion
+
+        #region static method MultiPartToString
+
+        /// <summary>
+        /// Serializes an IMAP multi-part body structure entity into its corresponding RFC-compliant IMAP string representation.
+        /// </summary>
+        /// <param name="mp">The <see cref="IMAP_t_BodyStructure_e_MultiPart"/> instance to serialize.</param>
+        /// <returns>A parenthesized string representing the multi-part body structure, including its child parts, subtype, and optional extension fields.</returns>
+        private static string MultiPartToString(IMAP_t_BodyStructure_e_MultiPart mp)
+        {
+            /*
+                IMAP4rev2 (RFC 9051) Multi-Part BODYSTRUCTURE Syntax:
+                (body-part-1 [body-part-2 ...] "SUBTYPE" [disposition] [language] [location])
+         
+                Field Sequence:
+                  1. body-parts  - One or more nested body structures (single-part or multi-part)
+                  2. subtype     - Content-Type subtype (e.g., "MIXED", "ALTERNATIVE", "RELATED")
+                  3. disposition - Content-Disposition structure (type and parameters) or NIL (extension)
+                  4. language    - Content-Language string/list or NIL (extension)
+                  5. location    - Content-Location string or NIL (extension)
+            */
+
+            var sb = new StringBuilder();
+            sb.Append('(');
+
+            // Child parts
+            foreach (var part in mp.BodyParts){
+                if(part is IMAP_t_BodyStructure_e_SinglePart sp){
+                    sb.Append(SinglePartToString(sp));
+                }
+                else if(part is IMAP_t_BodyStructure_e_MultiPart subMp){
+                    sb.Append(MultiPartToString(subMp));
+                }
+            }
+
+            // Subtype
+            string subType = "MIXED";
+            if(mp.ContentType != null && !string.IsNullOrEmpty(mp.ContentType.SubType)){
+                subType = mp.ContentType.SubType.ToUpperInvariant();
+            }
+            sb.Append($" \"{subType}\"");
+
+            // Optional extension fields (Disposition, Language, Location)
+            if(mp.ContentDisposition != null || !string.IsNullOrEmpty(mp.Language) || !string.IsNullOrEmpty(mp.Location)){
+                if(mp.ContentDisposition == null){
+                    sb.Append(" NIL");
+                }
+                else{
+                    string dispType = EscapeString(mp.ContentDisposition.DispositionType.ToUpperInvariant());
+                    sb.Append($" (\"{dispType}\" NIL)");
+                }
+
+                if(string.IsNullOrEmpty(mp.Language)){
+                    sb.Append(" NIL");
+                }
+                else{
+                    sb.Append($" \"{EscapeString(mp.Language)}\"");
+                }
+
+                if(!string.IsNullOrEmpty(mp.Location)){
+                    sb.Append($" \"{EscapeString(mp.Location)}\"");
+                }
+            }
+
+            sb.Append(')');
+
+            return sb.ToString();
+        }
+
+        #endregion
+
+        #region static method EscapeString
+
+        private static string EscapeString(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return string.Empty;
+            return input.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
         #endregion

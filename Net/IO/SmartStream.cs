@@ -1,4 +1,5 @@
 
+using System.Buffers;
 using System.Text;
 
 namespace LumiSoft.Net.IO
@@ -1029,6 +1030,54 @@ namespace LumiSoft.Net.IO
 
         #endregion
 
+        #region method WriteStreamExactlyAsync
+
+        /// <summary>
+        /// Asynchronously reads an exact number of bytes from the specified source stream and writes them out.
+        /// Throws an exception if the source stream ends before the requested count is reached.
+        /// </summary>
+        /// <param name="sourceStream">The stream to read the data from.</param>
+        /// <param name="count">The exact number of bytes to read and write. Must be greater than 0.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A <see cref="ValueTask"/> representing the asynchronous operation.</returns>
+        /// <exception cref="ObjectDisposedException">Thrown if the current instance is disposed.</exception>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="count"/> is less than 1.</exception>
+        /// <exception cref="IOException">Thrown if the source stream reaches the end before reading the expected number of bytes.</exception>
+        public async ValueTask WriteStreamExactlyAsync(Stream sourceStream,long count,CancellationToken cancellationToken = default)
+        {
+            if(m_IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+            if(count < 1){
+                throw new ArgumentException("Argument 'count' must be > 0.",nameof(count));
+            }
+            
+            Memory<byte> buffer     = new byte[Math.Min(32000,count)];            
+            long         totalBytes = 0;            
+            long         remaining  = count;
+            while(remaining > 0){
+                Memory<byte> readBlock = buffer;
+                int          toRead    = (int)Math.Min(buffer.Length,remaining);
+
+                // We need to read less than buffer size, so we need to slice the buffer.
+                if(toRead < buffer.Length){
+                    readBlock = buffer.Slice(0,toRead);
+                }
+
+                int readCount = await sourceStream.ReadAsync(readBlock,cancellationToken).ConfigureAwait(false);
+                // End of stream reached.
+                if(readCount == 0) {
+                    throw new IOException($"Insufficient data in source stream: expected {count} bytes");
+                }
+                totalBytes += readCount;
+
+                await WriteAsync(buffer.Slice(0,readCount),cancellationToken).ConfigureAwait(false);
+                remaining -= readCount;
+            }
+        }
+
+        #endregion
+
         #region method WriteStreamAsync
 
         /// <summary>
@@ -1110,7 +1159,7 @@ namespace LumiSoft.Net.IO
                     remaining -= readCount;
                 }
             }
-            // Read till eond of stream or maxCount reached.
+            // Read till end of stream or maxCount reached.
             else{
                 while(true){
                     int readCount = await sourceStream.ReadAsync(buffer,cancellationToken).ConfigureAwait(false);

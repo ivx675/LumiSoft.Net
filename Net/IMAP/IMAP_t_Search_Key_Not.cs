@@ -12,7 +12,7 @@ namespace LumiSoft.Net.IMAP
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The <c>NOT</c> search key is defined by RFC 3501 and provides logical
+    /// The <c>NOT</c> search key is defined by RFC 9051 and provides logical
     /// negation within IMAP SEARCH expressions. It matches messages that do
     /// <em>not</em> satisfy the criteria of the enclosed operand.
     /// </para>
@@ -39,7 +39,7 @@ namespace LumiSoft.Net.IMAP
         /// </exception>
         /// <remarks>
         /// <para>
-        /// The <c>NOT</c> search key is defined by RFC 3501 and provides logical
+        /// The <c>NOT</c> search key is defined by RFC 9051 and provides logical
         /// negation within IMAP search expressions. It may wrap any valid search
         /// key, including composite expressions such as <c>OR</c> or nested
         /// <c>NOT</c> keys.
@@ -55,51 +55,48 @@ namespace LumiSoft.Net.IMAP
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses the IMAP <c>NOT</c> search key from the provided
-        /// <see cref="StringReader"/>.
+        /// Parses a SEARCH <c>NOT</c> key from the specified
+        /// <see cref="_IMAP_Reader"/>.
         /// </summary>
         /// <param name="r">
-        /// The <see cref="StringReader"/> positioned at the search key to parse.
+        /// The <see cref="_IMAP_Reader"/> positioned at the search key to
+        /// parse.
         /// </param>
         /// <returns>
-        /// A new <see cref="IMAP_t_Search_Key_Not"/> instance containing the
-        /// parsed operand search key.
+        /// A task whose result contains a new
+        /// <see cref="IMAP_t_Search_Key_Not"/> instance representing the
+        /// parsed <c>NOT</c> search key.
         /// </returns>
         /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="r"/> is <c>null</c>.
+        /// Thrown when <paramref name="r"/> is <see langword="null"/>.
         /// </exception>
         /// <exception cref="ParseException">
-        /// Thrown when the next token is not <c>NOT</c>, or when the operand
+        /// Thrown when the next token is not <c>NOT</c> or when the operand
         /// search key cannot be parsed.
         /// </exception>
         /// <remarks>
+        /// The <c>NOT</c> search key matches messages that do not satisfy
+        /// its operand search key.
         /// <para>
-        /// The <c>NOT</c> search key is defined by RFC 3501 and negates the result
-        /// of its operand. It matches messages that do <em>not</em> satisfy the
-        /// enclosed search condition.
-        /// </para>
-        /// <para>
-        /// After reading the <c>NOT</c> token, parsing continues by delegating to
-        /// <see cref="IMAP_t_Search_Key.ParseKey(StringReader)"/> to parse the
-        /// operand search key, which may itself be composite (e.g., <c>OR</c>,
-        /// nested <c>NOT</c>, or grouped expressions).
+        /// The operand search key is parsed immediately following the
+        /// <c>NOT</c> token.
         /// </para>
         /// </remarks>
-        internal static IMAP_t_Search_Key_Not Parse(StringReader r)
+        internal static async Task<IMAP_t_Search_Key_Not> ParseAsync(_IMAP_Reader r)
         {
             if(r == null){
-                throw new ArgumentNullException("r");
+                throw new ArgumentNullException(nameof(r));
             }
 
-            string? word = r.ReadWord();
+            string word = r.ReadAtom();
             if(!string.Equals(word,"NOT",StringComparison.InvariantCultureIgnoreCase)){
                 throw new ParseException("Parse error: Not a SEARCH 'NOT' key.");
             }
 
-            return new IMAP_t_Search_Key_Not(IMAP_t_Search_Key.ParseKey(r));
+            return new IMAP_t_Search_Key_Not(await IMAP_t_Search_Key.ParseKeyAsync(r));
         }
 
         #endregion
@@ -117,7 +114,7 @@ namespace LumiSoft.Net.IMAP
         /// </returns>
         /// <remarks>
         /// <para>
-        /// The <c>NOT</c> search key is defined by RFC 3501 and inverts the
+        /// The <c>NOT</c> search key is defined by RFC 9051 and inverts the
         /// matching behavior of its operand. It selects messages that do
         /// <em>not</em> satisfy the enclosed search condition.
         /// </para>
@@ -147,7 +144,7 @@ namespace LumiSoft.Net.IMAP
         /// </param>
         /// <remarks>
         /// <para>
-        /// The <c>NOT</c> search key is defined by RFC 3501 and negates the result
+        /// The <c>NOT</c> search key is defined by RFC 9051 and negates the result
         /// of the enclosed search key. It matches messages that do <em>not</em>
         /// satisfy the operand’s criteria.
         /// </para>
@@ -174,7 +171,7 @@ namespace LumiSoft.Net.IMAP
         /// </summary>
         /// <remarks>
         /// <para>
-        /// The <c>NOT</c> operator, defined by RFC 3501, inverts the matching
+        /// The <c>NOT</c> operator, defined by RFC 9051, inverts the matching
         /// behavior of its operand. Messages match this search key when they do
         /// <em>not</em> satisfy the criteria of the enclosed operand.
         /// </para>
