@@ -9,7 +9,7 @@ using LumiSoft.Net.IO;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// This class represents mail message attachment info.
+    /// Represents a mail message attachment.
     /// </summary>
     public class Mail_t_Attachment
     {
@@ -20,52 +20,96 @@ namespace LumiSoft.Net.Mail
         private Stream? m_pStream     = null;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified file.
         /// </summary>
-        /// <param name="fileName">File name with path.</param>
-        /// <exception cref="ArgumentNullException">>Is raised when <b>fileName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="fileName">
+        /// File name with path.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
         public Mail_t_Attachment(string fileName) : this(null,fileName)
         {
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified file.
         /// </summary>
-        /// <param name="fileName">File name with path.</param>
-        /// <param name="zipCompress">If true attachment is zip compressed.</param>
-        /// <exception cref="ArgumentNullException">>Is raised when <b>fileName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="fileName">
+        /// File name with path.
+        /// </param>
+        /// <param name="zipCompress">
+        /// Specifies whether the attachment content is ZIP-compressed.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
         public Mail_t_Attachment(string fileName,bool zipCompress) : this(null,fileName,zipCompress)
         {
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified file.
         /// </summary>
-        /// <param name="attachmentName">Attachment file name what appears in mail message. If null then 'fileName' filename without path is used.</param>
-        /// <param name="fileName">File name with path.</param>
-        /// <exception cref="ArgumentNullException">>Is raised when <b>fileName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="attachmentName">
+        /// Attachment file name displayed in the mail message. If
+        /// <see langword="null"/>, the file name portion of
+        /// <paramref name="fileName"/> is used.
+        /// </param>
+        /// <param name="fileName">
+        /// File name with path.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
         public Mail_t_Attachment(string? attachmentName,string fileName) : this(null,fileName,false)
         {
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified file.
         /// </summary>
-        /// <param name="attachmentName">Attachment file name what appears in mail message. If null then 'fileName' filename without path is used.</param>
-        /// <param name="fileName">File name with path.</param>
-        /// <param name="zipCompress">If true attachment is zip compressed.</param>
-        /// <exception cref="ArgumentNullException">>Is raised when <b>fileName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="attachmentName">
+        /// Attachment file name displayed in the mail message. If
+        /// <see langword="null"/> or empty, the file name portion of
+        /// <paramref name="fileName"/> is used.
+        /// </param>
+        /// <param name="fileName">
+        /// File name with path.
+        /// </param>
+        /// <param name="zipCompress">
+        /// Specifies whether the attachment content is ZIP-compressed.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
         public Mail_t_Attachment(string? attachmentName,string fileName,bool zipCompress)
         {
             if(fileName == null){
-                throw new ArgumentNullException("fileName");
+                throw new ArgumentNullException(nameof(fileName));
             }
             if(string.IsNullOrEmpty(fileName)){
-                throw new ArgumentException("Argument 'fileName' value must be specified.","fileName");
+                throw new ArgumentException("Argument 'fileName' value must be specified.",nameof(fileName));
             }
 
             if(string.IsNullOrEmpty(attachmentName)){
@@ -81,29 +125,47 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified attachment data.
         /// </summary>
-        /// <param name="attachmentName">Attachment file name what appears in mail message.</param>
-        /// <param name="data">Attachment data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>attachmentName</b> or <b>data</b> is null reference.</exception>
+        /// <param name="attachmentName">
+        /// Attachment file name displayed in the mail message.
+        /// </param>
+        /// <param name="data">
+        /// Attachment data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="attachmentName"/> or
+        /// <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
         public Mail_t_Attachment(string attachmentName,byte[] data) : this(attachmentName,data,false)
         {
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified attachment data.
         /// </summary>
-        /// <param name="attachmentName">Attachment file name what appears in mail message.</param>
-        /// <param name="data">Attachment data.</param>
-        /// <param name="zipCompress">If true attachment is zip compressed.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>attachmentName</b> or <b>data</b> is null reference.</exception>
+        /// <param name="attachmentName">
+        /// Attachment file name displayed in the mail message.
+        /// </param>
+        /// <param name="data">
+        /// Attachment data.
+        /// </param>
+        /// <param name="zipCompress">
+        /// Specifies whether the attachment content is ZIP-compressed.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="attachmentName"/> or
+        /// <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
         public Mail_t_Attachment(string attachmentName,byte[] data,bool zipCompress)
         {
             if(attachmentName == null){
-                throw new ArgumentNullException("attachmentName");
+                throw new ArgumentNullException(nameof(attachmentName));
             }
             if(data == null){
-                throw new ArgumentNullException("data");
+                throw new ArgumentNullException(nameof(data));
             }
 
             m_Name    = attachmentName;
@@ -111,29 +173,47 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified stream.
         /// </summary>
-        /// <param name="attachmentName">Attachment file name what appears in mail message.</param>
-        /// <param name="stream">Stream containing attachment data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>attachmentName</b> or <b>stream</b> is null reference.</exception>
+        /// <param name="attachmentName">
+        /// Attachment file name displayed in the mail message.
+        /// </param>
+        /// <param name="stream">
+        /// Stream containing the attachment data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="attachmentName"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
         public Mail_t_Attachment(string attachmentName,Stream stream) : this(attachmentName,stream,false)
         {
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Attachment"/>
+        /// class from the specified stream.
         /// </summary>
-        /// <param name="attachmentName">Attachment file name what appears in mail message.</param>
-        /// <param name="stream">Stream containing attachment data.</param>
-        /// <param name="zipCompress">If true attachment is zip compressed.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>attachmentName</b> or <b>stream</b> is null reference.</exception>
+        /// <param name="attachmentName">
+        /// Attachment file name displayed in the mail message.
+        /// </param>
+        /// <param name="stream">
+        /// Stream containing the attachment data.
+        /// </param>
+        /// <param name="zipCompress">
+        /// Specifies whether the attachment content is ZIP-compressed.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="attachmentName"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
         public Mail_t_Attachment(string attachmentName,Stream stream,bool zipCompress)
         {
             if(attachmentName == null){
-                throw new ArgumentNullException("attachmentName");
+                throw new ArgumentNullException(nameof(attachmentName));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
             m_Name    = attachmentName;
@@ -161,7 +241,7 @@ namespace LumiSoft.Net.Mail
                 using(ZipArchive archive = new ZipArchive(retVal,ZipArchiveMode.Create)){
                     ZipArchiveEntry entry = archive.CreateEntry(m_Name,CompressionLevel.Optimal);
                     using(Stream zipStream = entry.Open()){
-                        Net_Utils.StreamCopy(m_pStream,zipStream,64000);
+                        m_pStream.CopyTo(zipStream,64000);
                     }
                 }
                 retVal.Position = 0;
@@ -193,8 +273,12 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets attachment name.
+        /// Gets the attachment file name.
         /// </summary>
+        /// <remarks>
+        /// If the attachment is configured for ZIP compression, the returned
+        /// file name has a <c>.zip</c> extension.
+        /// </remarks>
         public string Name
         {
             get{

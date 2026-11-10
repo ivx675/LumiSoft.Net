@@ -7,17 +7,17 @@ using System.Security.Cryptography.X509Certificates;
 using LumiSoft.Net.IO;
 using LumiSoft.Net.MIME;
 
-using System.Threading;
-
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// This class represent electronic mail message. Defined in RFC 5322.
+    /// Represents an electronic mail message as defined in RFC 5322.
     /// </summary>
     public class Mail_Message : MIME_Message
     {
+        private Stream? m_pStream = null;
+
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_Message"/> class.
         /// </summary>
         public Mail_Message()
         {
@@ -36,24 +36,89 @@ namespace LumiSoft.Net.Mail
             this.Header.FieldsProvider.HeaderFields.Add("Return-Path",typeof(Mail_h_ReturnPath));
             this.Header.FieldsProvider.HeaderFields.Add("Received",typeof(Mail_h_Received));
             this.Header.FieldsProvider.HeaderFields.Add("Disposition-Notification-To",typeof(Mail_h_MailboxList));
-            this.Header.FieldsProvider.HeaderFields.Add("Disposition-Notification-Options",typeof(Mail_h_DispositionNotificationOptions));
         }
+
+        #region override method Dispose
+
+        /// <summary>
+        /// Releases all resources used by this instance.
+        /// </summary>
+        /// <remarks>
+        /// If this instance owns a backing stream, the stream is disposed.
+        /// </remarks>
+        public override void Dispose()
+        {
+            if(m_pStream != null){
+                m_pStream.Dispose();
+                m_pStream = null;
+            }
+
+            base.Dispose();
+        }
+
+        #endregion
 
 
         #region static method Create
 
         /// <summary>
-        /// Creates mail message.
+        /// Creates a mail message with the specified content and attachments.
         /// </summary>
-        /// <param name="from">From: address.</param>
-        /// <param name="to">To: address.</param>
-        /// <param name="cc">Cc: address. Value null means not used.</param>
-        /// <param name="bcc">bcc: address. Value null means not used.</param>
-        /// <param name="subject">Message subject.</param>
-        /// <param name="text">Message body text.</param>
-        /// <param name="html">Message HTML text. Value null means not used.</param>
-        /// <param name="attachments">Message attachments. Value null means not used.</param>
-        /// <returns>Returns created mail message.</returns>
+        /// <param name="from">
+        /// Sender address.
+        /// </param>
+        /// <param name="to">
+        /// Recipient addresses.
+        /// </param>
+        /// <param name="cc">
+        /// Carbon copy recipient addresses, or <see langword="null"/> if not used.
+        /// </param>
+        /// <param name="bcc">
+        /// Blind carbon copy recipient addresses, or <see langword="null"/> if
+        /// not used.
+        /// </param>
+        /// <param name="subject">
+        /// Message subject.
+        /// </param>
+        /// <param name="text">
+        /// Plain-text message body.
+        /// </param>
+        /// <param name="html">
+        /// HTML message body, or <see langword="null"/> if not used.
+        /// </param>
+        /// <param name="attachments">
+        /// Message attachments, or <see langword="null"/> if not used.
+        /// </param>
+        /// <returns>
+        /// Returns the created mail message.
+        /// </returns>
+        /// <remarks>
+        /// Depending on the supplied arguments, the message body is created as
+        /// one of the following MIME structures:
+        /// <list type="bullet">
+        /// <item>
+        /// <description>
+        /// <c>text/plain</c>
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>multipart/alternative</c> containing plain-text and HTML body parts.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>multipart/mixed</c> containing the message body and attachments.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>multipart/mixed</c> containing a
+        /// <c>multipart/alternative</c> body and attachments.
+        /// </description>
+        /// </item>
+        /// </list>
+        /// </remarks>
         public static Mail_Message Create(Mail_t_Mailbox from,Mail_t_Address[] to,Mail_t_Address[]? cc,Mail_t_Address[]? bcc,string subject,string text,string? html,Mail_t_Attachment[]? attachments)
         {
             // Create header.
@@ -79,7 +144,7 @@ namespace LumiSoft.Net.Mail
                 if(string.IsNullOrEmpty(html)){
                     MIME_b_Text text_plain = new MIME_b_Text(MIME_MediaTypes.Text.plain);
                     msg.Body = text_plain;
-                    text_plain.SetText(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text);
+                    text_plain.SetText(MIME_TransferEncodings.QuotedPrintable,text);
                 }
                 // multipart/alternative
                 //  text/plain
@@ -87,8 +152,8 @@ namespace LumiSoft.Net.Mail
                 else{
                     MIME_b_MultipartAlternative multipartAlternative = new MIME_b_MultipartAlternative();
                     msg.Body = multipartAlternative;
-                        multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
-                        multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,html));
+                        multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
+                        multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,html));
                 }
             }
             // Create message with attachments.
@@ -99,7 +164,7 @@ namespace LumiSoft.Net.Mail
                 if(string.IsNullOrEmpty(html)){
                     MIME_b_MultipartMixed multipartMixed = new MIME_b_MultipartMixed();
                     msg.Body = multipartMixed;
-                        multipartMixed.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
+                        multipartMixed.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
 
                         // Add attachments.
                         foreach(Mail_t_Attachment attachment in attachments){
@@ -123,8 +188,8 @@ namespace LumiSoft.Net.Mail
                         MIME_b_MultipartAlternative multipartAlternative = new MIME_b_MultipartAlternative();
                         entity_multipart_alternative.Body = multipartAlternative;
                         multipartMixed.BodyParts.Add(entity_multipart_alternative);
-                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
-                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,html));
+                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
+                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,html));
 
                         // Add attachments.
                         foreach(Mail_t_Attachment attachment in attachments){
@@ -146,19 +211,73 @@ namespace LumiSoft.Net.Mail
         #region static method Create_MultipartSigned
 
         /// <summary>
-        /// Creates mail message.
+        /// Creates an S/MIME signed mail message.
         /// </summary>
-        /// <param name="signerCert">Signer certificate,</param>
-        /// <param name="from">From: address.</param>
-        /// <param name="to">To: address.</param>
-        /// <param name="cc">Cc: address. Value null means not used.</param>
-        /// <param name="bcc">bcc: address. Value null means not used.</param>
-        /// <param name="subject">Message subject.</param>
-        /// <param name="text">Message body text.</param>
-        /// <param name="html">Message HTML text. Value null means not used.</param>
-        /// <param name="attachments">Message attachments. Value null means not used.</param>
-        /// <returns>Returns created mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>signerCert</b> is null reference.</exception>
+        /// <param name="signerCert">
+        /// Certificate used to sign the message.
+        /// </param>
+        /// <param name="from">
+        /// Sender address.
+        /// </param>
+        /// <param name="to">
+        /// Recipient addresses.
+        /// </param>
+        /// <param name="cc">
+        /// Carbon copy recipient addresses, or <see langword="null"/> if not
+        /// used.
+        /// </param>
+        /// <param name="bcc">
+        /// Blind carbon copy recipient addresses, or <see langword="null"/> if
+        /// not used.
+        /// </param>
+        /// <param name="subject">
+        /// Message subject.
+        /// </param>
+        /// <param name="text">
+        /// Plain-text message body.
+        /// </param>
+        /// <param name="html">
+        /// HTML message body, or <see langword="null"/> if not used.
+        /// </param>
+        /// <param name="attachments">
+        /// Message attachments, or <see langword="null"/> if not used.
+        /// </param>
+        /// <returns>
+        /// Returns the created signed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="signerCert"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <remarks>
+        /// The message is created as a <c>multipart/signed</c> S/MIME message.
+        /// Depending on the supplied content and attachments, the signed content
+        /// is created as one of the following MIME structures:
+        /// <list type="bullet">
+        /// <item>
+        /// <description>
+        /// <c>text/plain</c>
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>multipart/alternative</c> containing plain-text and HTML body
+        /// parts.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>multipart/mixed</c> containing the message body and attachments.
+        /// </description>
+        /// </item>
+        /// <item>
+        /// <description>
+        /// <c>multipart/mixed</c> containing a
+        /// <c>multipart/alternative</c> body and attachments.
+        /// </description>
+        /// </item>
+        /// </list>
+        /// </remarks>
         public static Mail_Message Create_MultipartSigned(X509Certificate2 signerCert,Mail_t_Mailbox from,Mail_t_Address[] to,Mail_t_Address[] cc,Mail_t_Address[] bcc,string subject,string text,string html,Mail_t_Attachment[] attachments)
         {
             if(signerCert == null){
@@ -191,7 +310,7 @@ namespace LumiSoft.Net.Mail
                     MIME_b_MultipartSigned multipartSigned = new MIME_b_MultipartSigned();
                     msg.Body = multipartSigned;
                     multipartSigned.SetCertificate(signerCert);
-                        multipartSigned.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
+                        multipartSigned.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
                 }
                 // multipart/signed
                 //  multipart/alternative
@@ -206,8 +325,8 @@ namespace LumiSoft.Net.Mail
                         MIME_b_MultipartAlternative multipartAlternative = new MIME_b_MultipartAlternative();
                         entity_multipart_alternative.Body = multipartAlternative;
                         multipartSigned.BodyParts.Add(entity_multipart_alternative);
-                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
-                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,html));
+                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
+                            multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,html));
                 }                
             }
             // Create message with attachments.
@@ -225,7 +344,7 @@ namespace LumiSoft.Net.Mail
                         MIME_b_MultipartMixed multipartMixed = new MIME_b_MultipartMixed();
                         entity_multipart_mixed.Body = multipartMixed;
                         multipartSigned.BodyParts.Add(entity_multipart_mixed);
-                            multipartMixed.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
+                            multipartMixed.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
 
                             // Add attachments.
                             foreach(Mail_t_Attachment attachment in attachments){
@@ -256,8 +375,8 @@ namespace LumiSoft.Net.Mail
                             MIME_b_MultipartAlternative multipartAlternative = new MIME_b_MultipartAlternative();
                             entity_multipart_alternative.Body = multipartAlternative;
                             multipartMixed.BodyParts.Add(entity_multipart_alternative);
-                                multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,text));
-                                multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,Encoding.UTF8,html));
+                                multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Plain(MIME_TransferEncodings.QuotedPrintable,text));
+                                multipartAlternative.BodyParts.Add(MIME_Entity.CreateEntity_Text_Html(MIME_TransferEncodings.QuotedPrintable,html));
 
                             // Add attachments.
                             foreach(Mail_t_Attachment attachment in attachments){
@@ -276,40 +395,117 @@ namespace LumiSoft.Net.Mail
 
         #endregion
 
-        #region static method ParseFromByte
+        #region static method ParseFromStream
 
         /// <summary>
-        /// Parses mail message from the specified byte array.
+        /// Parses a mail message from the specified stream.
         /// </summary>
-        /// <param name="data">Mail message data.</param>
-        /// <returns>Returns parsed mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>data</b> is null reference.</exception>
-        public static Mail_Message ParseFromByte(byte[] data)
+        /// <param name="stream">
+        /// Stream from which to parse the mail message. Parsing begins at the
+        /// current stream position.
+        /// </param>
+        /// <param name="persistentStream">
+        /// Specifies whether the parsed mail message retains access to the
+        /// source stream after parsing. If <see langword="true"/>, the source
+        /// stream must remain available for the lifetime of the parsed mail
+        /// message. If <see langword="false"/>, the source stream is no longer
+        /// required after parsing completes.
+        /// </param>
+        /// <param name="ownsStream">
+        /// Specifies whether the returned mail message takes ownership of the
+        /// backing stream and disposes it when the mail message is disposed.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the mail message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the mail message has been completely parsed.
+        /// For asynchronous operation, use
+        /// <see cref="ParseFromStreamAsync(Stream,bool,bool,CancellationToken)"/>.
+        /// </remarks>
+        public static new Mail_Message ParseFromStream(Stream stream,bool persistentStream,bool ownsStream)
         {
-            if(data == null){
-                throw new ArgumentNullException("data");
-            }
-
-            return ParseFromStream(new MemoryStream(data));
+            return ParseFromStreamAsync(stream,persistentStream,ownsStream,CancellationToken.None).GetAwaiter().GetResult();
         }
 
+        #endregion
+
+        #region static method ParseFromStreamAsync
+
         /// <summary>
-        /// Parses mail message from the specified byte array.
+        /// Parses a mail message from the specified stream.
         /// </summary>
-        /// <param name="data">Mail message data.</param>
-        /// <param name="headerEncoding">Header reading encoding. If not sure UTF-8 is recommended.</param>
-        /// <returns>Returns parsed mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>data</b> or <b>headerEncoding</b> is null reference.</exception>
-        public static Mail_Message ParseFromByte(byte[] data,Encoding headerEncoding)
+        /// <param name="stream">
+        /// Stream from which to parse the mail message. Parsing begins at the
+        /// current stream position.
+        /// </param>
+        /// <param name="persistentStream">
+        /// Specifies whether the parsed mail message retains access to the
+        /// source stream after parsing. If <see langword="true"/>, the source
+        /// stream must remain available for the lifetime of the parsed mail
+        /// message. If <see langword="false"/>, the source stream is no longer
+        /// required after parsing completes.
+        /// </param>
+        /// <param name="ownsStream">
+        /// Specifies whether the returned mail message takes ownership of the
+        /// backing stream and disposes it when the mail message is disposed.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the mail message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// When <paramref name="persistentStream"/> is
+        /// <see langword="true"/>, the parser uses the supplied stream directly
+        /// if it supports seeking. Otherwise, the stream content is copied to an
+        /// internal backing store which remains available for the lifetime of
+        /// the parsed mail message.
+        ///
+        /// When <paramref name="ownsStream"/> is
+        /// <see langword="true"/>, the returned mail message takes ownership of
+        /// the backing stream and disposes it when the mail message is disposed.
+        /// </remarks>
+        public static new async Task<Mail_Message> ParseFromStreamAsync(Stream stream,bool persistentStream,bool ownsStream,CancellationToken cancellationToken = default)
         {
-            if(data == null){
-                throw new ArgumentNullException("data");
+            if(stream == null){
+                throw new ArgumentNullException(nameof(stream));
             }
-            if(headerEncoding == null){
-                throw new ArgumentNullException("headerEncoding");
+            
+            // Stream not persistent or is not seekable, create copy of stream.
+            if(!persistentStream ||!stream.CanSeek){
+                var ms = new MemoryStreamEx(64000);
+                await stream.CopyToAsync(ms,cancellationToken);
+                if(ownsStream) {
+                    await stream.DisposeAsync();
+                }
+                stream = ms;
+                stream.Position = 0;
+                ownsStream = true;
             }
 
-            return ParseFromStream(new MemoryStream(data),headerEncoding);
+            Mail_Message retVal = new Mail_Message();
+            if(ownsStream){
+                retVal.m_pStream = stream;
+            }
+            await retVal.ParseInternalAsync(stream,cancellationToken);
+
+            return retVal;
         }
 
         #endregion
@@ -317,90 +513,138 @@ namespace LumiSoft.Net.Mail
         #region static method ParseFromFile
 
         /// <summary>
-        /// Parses mail message from the specified file.
+        /// Parses a mail message from the specified file.
         /// </summary>
-        /// <param name="file">File name with path from where to parse mail message.</param>
-        /// <returns>Returns parsed mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public static new Mail_Message ParseFromFile(string file)
+        /// <param name="fileName">
+        /// File from which to parse the mail message.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the mail message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the mail message has been completely parsed.
+        /// For asynchronous operation, use
+        /// <see cref="ParseFromFileAsync(string,CancellationToken)"/>.
+        /// </remarks>
+        public static new Mail_Message ParseFromFile(string fileName)
         {
-            if(file == null){
-                throw new ArgumentNullException("file");
-            }
-            if(file == ""){
-                throw new ArgumentException("Argument 'file' value must be specified.");
-            }
-
-            using(FileStream fs = File.OpenRead(file)){
-                return ParseFromStream(fs);
-            }
-        }
-
-        /// <summary>
-        /// Parses mail message from the specified file.
-        /// </summary>
-        /// <param name="file">File name with path from where to parse mail message.</param>
-        /// <param name="headerEncoding">Header reading encoding. If not sure UTF-8 is recommended.</param>
-        /// <returns>Returns parsed mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> or <b>headerEncoding</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public static new Mail_Message ParseFromFile(string file,Encoding headerEncoding)
-        {
-            if(file == null){
-                throw new ArgumentNullException("file");
-            }
-            if(file == ""){
-                throw new ArgumentException("Argument 'file' value must be specified.");
-            }
-            if(headerEncoding == null){
-                throw new ArgumentNullException("headerEncoding");
-            }
-
-            using(FileStream fs = File.OpenRead(file)){
-                return ParseFromStream(fs,headerEncoding);
-            }
+            return ParseFromFileAsync(fileName,CancellationToken.None).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region static method ParseFromStream
+        #region static method ParseFromFileAsync
 
         /// <summary>
-        /// Parses mail message from the specified stream.
+        /// Parses a mail message from the specified file.
         /// </summary>
-        /// <param name="stream">Stream from where to parse mail message. Parsing starts from current stream position.</param>
-        /// <returns>Returns parsed mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public static new Mail_Message ParseFromStream(Stream stream)
+        /// <param name="fileName">
+        /// File from which to parse the mail message.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the mail message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        public static new async Task<Mail_Message> ParseFromFileAsync(string fileName,CancellationToken cancellationToken = default)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(fileName == null){
+                throw new ArgumentNullException(nameof(fileName));
+            }
+            if(fileName.Length == 0){
+                throw new ArgumentException("Argument 'fileName' cannot be empty.",nameof(fileName));
             }
 
-            return ParseFromStream(stream,Encoding.UTF8);
+            var stream = File.OpenRead(fileName);
+
+            return await ParseFromStreamAsync(stream,true,true,cancellationToken);
         }
-        
-        /// <summary>
-        /// Parses mail message from the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream from where to parse mail message. Parsing starts from current stream position.</param>
-        /// <param name="headerEncoding">Header reading encoding. If not sure UTF-8 is recommended.</param>
-        /// <returns>Returns parsed mail message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> or <b>headerEncoding</b> is null.</exception>
-        public static new Mail_Message ParseFromStream(Stream stream,Encoding headerEncoding)
-        {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-            if(headerEncoding == null){
-                throw new ArgumentNullException("headerEncoding");
-            }
-                        
-            Mail_Message retVal = new Mail_Message();
-            retVal.Parse(new SmartStream(stream,false),headerEncoding,new MIME_h_ContentType("text/plain"));
 
-            return retVal;
+        #endregion
+
+        #region static method ParseFromByteArray
+
+        /// <summary>
+        /// Parses a mail message from the specified byte array.
+        /// </summary>
+        /// <param name="data">
+        /// Mail message data.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the mail message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the mail message has been completely parsed.
+        /// For asynchronous operation, use
+        /// <see cref="ParseFromByteArrayAsync(byte[],CancellationToken)"/>.
+        /// </remarks>
+        public static new Mail_Message ParseFromByteArray(byte[] data)
+        {
+            return ParseFromByteArrayAsync(data,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region static method ParseFromByteArrayAsync
+
+        /// <summary>
+        /// Parses a mail message from the specified byte array.
+        /// </summary>
+        /// <param name="data">
+        /// Mail message data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed mail message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the mail message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// The returned mail message owns the internal stream created for the
+        /// specified byte array and releases it when disposed.
+        /// </remarks>
+        public static new async Task<Mail_Message> ParseFromByteArrayAsync(byte[] data,CancellationToken cancellationToken = default)
+        {
+            if(data == null){
+                throw new ArgumentNullException(nameof(data));
+            }
+
+            return await ParseFromStreamAsync(new MemoryStream(data,false),true,true,cancellationToken);
         }
 
         #endregion
@@ -409,10 +653,14 @@ namespace LumiSoft.Net.Mail
         #region method Clone
 
         /// <summary>
-        /// Clones mail message.
+        /// Creates a copy of this mail message.
         /// </summary>
-        /// <returns>Returns cloned message.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
+        /// <returns>
+        /// Returns the cloned mail message.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
         public Mail_Message Clone()
         {
             if(this.IsDisposed){
@@ -420,10 +668,10 @@ namespace LumiSoft.Net.Mail
             }
 
             MemoryStreamEx ms = new MemoryStreamEx(64000);
-            this.ToStream(ms,null,null);
+            this.ToStream(ms);
             ms.Position = 0;
             
-            return Mail_Message.ParseFromStream(ms);
+            return Mail_Message.ParseFromStream(ms,true,true);
         }
 
         #endregion
@@ -431,23 +679,44 @@ namespace LumiSoft.Net.Mail
         #region method GetAttachments
 
         /// <summary>
-        /// Gets this message attachments.
+        /// Gets the attachments contained in this message.
         /// </summary>
-        /// <param name="includeInline">Specifies if 'inline' entities are included.</param>
-        /// <returns>Returns this message attachments.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
+        /// <param name="includeInline">
+        /// Specifies whether entities with a Content-Disposition value of
+        /// <c>inline</c> are included.
+        /// </param>
+        /// <returns>
+        /// Returns the attachments contained in this message.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
         public MIME_Entity[] GetAttachments(bool includeInline)
         {
             return GetAttachments(includeInline,true);
         }
 
         /// <summary>
-        /// Gets this message attachments.
+        /// Gets the attachments contained in this message.
         /// </summary>
-        /// <param name="includeInline">Specifies if 'inline' entities are included.</param>
-        /// <param name="includeEmbbedMessage">Specifies if embbed RFC822 message child entities are included.</param>
-        /// <returns>Returns this message attachments.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
+        /// <param name="includeInline">
+        /// Specifies whether entities with a Content-Disposition value of
+        /// <c>inline</c> are included.
+        /// </param>
+        /// <param name="includeEmbbedMessage">
+        /// Specifies whether attachments contained in embedded
+        /// <c>message/rfc822</c> entities are included.
+        /// </param>
+        /// <returns>
+        /// Returns the attachments contained in this message.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
+        /// <remarks>
+        /// Attachments are identified by the Content-Disposition header field
+        /// and, when absent, by the MIME media type.
+        /// </remarks>
         public MIME_Entity[] GetAttachments(bool includeInline,bool includeEmbbedMessage)
         {
             if(this.IsDisposed){
@@ -507,13 +776,21 @@ namespace LumiSoft.Net.Mail
         // Permanent headerds list: http://www.rfc-editor.org/rfc/rfc4021.txt
 
         /// <summary>
-        /// Gets or sets message date and time. Value <b>DateTime.MinValue</b> means not specified.
+        /// Gets or sets the Date header field.
         /// </summary>
-        /// <remarks>Specifies the date and time at which the creator of the message indicated that the 
-        /// message was complete and ready to enter the mail delivery system.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
-        public DateTime Date
+        /// <remarks>
+        /// Specifies the date and time when the message was composed and considered
+        /// ready for submission to a mail transport system.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.1.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Date header field cannot be parsed.
+        /// </exception>
+        public DateTime? Date
         {
             get{
                 if(this.IsDisposed){
@@ -530,7 +807,7 @@ namespace LumiSoft.Net.Mail
                     }
                 }
                 else{
-                    return DateTime.MinValue;
+                    return null;
                 }
             }
 
@@ -539,28 +816,35 @@ namespace LumiSoft.Net.Mail
                     throw new ObjectDisposedException(this.GetType().Name);
                 }
                 
-                if(value == DateTime.MinValue){
+                if(value == null){
                     this.Header.RemoveAll("Date");
                 }
                 else{
                     MIME_h? h = this.Header.GetFirst("Date");
                     if(h == null){
-                        this.Header.Add(new MIME_h_Unstructured("Date",MIME_Utils.DateTimeToRfc2822(value)));
+                        this.Header.Add(new MIME_h_Unstructured("Date",MIME_Utils.DateTimeToRfc2822(value.Value)));
                     }
                     else{
-                        this.Header.ReplaceFirst(new MIME_h_Unstructured("Date",MIME_Utils.DateTimeToRfc2822(value)));
+                        this.Header.ReplaceFirst(new MIME_h_Unstructured("Date",MIME_Utils.DateTimeToRfc2822(value.Value)));
                     }
                 }
             }
         }
 
         /// <summary>
-        /// Gets or sets message author(s). Value null means not specified.
+        /// Gets or sets the From header field.
         /// </summary>
-        /// <remarks>Specifies the author(s) of the message; that is, the mailbox(es) of the person(s) or 
-        /// system(s) responsible for the writing of the message.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the author or authors of the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.2.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the From header field cannot be parsed.
+        /// </exception>
         public Mail_t_MailboxList? From
         {
             get{
@@ -602,11 +886,21 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message sender. Value null means not specified.
+        /// Gets or sets the Sender header field.
         /// </summary>
-        /// <remarks>Specifies the mailbox of the agent responsible for the actual transmission of the message.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the mailbox responsible for transmitting the message.
+        /// This header is typically used when the author specified by the
+        /// <see cref="From"/> header differs from the actual sender.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.2.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Sender header field cannot be parsed.
+        /// </exception>
         public Mail_t_Mailbox? Sender
         {
             get{
@@ -648,12 +942,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets mailbox for replies to message. Value null means not specified.
+        /// Gets or sets the Reply-To header field.
         /// </summary>
-        /// <remarks>When the "Reply-To:" field is present, it indicates the mailbox(es) to which the author of 
-        /// the message suggests that replies be sent.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the address or addresses to which replies to the message
+        /// should be sent.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.2.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Reply-To header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? ReplyTo
         {
             get{
@@ -695,11 +997,19 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message primary recipient(s). Value null means not specified.
+        /// Gets or sets the To header field.
         /// </summary>
-        /// <remarks>Contains the address(es) of the primary recipient(s) of the message.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the primary recipient or recipients of the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.3.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the To header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? To
         {
             get{
@@ -741,11 +1051,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets carbon-copy recipient mailbox. Value null means not specified.
+        /// Gets or sets the Cc header field.
         /// </summary>
-        /// <remarks>Contains the addresses of others who are to receive the message, though the content of the message may not be directed at them.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies recipient or recipients who receive a copy of the message,
+        /// but are not primary recipients.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.3.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Cc header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? Cc
         {
             get{
@@ -787,11 +1106,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets blind-carbon-copy recipient mailbox. Value null means not specified.
+        /// Gets or sets the Bcc header field.
         /// </summary>
-        /// <remarks>Contains addresses of recipients of the message whose addresses are not to be revealed to other recipients of the message.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies recipient or recipients whose addresses are not disclosed
+        /// to other recipients of the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.3.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Bcc header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? Bcc
         {
             get{
@@ -833,11 +1161,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message identifier. Value null means not specified.
+        /// Gets or sets the Message-ID header field.
         /// </summary>
-        /// <remarks>Contains a single unique message identifier that refers to a particular version of a particular message. 
-        /// If the message is resent without changes, the original Message-ID is retained.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies a globally unique identifier for the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.4.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? MessageID 
         {
             get{
@@ -875,10 +1208,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets identify replied-to message(s). Value null means not specified.
+        /// Gets or sets the In-Reply-To header field.
         /// </summary>
-        /// <remarks>The message identifier(s) of the original message(s) to which the current message is a reply.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies the message identifier or identifiers of the message being replied to.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.4.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? InReplyTo
         {
             get{
@@ -916,12 +1255,18 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets related message identifier(s). Value null means not specified.
+        /// Gets or sets the References header field.
         /// </summary>
-        /// <remarks>The message identifier(s) of other message(s) to which the current message may be related. 
-        /// In RFC 2822, the definition was changed to say that this header field contains a list of all Message-IDs
-        /// of messages in the preceding reply chain.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies the message identifier or identifiers of related messages.
+        /// This header is typically used to maintain message threads by containing
+        /// the Message-ID values of preceding messages in the conversation.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.4.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? References
         {
             get{
@@ -959,10 +1304,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets topic of message. Value null means not specified.
+        /// Gets or sets the Subject header field.
         /// </summary>
-        /// <remarks>Contains a short string identifying the topic of the message.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies the topic of the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.5.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? Subject
         {
             get{
@@ -1000,11 +1351,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets additional comments about the message. Value null means not specified.
+        /// Gets or sets the Comments header field.
         /// </summary>
-        /// <remarks>Contains any additional comments on the text of the body of the message. 
-        /// Warning: Some mailers will not show this field to recipients.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Contains additional comments about the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Note that some mail clients may not display this header to recipients.
+        /// Defined in RFC 5322 section 3.6.5.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? Comments
         {
             get{
@@ -1042,10 +1399,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message key words and/or phrases. Value null means not specified.
+        /// Gets or sets the Keywords header field.
         /// </summary>
-        /// <remarks>Contains a comma-separated list of important words and phrases that might be useful for the recipient.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Contains keywords or phrases associated with the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// The value typically contains a comma-separated list of keywords.
+        /// Defined in RFC 5322 section 3.6.5.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? Keywords
         {
             get{
@@ -1083,12 +1447,21 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets date and time message is resent. Value <b>DateTime.MinValue</b> means not specified.
+        /// Gets or sets the Resent-Date header field.
         /// </summary>
-        /// <remarks>Contains the date and time that a message is reintroduced into the message transfer system.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
-        public DateTime ResentDate
+        /// <remarks>
+        /// Specifies the date and time when the message was reintroduced into the
+        /// mail transport system.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-Date header field cannot be parsed.
+        /// </exception>
+        public DateTime? ResentDate
         {
             get{
                 if(this.IsDisposed){
@@ -1105,7 +1478,7 @@ namespace LumiSoft.Net.Mail
                     }
                 }
                 else{
-                    return DateTime.MinValue;
+                    return null;
                 }
             }
 
@@ -1114,28 +1487,36 @@ namespace LumiSoft.Net.Mail
                     throw new ObjectDisposedException(this.GetType().Name);
                 }
                 
-                if(value == DateTime.MinValue){
+                if(value == null){
                     this.Header.RemoveAll("Resent-Date");
                 }
                 else{
                     MIME_h? h = this.Header.GetFirst("Resent-Date");
                     if(h == null){
-                        this.Header.Add(new MIME_h_Unstructured("Resent-Date",MIME_Utils.DateTimeToRfc2822(value)));
+                        this.Header.Add(new MIME_h_Unstructured("Resent-Date",MIME_Utils.DateTimeToRfc2822(value.Value)));
                     }
                     else{
-                        this.Header.ReplaceFirst(new MIME_h_Unstructured("Resent-Date",MIME_Utils.DateTimeToRfc2822(value)));
+                        this.Header.ReplaceFirst(new MIME_h_Unstructured("Resent-Date",MIME_Utils.DateTimeToRfc2822(value.Value)));
                     }
                 }
             }
         }
 
         /// <summary>
-        /// Gets or sets mailbox of person for whom message is resent. Value null means not specified.
+        /// Gets or sets the Resent-From header field.
         /// </summary>
-        /// <remarks>Contains the mailbox of the agent who has reintroduced the message into 
-        /// the message transfer system, or on whose behalf the message has been resent.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the mailbox or mailboxes of the person or system responsible
+        /// for resending the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-From header field cannot be parsed.
+        /// </exception>
         public Mail_t_MailboxList? ResentFrom
         {
             get{
@@ -1177,12 +1558,21 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets mailbox of person who actually resends the message. Value null means not specified.
+        /// Gets or sets the Resent-Sender header field.
         /// </summary>
-        /// <remarks>Contains the mailbox of the agent who has reintroduced the message into 
-        /// the message transfer system, if this is different from the Resent-From value.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the mailbox responsible for resending the message.
+        /// This header is typically used when the sender specified by the
+        /// <see cref="ResentFrom"/> header differs from the actual sender.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-Sender header field cannot be parsed.
+        /// </exception>
         public Mail_t_Mailbox? ResentSender
         {
             get{
@@ -1224,11 +1614,19 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets mailbox to which message is resent. Value null means not specified.
+        /// Gets or sets the Resent-To header field.
         /// </summary>
-        /// <remarks>Contains the mailbox(es) to which the message has been resent.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the primary recipient or recipients of the resent message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-To header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? ResentTo
         {
             get{
@@ -1270,11 +1668,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets mailbox(es) to which message is cc'ed on resend. Value null means not specified.
+        /// Gets or sets the Resent-Cc header field.
         /// </summary>
-        /// <remarks>Contains the mailbox(es) to which message is cc'ed on resend.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies recipient or recipients who receive a copy of the resent message,
+        /// but are not primary recipients.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-Cc header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? ResentCc
         {
             get{
@@ -1316,11 +1723,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets mailbox(es) to which message is bcc'ed on resend. Value null means not specified.
+        /// Gets or sets the Resent-Bcc header field.
         /// </summary>
-        /// <remarks>Contains the mailbox(es) to which message is bcc'ed on resend.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies recipient or recipients of the resent message whose addresses
+        /// are not disclosed to other recipients.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-Bcc header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? ResentBcc
         {
             get{
@@ -1362,10 +1778,19 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets resent reply-to. Value null means not specified.
+        /// Gets or sets the Resent-Reply-To header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the address or addresses to which replies to the resent
+        /// message should be sent.
+        /// Returns <c>null</c> if the header field is not present.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Resent-Reply-To header field cannot be parsed.
+        /// </exception>
         public Mail_t_AddressList? ResentReplyTo
         {
             get{
@@ -1407,9 +1832,13 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message identifier for resent message. Value null means not specified.
+        /// Gets or sets the Resent-Message-ID header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies a globally unique identifier for the resent message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 5322 section 3.6.6.
+        /// </remarks>
         public string? ResentMessageID
         {
             get{
@@ -1447,10 +1876,22 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message return path. Value null means not specified.
+        /// Gets or sets the Return-Path header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the address to which non-delivery reports and other delivery
+        /// status notifications should be sent.
+        /// Returns <c>null</c> if the header field is not present.
+        /// This header is normally added by the final delivery system rather than
+        /// by the message author.
+        /// Defined in RFC 5321 and RFC 5322.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Return-Path header field cannot be parsed.
+        /// </exception>
         public Mail_h_ReturnPath? ReturnPath
         {
             get{
@@ -1492,11 +1933,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets mail transfer trace information. Value null means not specified.
+        /// Gets the Received header fields.
         /// </summary>
-        /// <remarks>Contains information about receipt of the current message by a mail transfer agent on the transfer path.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Contains mail transfer trace information recorded by mail transfer
+        /// agents that handled the message.
+        /// Returns an empty array if no Received header fields are present.
+        /// Defined in RFC 5322 section 3.6.7.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when a Received header field cannot be parsed.
+        /// </exception>
         public Mail_h_Received[]? Received
         {
             get{
@@ -1527,12 +1977,20 @@ namespace LumiSoft.Net.Mail
         // public string Encypted
 
         /// <summary>
-        /// Gets or sets mailboxes where to send disposition notification message. Value null means not specified.
+        /// Gets or sets the Disposition-Notification-To header field.
         /// </summary>
-        /// <remarks>Indicates that the sender wants a disposition notification when this message 
-        /// is received (read, processed, etc.) by its recipients.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the mailbox or mailboxes to which message disposition
+        /// notifications (MDNs) should be sent.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 3798 section 2.1.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the Disposition-Notification-To header field cannot be parsed.
+        /// </exception>
         public Mail_t_MailboxList? DispositionNotificationTo
         {
             // Defined RFC 3798 2.1.
@@ -1575,58 +2033,20 @@ namespace LumiSoft.Net.Mail
             }
         }
 
-        /// <summary>
-        /// Gets or sets disposition notification options. Value null means not specified.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
-        public Mail_h_DispositionNotificationOptions? DispositionNotificationOptions
-        {
-            get{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-
-                MIME_h? h = this.Header.GetFirst("Disposition-Notification-Options");
-                if(h != null){
-                    if(!(h is Mail_h_DispositionNotificationOptions)){
-                        throw new ParseException("Header field 'Disposition-Notification-Options' parsing failed.");
-                    }
-
-                    return (Mail_h_DispositionNotificationOptions)h;
-                }
-                else{
-                    return null;
-                }
-            }
-
-            set{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                
-                if(value == null){
-                    this.Header.RemoveAll("Disposition-Notification-Options");
-                }
-                else{
-                    MIME_h? h = this.Header.GetFirst("Disposition-Notification-Options");
-                    if(h == null){
-                        this.Header.Add(value);
-                    }
-                    else{
-                        this.Header.ReplaceFirst(value);
-                    }
-                }
-            }
-        }
+        // DispositionNotificationOptions
 
         /// <summary>
-        /// Gets or sets language that the message sender requests to be used for responses. Value null means not specified.
+        /// Gets or sets the Accept-Language header field.
         /// </summary>
         /// <remarks>
-        /// Indicates a language that the message sender requests to be used for responses.
+        /// Specifies the preferred language or languages for replies to the message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// The value typically contains one or more language tags, such as
+        /// <c>en</c>, <c>en-US</c>, or <c>et</c>.
         /// </remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? AcceptLanguage
         {
             get{
@@ -1664,11 +2084,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets original message identifier. Value null means not specified.
+        /// Gets or sets the Original-Message-ID header field.
         /// </summary>
-        /// <remarks>Original message identifier used with resend of message with alternative content format; 
-        /// identifies the original message data to which it corresponds.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies the Message-ID of the original message associated with this
+        /// message.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 3798.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? OriginalMessageID
         {
             get{
@@ -1705,56 +2131,23 @@ namespace LumiSoft.Net.Mail
             }
         }
 
-        /// <summary>
-        /// Gets or sets PICS rating label. Value null means not specified.
-        /// </summary>
-        /// <remarks>Ratings label to control selection (filtering) of messages according to the PICS protocol.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public string? PICSLabel
-        {
-            get{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-
-                MIME_h? h = this.Header.GetFirst("PICS-Label");
-                if(h != null){
-                    return ((MIME_h_Unstructured)h).Value;
-                }
-                else{
-                    return null;
-                }
-            }
-
-            set{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                
-                if(value == null){
-                    this.Header.RemoveAll("PICS-LabelD");
-                }
-                else{
-                    MIME_h? h = this.Header.GetFirst("PICS-Label");
-                    if(h == null){
-                        this.Header.Add(new MIME_h_Unstructured("PICS-Label",value));
-                    }
-                    else{
-                        this.Header.ReplaceFirst(new MIME_h_Unstructured("PICS-Label",value));
-                    }
-                }
-            }
-        }
-
+        // Bot used in modern email.
+        // PICSLabel
         
         // Not widely used
         // public string Encoding
 
         /// <summary>
-        /// Gets or sets URL of mailing list archive. Value null means not specified.
+        /// Gets or sets the List-Archive header field.
         /// </summary>
-        /// <remarks>Contains the URL to use to browse the archives of the mailing list from which this message was relayed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies a URL for accessing the mailing list archives.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2369.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListArchive
         {
             get{
@@ -1792,10 +2185,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets URL for mailing list information. Value null means not specified.
+        /// Gets or sets the List-Help header field.
         /// </summary>
-        /// <remarks>Contains the URL to use to get information about the mailing list from which this message was relayed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies a URL or contact information for obtaining help with the
+        /// mailing list.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2369.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListHelp
         {
             get{
@@ -1833,10 +2233,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets mailing list identifier. Value null means not specified.
+        /// Gets or sets the List-ID header field.
         /// </summary>
-        /// <remarks>Stores an identification of the mailing list through which this message was distributed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies a unique identifier for the mailing list through which the
+        /// message was distributed.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2919.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListID
         {
             get{
@@ -1874,10 +2281,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets URL for mailing list owner's mailbox. Value null means not specified.
+        /// Gets or sets the List-Owner header field.
         /// </summary>
-        /// <remarks>Contains the URL to send e-mail to the owner of the mailing list from which this message was relayed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies contact information for the owner of the mailing list.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2369.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListOwner
         {
             get{
@@ -1915,10 +2328,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets URL for mailing list posting. Value null means not specified.
+        /// Gets or sets the List-Post header field.
         /// </summary>
-        /// <remarks>Contains the URL to use to send contributions to the mailing list from which this message was relayed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies how messages may be posted to the mailing list.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2369.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListPost
         {
             get{
@@ -1956,10 +2375,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets URL for mailing list subscription. Value null means not specified.
+        /// Gets or sets the List-Subscribe header field.
         /// </summary>
-        /// <remarks>Contains the URL to use to get a subscription to the mailing list from which this message was relayed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies how to subscribe to the mailing list.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2369.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListSubscribe
         {
             get{
@@ -1997,10 +2422,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets URL for mailing list unsubscription. Value null means not specified.
+        /// Gets or sets the List-Unsubscribe header field.
         /// </summary>
-        /// <remarks>Contains the URL to use to unsubscribe the mailing list from which this message was relayed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies how to unsubscribe from the mailing list.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2369.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ListUnsubscribe
         {
             get{
@@ -2037,47 +2468,8 @@ namespace LumiSoft.Net.Mail
             }
         }
 
-        /// <summary>
-        /// Gets or sets type or context of message. Value null means not specified.
-        /// </summary>
-        /// <remarks>Provides information about the context and presentation characteristics of a message. 
-        /// Can have the values 'voice-message', 'fax-message', 'pager-message', 'multimedia-message', 'text-message', or 'none'.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public string? MessageContext
-        {
-            get{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-
-                MIME_h? h = this.Header.GetFirst("Message-Context");
-                if(h != null){
-                    return ((MIME_h_Unstructured)h).Value;
-                }
-                else{
-                    return null;
-                }
-            }
-
-            set{
-                if(this.IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
-                
-                if(value == null){
-                    this.Header.RemoveAll("Message-Context");
-                }
-                else{
-                    MIME_h? h = this.Header.GetFirst("Message-Context");
-                    if(h == null){
-                        this.Header.Add(new MIME_h_Unstructured("Message-Context",value));
-                    }
-                    else{
-                        this.Header.ReplaceFirst(new MIME_h_Unstructured("Message-Context",value));
-                    }
-                }
-            }
-        }
+        // Obsolete
+        // MessageContext
 
         // Not for general use
         //public string AlternateRecipient
@@ -2107,11 +2499,16 @@ namespace LumiSoft.Net.Mail
         // public string ReplyBy
 
         /// <summary>
-        /// Gets or sets message importance. Value null means not specified.
+        /// Gets or sets the Importance header field.
         /// </summary>
-        /// <remarks>A hint from the originator to the recipients about how important a message is. 
-        /// Values: High, normal, or low.  Not used to control transmission speed.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies the importance of the message.
+        /// Common values are <c>high</c>, <c>normal</c>, and <c>low</c>.
+        /// Returns <c>null</c> if the header field is not present.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? Importance
         {
             get{
@@ -2149,10 +2546,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets message priority. Value null means not specified.
+        /// Gets or sets the Priority header field.
         /// </summary>
-        /// <remarks>Can be 'normal', 'urgent', or 'non-urgent' and can influence transmission speed and delivery.</remarks>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Specifies the delivery priority of the message.
+        /// Common values are <c>urgent</c>, <c>normal</c>, and <c>non-urgent</c>.
+        /// Returns <c>null</c> if the header field is not present.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? Priority
         {
             get{
@@ -2218,9 +2621,15 @@ namespace LumiSoft.Net.Mail
 
 
         /// <summary>
-        /// Gets this message attachments.
+        /// Gets the attachments contained in this message.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns an array containing all message attachments.
+        /// Returns an empty array if the message contains no attachments.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public MIME_Entity[] Attachments
         {
             get{
@@ -2233,9 +2642,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets message body text encoding . Returns null if no body text available.
+        /// Gets the character encoding of the message body text.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns the character encoding specified for the first
+        /// <c>text/plain</c> body part.
+        /// Returns <c>null</c> if the message does not contain a
+        /// <c>text/plain</c> body part.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public Encoding? BodyTextEncoding
         {
             get
@@ -2255,9 +2672,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets message body text. Returns null if no body text available.
+        /// Gets the message body text.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns the text of the first <c>text/plain</c> body part.
+        /// Returns <c>null</c> if the message does not contain a
+        /// <c>text/plain</c> body part.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? BodyText
         {
             get{
@@ -2276,9 +2700,17 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets message body html text encoding . Returns null if no body html text available.
+        /// Gets the character encoding of the message HTML body.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns the character encoding specified for the first
+        /// <c>text/html</c> body part.
+        /// Returns <c>null</c> if the message does not contain a
+        /// <c>text/html</c> body part.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public Encoding? BodyHtmlTextEncoding
         {
             get{
@@ -2297,9 +2729,16 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets message body html text. Returns null if no body html text available.
+        /// Gets the HTML body text of the message.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns the text of the first <c>text/html</c> body part.
+        /// Returns <c>null</c> if the message does not contain a
+        /// <c>text/html</c> body part.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? BodyHtmlText
         {
             get{ 

@@ -6,19 +6,20 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
 
-using LumiSoft.Net.IO;
-
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME multipart/signed body. Defined in RFC 5751.
+    /// Represents a MIME multipart/signed body. Defined in RFC 5751.
     /// </summary>
     public class MIME_b_MultipartSigned : MIME_b_Multipart
     {
         private X509Certificate2? m_pSignerCert = null;
 
         /// <summary>
-        /// Default constructor. The protocol = 'application/x-pkcs7-signature',micalg = 'sha1' and boundary = auto-generated.
+        /// Initializes a new instance of the <see cref="MIME_b_MultipartSigned"/> class.
+        /// The protocol is set to 'application/x-pkcs7-signature', the micalg
+        /// parameter is set to 'sha1', and an automatically generated boundary
+        /// is assigned.
         /// </summary>
         public MIME_b_MultipartSigned() : base()
         {
@@ -30,46 +31,53 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b_MultipartSigned"/> class.
         /// </summary>
         /// <param name="contentType">Content type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>contentType</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when <b>contentType</b> is null reference.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Is raised when <b>contentType</b> is not 'multipart/signed'.
+        /// </exception>
         public MIME_b_MultipartSigned(MIME_h_ContentType contentType) : base(contentType)
         {
             if(!string.Equals(contentType.TypeWithSubtype,"multipart/signed",StringComparison.CurrentCultureIgnoreCase)){
-                throw new ArgumentException("Argument 'contentType.TypeWithSubype' value must be 'multipart/signed'.");
+                throw new ArgumentException("Specified content type must be 'multipart/signed'.",nameof(contentType));
             }
         }
 
-        #region static method Parse
+
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses MIME multipart/signed body from the specified stream.
         /// </summary>
         /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>mediaTypedefaultContentTypeb></b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="stream">Stream to parse MIME body from.</param>
+        /// <returns>
+        /// Returns parsed MIME multipart/signed body.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when <b>owner</b> or <b>stream</b> is null reference.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when multipart entity content type is missing required 'boundary' parameter.
+        /// </exception>
+        internal new static async Task<MIME_b_MultipartSigned> ParseAsync(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
             if(owner.ContentType == null || owner.ContentType.Param_Boundary == null){
-                throw new ParseException("Multipart entity has not required 'boundary' paramter.");
+                throw new ParseException("Multipart entity content type is missing required 'boundary' parameter.");
             }
-            
+          
             MIME_b_MultipartSigned retVal = new MIME_b_MultipartSigned(owner.ContentType);
-            ParseInternal(owner,owner.ContentType.TypeWithSubtype,stream,retVal);
+            await retVal.ParseInternalAsync(owner,owner.ContentType.Param_Boundary,stream);
 
             return retVal;
         }
@@ -80,10 +88,12 @@ namespace LumiSoft.Net.MIME
         #region method SetCertificate
 
         /// <summary>
-        /// Sets signer certificate.
+        /// Sets the signer certificate used when generating the signature.
         /// </summary>
         /// <param name="signerCert">Signer certificate.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>signerCert</b> is null reference.</exception>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when <b>signerCert</b> is null reference.
+        /// </exception>
         public void SetCertificate(X509Certificate2 signerCert)
         {
             if(signerCert == null){
@@ -98,9 +108,12 @@ namespace LumiSoft.Net.MIME
         #region method GetCertificates
 
         /// <summary>
-        /// Gets certificates contained in pkcs 7.
+        /// Gets certificates contained in the PKCS #7 signature.
         /// </summary>
-        /// <returns>Returns certificates contained in pkcs 7. Returns null if no certificates.</returns>
+        /// <returns>
+        /// Returns certificates contained in the PKCS #7 signature,
+        /// or null if no certificates are available.
+        /// </returns>
         public X509Certificate2Collection? GetCertificates()
         {
             // multipart/signed must always have only 2 entities, otherwise invalid data.
@@ -126,29 +139,31 @@ namespace LumiSoft.Net.MIME
         #region method VerifySignature
 
         /// <summary>
-        /// Checks if signature is valid and data not altered.
+        /// Verifies that the signature is valid and the signed data has not been modified.
         /// </summary>
-        /// <returns>Returns true if signature is valid, otherwise false.</returns>
+        /// <returns>
+        /// Returns true if the signature is valid; otherwise, false.
+        /// </returns>
         public bool VerifySignature()
         {
             // Message is signed when it's saved out.
             if(m_pSignerCert != null){
                 return true;
             }
-            // multipart/signed must always have only 2 entities, otherwise invalid data.
+            // multipart/signed must always contain exactly 2 body parts; otherwise the data is invalid.
             if(this.BodyParts.Count != 2){
                 return false;
             }
                 
-            // Get signature. It should be 2 entity.
+            // Get signature. It should be the second entity.
             MIME_Entity signatureEntity = this.BodyParts[1];
             if(signatureEntity.Body == null){
                 return false;
             }
 
-            // Store entity to tmp stream.              
+            // Store entity to temporary stream.          
             MemoryStream tmpDataEntityStream = new MemoryStream();
-            this.BodyParts[0].ToStream(tmpDataEntityStream,null,null,false);
+            this.BodyParts[0].ToStream(tmpDataEntityStream);
 
             try{
                 SignedCms signedCms = new SignedCms(new ContentInfo(tmpDataEntityStream.ToArray()),true);
@@ -165,19 +180,15 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
-        #region method ToStream
+        #region method ToStreamAsync
 
-        /// <summary>
-        /// Stores MIME entity body to the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        internal protected override void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
+        /// <inheritdoc/>
+        internal protected override async Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default)
         {
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
+            }
+
             // We have signer certificate, sign this entity.
             if(this.BodyParts.Count > 0 && m_pSignerCert != null){
                 // Remove old signature if there is any.
@@ -187,7 +198,7 @@ namespace LumiSoft.Net.MIME
 
                 // Store entity to tmp stream.
                 MemoryStream tmpDataEntityStream = new MemoryStream();
-                this.BodyParts[0].ToStream(tmpDataEntityStream,null,null,false);
+                this.BodyParts[0].ToStream(tmpDataEntityStream);
         
                 // Compute PKCS #7 message.
                 SignedCms signedCms = new SignedCms(new ContentInfo(tmpDataEntityStream.ToArray()),true);
@@ -207,7 +218,7 @@ namespace LumiSoft.Net.MIME
                 signedCms.CheckSignature(true);
             }
 
-            base.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
+            await base.ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
         }
 
         #endregion

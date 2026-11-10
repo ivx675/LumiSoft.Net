@@ -577,44 +577,6 @@ namespace LumiSoft.Net
 		#endregion
 
 
-        #region static method FromBase64
-
-        /// <summary>
-        /// Decodes specified base64 data.
-        /// </summary>
-        /// <param name="data">Base64 string.</param>
-        /// <returns>Returns decoded data.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>data</b> is null reference.</exception>
-        public static byte[] FromBase64(string data)
-        {
-            if(data == null){
-                throw new ArgumentNullException("data");
-            }
-
-            Base64 base64 = new Base64();
-
-            return base64.Decode(data,true);
-        }
-
-        /// <summary>
-        /// Decodes specified base64 data.
-        /// </summary>
-        /// <param name="data">Base64 data.</param>
-        /// <returns>Returns decoded data.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>data</b> is null reference.</exception>
-        public static byte[] FromBase64(byte[] data)
-        {
-            if(data == null){
-                throw new ArgumentNullException("data");
-            }
-
-            Base64 base64 = new Base64();
-
-            return base64.Decode(data,0,data.Length,true);
-        }
-
-        #endregion
-
         #region static method Base64Encode
 
         /// <summary>

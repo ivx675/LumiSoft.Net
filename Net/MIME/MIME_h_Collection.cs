@@ -1,31 +1,33 @@
 ﻿using System;
-using System.IO;
 using System.Collections;
-using System.Collections.Generic;
 using System.Text;
-
-using LumiSoft.Net.IO;
 
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME header fields collection. Defined in RFC 2045.
+    /// Represents a collection of MIME header fields.
     /// </summary>
-    public class MIME_h_Collection : IEnumerable
+    public class MIME_h_Collection : IEnumerable<MIME_h>
     {
         private bool            m_IsModified = false;
         private MIME_h_Provider m_pProvider;
         private List<MIME_h>    m_pFields;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the
+        /// <see cref="MIME_h_Collection"/> class.
         /// </summary>
-        /// <param name="provider">Header fields provider.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>provider</b> is null reference.</exception>
+        /// <param name="provider">
+        /// Header field provider.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="provider"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public MIME_h_Collection(MIME_h_Provider provider)
         {
             if(provider == null){
-                throw new ArgumentNullException("provider");
+                throw new ArgumentNullException(nameof(provider));
             }
 
             m_pProvider = provider;
@@ -37,19 +39,28 @@ namespace LumiSoft.Net.MIME
         #region method Insert
 
         /// <summary>
-        /// Inserts a new header field into the collection at the specified location.
+        /// Inserts a header field into the collection at the specified index.
         /// </summary>
-        /// <param name="index">The location in the collection where you want to add the item.</param>
-        /// <param name="field">Header field to insert.</param>
-        /// <exception cref="ArgumentOutOfRangeException">Is raised when <b>index</b> is out of range.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference.</exception>
+        /// <param name="index">
+        /// Zero-based index at which to insert the header field.
+        /// </param>
+        /// <param name="field">
+        /// Header field to insert.
+        /// </param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Raised when <paramref name="index"/> is out of range.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="field"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public void Insert(int index,MIME_h field)
         {
             if(index < 0 || index > m_pFields.Count){
-                throw new ArgumentOutOfRangeException("index");
+                throw new ArgumentOutOfRangeException(nameof(index));
             }
             if(field == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(field));
             }
 
             m_pFields.Insert(index,field);
@@ -61,15 +72,22 @@ namespace LumiSoft.Net.MIME
         #region method Add
 
         /// <summary>
-        /// Parses and adds specified header field to the end of the collection.
+        /// Parses and adds a header field to the end of the collection.
         /// </summary>
-        /// <param name="field">Header field string (Name: value).</param>
-        /// <returns>Retunrs added header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference.</exception>
+        /// <param name="field">
+        /// Header field in the format <c>name: value</c>.
+        /// </param>
+        /// <returns>
+        /// Returns the added header field.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="field"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public MIME_h Add(string field)
         {
             if(field == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(field));
             }
    
             MIME_h h = m_pProvider.Parse(field);
@@ -99,14 +117,19 @@ namespace LumiSoft.Net.MIME
         #region method Remove
 
         /// <summary>
-        /// Removes specified header field from the collection.
+        /// Removes the specified header field from the collection.
         /// </summary>
-        /// <param name="field">Header field to remove.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference value.</exception>
+        /// <param name="field">
+        /// Header field to remove.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="field"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public void Remove(MIME_h field)
         {
             if(field == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(field));
             }
 
             m_pFields.Remove(field);
@@ -120,16 +143,23 @@ namespace LumiSoft.Net.MIME
         /// <summary>
         /// Removes all header fields with the specified name.
         /// </summary>
-        /// <param name="name">Header field name.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="name">
+        /// Header field name.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="name"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="name"/> is empty.
+        /// </exception>
         public void RemoveAll(string name)
         {
             if(name == null){
-                throw new ArgumentNullException("name");
+                throw new ArgumentNullException(nameof(name));
             }
             if(name == string.Empty){
-                throw new ArgumentException("Argument 'name' value must be specified.","name");
+                throw new ArgumentException("Argument 'name' value must be specified.",nameof(name));
             }
 
             foreach(MIME_h field in m_pFields.ToArray()){
@@ -145,7 +175,7 @@ namespace LumiSoft.Net.MIME
         #region method Clear
 
         /// <summary>
-        /// Removes all items from the collection.
+        /// Removes all header fields from the collection.
         /// </summary>
         public void Clear()
         {
@@ -158,19 +188,30 @@ namespace LumiSoft.Net.MIME
         #region method Contains
 
         /// <summary>
-        /// Gets if collection has item with the specified name.
+        /// Determines whether the collection contains a header field with the
+        /// specified name.
         /// </summary>
-        /// <param name="name">Header field name.</param>
-        /// <returns>Returns true if specified item exists in the collection, otherwise false.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="name">
+        /// Header field name.
+        /// </param>
+        /// <returns>
+        /// Returns <see langword="true"/> if a matching header field exists;
+        /// otherwise <see langword="false"/>.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="name"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="name"/> is empty.
+        /// </exception>
         public bool Contains(string name)
         {
             if(name == null){
-                throw new ArgumentNullException("name");
+                throw new ArgumentNullException(nameof(name));
             }
             if(name == string.Empty){
-                throw new ArgumentException("Argument 'name' value must be specified.","name");
+                throw new ArgumentException("Argument 'name' value must be specified.",nameof(name));
             }
 
             foreach(MIME_h field in m_pFields.ToArray()){
@@ -183,15 +224,24 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets if collection contains the specified item.
+        /// Determines whether the collection contains the specified header
+        /// field.
         /// </summary>
-        /// <param name="field">Header field.</param>
-        /// <returns>Returns true if specified item exists in the collection, otherwise false.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference.</exception>
+        /// <param name="field">
+        /// Header field to locate in the collection.
+        /// </param>
+        /// <returns>
+        /// Returns <see langword="true"/> if the specified header field exists
+        /// in the collection; otherwise <see langword="false"/>.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="field"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public bool Contains(MIME_h field)
         {
             if(field == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(field));
             }
 
             return m_pFields.Contains(field);
@@ -202,15 +252,24 @@ namespace LumiSoft.Net.MIME
         #region method GetFirst
 
         /// <summary>
-        /// Gets first header field with the specified name. returns null if specified header field doesn't exist.
+        /// Gets the first header field with the specified name.
         /// </summary>
-        /// <param name="name">Header field name.</param>
-        /// <returns>Returns first header field with the specified name. returns null if specified header field doesn't exist.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
+        /// <param name="name">
+        /// Header field name.
+        /// </param>
+        /// <returns>
+        /// Returns the first matching header field, or
+        /// <see langword="null"/> if no matching header field exists in the
+        /// collection.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="name"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public MIME_h? GetFirst(string name)
         {
             if(name == null){
-                throw new ArgumentNullException("name");
+                throw new ArgumentNullException(nameof(name));
             }
 
             foreach(MIME_h field in m_pFields.ToArray()){
@@ -227,14 +286,23 @@ namespace LumiSoft.Net.MIME
         #region method ReplaceFirst
 
         /// <summary>
-        /// Replaces first header field with specified name with specified value.
+        /// Replaces the first header field with the same name as the specified
+        /// header field.
         /// </summary>
-        /// <param name="field">Hedaer field.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference.</exception>
+        /// <param name="field">
+        /// Header field to use as the replacement.
+        /// </param>
+        /// <remarks>
+        /// If no matching header field exists, no action is taken.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="field"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public void ReplaceFirst(MIME_h field)
         {
             if(field == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(field));
             }
 
             for(int i=0;i<m_pFields.Count;i++){
@@ -252,9 +320,11 @@ namespace LumiSoft.Net.MIME
         #region method ToArray
 
         /// <summary>
-        /// Copies header fields to new array.
+        /// Copies the header fields in the collection to a new array.
         /// </summary>
-        /// <returns>Returns header fields array.</returns>
+        /// <returns>
+        /// Returns a new array containing the header fields in the collection.
+        /// </returns>
         public MIME_h[] ToArray()
         {
             return m_pFields.ToArray();
@@ -263,79 +333,227 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
-        #region method ToFile
-
-        /// <summary>
-        /// Stores header to the specified file.
-        /// </summary>
-        /// <param name="fileName">File name with optional path.</param>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>fileName</b> is null reference.</exception>
-        public void ToFile(string fileName,MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset)
-        {
-            if(fileName == null){
-                throw new ArgumentNullException("fileName");
-            }
-
-            using(FileStream fs = File.Create(fileName)){
-                ToStream(fs,wordEncoder,parmetersCharset);
-            }
-        }
-
-        #endregion
-
-        #region method ToByte
-
-        /// <summary>
-        /// Returns header as byte[] data.
-        /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <returns>Returns header as byte[] data.</returns>
-        public byte[] ToByte(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset)
-        {
-            using(MemoryStream ms = new MemoryStream()){
-                ToStream(ms,wordEncoder,parmetersCharset);
-                ms.Position = 0;
-
-                return ms.ToArray();
-            }
-        }
-
-        #endregion
-
         #region method ToStream
 
         /// <summary>
-        /// Stores header to the specified stream.
+        /// Stores the header collection to the specified stream.
         /// </summary>
-        /// <param name="stream">Stream where to store header.</param>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        public void ToStream(Stream stream,MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset)
+        /// <param name="stream">
+        /// Stream to which to write the header collection.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the header collection has been completely
+        /// written. For asynchronous operation, use
+        /// <see cref="ToStreamAsync(Stream,bool,bool,CancellationToken)"/>.
+        /// </remarks>
+        public void ToStream(Stream stream,bool utf8Headers = false,bool reEncodeHeaders = false)
         {
-            ToStream(stream,wordEncoder,parmetersCharset,false);
+            ToStreamAsync(stream,utf8Headers,reEncodeHeaders,CancellationToken.None).GetAwaiter().GetResult();
         }
 
+        #endregion
+
+        #region method ToStreamAsync
+
         /// <summary>
-        /// Stores header to the specified stream.
+        /// Writes the header collection to the specified stream.
         /// </summary>
-        /// <param name="stream">Stream where to store header.</param>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="reEncod">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        public void ToStream(Stream stream,MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncod)
+        /// <param name="stream">
+        /// Stream to which to write the headers.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        internal protected async Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
             }
 
-            byte[] header = Encoding.UTF8.GetBytes(ToString(wordEncoder,parmetersCharset,reEncod));
-            stream.Write(header,0,header.Length);
+            byte[] header = Encoding.UTF8.GetBytes(ToString(utf8Headers,reEncodeHeaders));
+            await stream.WriteAsync(header,cancellationToken);
+        }
+
+        #endregion
+
+        #region method ToFile
+
+        /// <summary>
+        /// Stores the header collection to the specified file.
+        /// </summary>
+        /// <param name="fileName">
+        /// File to which to write the header collection.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the header collection has been completely
+        /// written. For asynchronous operation, use
+        /// <see cref="ToFileAsync(string,bool,bool,CancellationToken)"/>.
+        /// </remarks>
+        public void ToFile(string fileName,bool utf8Headers = false,bool reEncodeHeaders = false)
+        {
+            ToFileAsync(fileName,utf8Headers,reEncodeHeaders,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method ToFileAsync
+
+        /// <summary>
+        /// Stores the header collection to the specified file.
+        /// </summary>
+        /// <param name="fileName">
+        /// File to which to write the header collection.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        public async Task ToFileAsync(
+            string fileName,
+            bool utf8Headers = false,
+            bool reEncodeHeaders = false,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if(fileName == null){
+                throw new ArgumentNullException(nameof(fileName));
+            }
+            if(fileName.Length == 0){
+                throw new ArgumentException("Argument 'fileName' cannot be empty.",nameof(fileName));
+            }
+
+            await using(FileStream stream = File.Create(fileName)){
+                await ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
+            }
+        }
+
+        #endregion
+
+        #region method ToByteArray
+
+        /// <summary>
+        /// Stores the header collection to a byte array.
+        /// </summary>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <returns>
+        /// Returns the serialized header collection.
+        /// </returns>
+        /// <remarks>
+        /// This method blocks until the header collection has been completely
+        /// serialized. For asynchronous operation, use
+        /// <see cref="ToByteArrayAsync(bool,bool,CancellationToken)"/>.
+        /// </remarks>
+        public byte[] ToByteArray(bool utf8Headers,bool reEncodeHeaders)
+        {
+            return ToByteArrayAsync(utf8Headers,reEncodeHeaders,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method ToByteArrayAsync
+
+        /// <summary>
+        /// Stores the header collection to a byte array.
+        /// </summary>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the serialized header collection.
+        /// </returns>
+        public async Task<byte[]> ToByteArrayAsync(
+            bool utf8Headers,
+            bool reEncodeHeaders,
+            CancellationToken cancellationToken = default
+        )
+        {
+            using(MemoryStream stream = new MemoryStream()){
+                await ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
+
+                return stream.ToArray();
+            }
         }
 
         #endregion
@@ -343,37 +561,38 @@ namespace LumiSoft.Net.MIME
         #region override method ToString
 
         /// <summary>
-        /// Returns MIME header as string.
+        /// Returns the serialized MIME header collection.
         /// </summary>
-        /// <returns>Returns MIME header as string.</returns>
+        /// <returns>
+        /// Returns the serialized MIME header collection.
+        /// </returns>
         public override string ToString()
         {
-            return ToString(null,null,false);
+            return ToString(true,false);
         }
 
         /// <summary>
-        /// Returns MIME header as string.
+        /// Returns a string representation of the header collection.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <returns>Returns MIME header as string.</returns>
-        public string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset)
-        {
-            return ToString(wordEncoder,parmetersCharset,false);
-        }
-
-        /// <summary>
-        /// Returns MIME header as string.
-        /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header fields which value not modified, original encoding is kept.</param>
-        /// <returns>Returns MIME header as string.</returns>
-        public string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <returns>
+        /// Returns the serialized header collection.
+        /// </returns>
+        public string ToString(bool utf8Headers,bool reEncodeHeaders)
         {
             StringBuilder retVal = new StringBuilder();
             foreach(MIME_h field in m_pFields){
-                retVal.Append(field.ToString(wordEncoder,parmetersCharset,reEncode));
+                retVal.Append(field.ToString(utf8Headers,reEncodeHeaders));
             }
 
             return retVal.ToString();
@@ -381,93 +600,88 @@ namespace LumiSoft.Net.MIME
 
         #endregion
 
-        #region method Parse
+
+        #region method ParseFromString
 
         /// <summary>
-        /// Parses MIME header from the specified value.
+        /// Parses a raw MIME header string into individual header fields while strictly 
+        /// enforcing RFC 5322 CRLF line endings, preventing bare CR/LF vulnerabilities, and preserving 
+        /// exact raw byte-level formatting and folding.
         /// </summary>
-        /// <param name="value">MIME header string.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        public void Parse(string value)
+        /// <param name="rawHeader">The raw MIME header string to parse.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="rawHeader"/> is null.</exception>
+        /// <exception cref="InvalidDataException">Thrown if a bare CR or bare LF line ending is encountered.</exception>
+        internal void ParseFromString(string rawHeader)
         {
-            if(value == null){
-                throw new ArgumentNullException("value");
-            }
-                        
-            Parse(new SmartStream(new MemoryStream(Encoding.UTF8.GetBytes(value)),true));
-        }
-
-        /// <summary>
-        /// Parses MIME header from the specified stream.
-        /// </summary>
-        /// <param name="stream">MIME header stream.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public void Parse(SmartStream stream)
-        {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(rawHeader == null){
+                throw new ArgumentNullException(nameof(rawHeader));
             }
 
-            Parse(stream,Encoding.UTF8);
-        }
+            ReadOnlySpan<char> span = rawHeader.AsSpan();
+            int lineStart = 0;
+            string? currentHeader = null;
 
-        /// <summary>
-        /// Parses MIME header from the specified stream.
-        /// </summary>
-        /// <param name="stream">MIME header stream.</param>
-        /// <param name="encoding">Headers fields reading encoding. If not sure, UTF-8 is recommended.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> or <b>encoding</b> is null.</exception>
-        public void Parse(SmartStream stream,Encoding encoding)
-        {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-            if(encoding == null){
-                throw new ArgumentNullException("encoding");
-            }
-
-            var currentHeader = new StringBuilder();
-            var lineBuffer    = new byte[84000];
-            while(true){                
-                var readLineResult = stream.ReadLine(lineBuffer,SizeExceededAction.ThrowException);
-                // We reached end of stream.
-                if(readLineResult.BytesInBuffer == 0){
-                    if(currentHeader.Length > 0){
-                        Add(currentHeader.ToString());
+            while(lineStart < span.Length){
+                int idx = span.Slice(lineStart).IndexOfAny('\r','\n');
+                if(idx == -1){
+                    // Tail end without newline terminator
+                    int remainingLength = span.Length - lineStart;
+                    if(remainingLength > 0){
+                        ReadOnlySpan<char> tail = span.Slice(lineStart, remainingLength).TrimEnd();
+                        if(!tail.IsEmpty){
+                            if(tail[0] == ' ' || tail[0] == '\t'){
+                                if (currentHeader != null) currentHeader += "\r\n" + tail.ToString();
+                            }
+                            else{
+                                if (currentHeader != null) Add(currentHeader);
+                                currentHeader = tail.ToString();
+                            }
+                        }
                     }
-                    m_IsModified = false;
-
-                    return;
+                    break;
                 }
-                // We got blank header terminator line.
-                else if(readLineResult.LineBytesInBuffer == 0){
-                    if(currentHeader.Length > 0){
-                        Add(currentHeader.ToString());
-                    }
-                    m_IsModified = false;
 
-                    return;
+                int absoluteIdx = lineStart + idx;
+
+                if(span[absoluteIdx] == '\r'){
+                    if(absoluteIdx + 1 >= span.Length || span[absoluteIdx + 1] != '\n'){
+                        throw new InvalidDataException("Malformed MIME header: Bare CR detected without following LF.");
+                    }
+
+                    int lineEnd = absoluteIdx + 2;
+                    ReadOnlySpan<char> lineSpan = span.Slice(lineStart, (lineEnd - 2) - lineStart);
+
+                    // Empty line marks the end of the header block
+                    if(lineSpan.IsEmpty){
+                        lineStart = lineEnd;
+                        break;
+                    }
+
+                    // Check for multiline folding (FWS: starts with space or tab)
+                    if(lineSpan[0] == ' ' || lineSpan[0] == '\t'){
+                        if(currentHeader != null){
+                            currentHeader += "\r\n" + lineSpan.ToString();
+                        }
+                    }
+                    else{
+                        // Flush the previous completed header field
+                        if(currentHeader != null){
+                            Add(currentHeader);
+                        }
+                        currentHeader = lineSpan.ToString();
+                    }
+
+                    lineStart = lineEnd;
                 }
                 else{
-                    string line = encoding.GetString(lineBuffer,0,readLineResult.BytesInBuffer);
- 
-                    // New header field starts.
-                    if(currentHeader.Length == 0){
-                         currentHeader.Append(line);
-                    }
-                    // Header field continues.
-                    else if(char.IsWhiteSpace(line[0])){
-                        currentHeader.Append(line);
-                    }
-                    // Current header field closed, new starts.
-                    else{
-                        Add(currentHeader.ToString());
-
-                        currentHeader = new StringBuilder();
-                        currentHeader.Append(line);
-                    }
+                    throw new InvalidDataException("Malformed MIME header: Bare LF detected without preceding CR.");
                 }
-            }        
+            }
+
+            // Flush the final remaining header
+            if(currentHeader != null){
+                Add(currentHeader);
+            }
         }
 
         #endregion
@@ -476,20 +690,29 @@ namespace LumiSoft.Net.MIME
         #region interface IEnumerator
 
         /// <summary>
-		/// Gets enumerator.
-		/// </summary>
-		/// <returns></returns>
-		public IEnumerator GetEnumerator()
-		{
-			return m_pFields.GetEnumerator();
-		}
+        /// Returns an enumerator that iterates through the collection of typed MIME headers.
+        /// </summary>
+        /// <returns>A generic enumerator for <see cref="MIME_h"/> instances.</returns>
+        public IEnumerator<MIME_h> GetEnumerator()
+        {
+            return m_pFields.GetEnumerator();
+        }
+
+        /// <summary>
+        /// Returns an enumerator that iterates through a collection of MIME headers.
+        /// </summary>
+        /// <returns>An <see cref="IEnumerator"/> object that can be used to iterate through the collection.</returns>
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
 
 		#endregion
 
         #region Properties implementation
 
         /// <summary>
-        /// Gets if header has modified since it was loaded.
+        /// Gets whether the collection or any contained header field has been modified since it was loaded.
         /// </summary>
         public bool IsModified
         {            
@@ -509,7 +732,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets number of items in the collection.
+        /// Gets the number of header fields in the collection.
         /// </summary>
         public int Count
         {
@@ -517,16 +740,19 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets the element at the specified index.
+        /// Gets the header field at the specified index.
         /// </summary>
-        /// <param name="index">The zero-based index of the element to get.</param>
-        /// <returns>Returns the element at the specified index.</returns>
-        /// <exception cref="ArgumentOutOfRangeException">Is raised when <b>index</b> is out of range.</exception>
+        /// <param name="index">
+        /// Zero-based index of the header field to get.
+        /// </param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Is raised when <paramref name="index"/> is outside the bounds of the collection.
+        /// </exception>
         public MIME_h this[int index]
         {
             get{ 
                 if(index < 0 || index >= m_pFields.Count){
-                    throw new ArgumentOutOfRangeException("index");
+                    throw new ArgumentOutOfRangeException(nameof(index));
                 }
 
                 return m_pFields[index]; 
@@ -534,16 +760,23 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets header fields with the specified name.
+        /// Gets all header fields with the specified name.
         /// </summary>
-        /// <param name="name">Header field name.</param>
-        /// <returns>Returns header fields with the specified name.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
+        /// <param name="name">
+        /// Header field name.
+        /// </param>
+        /// <returns>
+        /// Returns an array containing all matching header fields.
+        /// Returns an empty array if no matching header fields exist.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when <paramref name="name"/> is null.
+        /// </exception>
         public MIME_h[] this[string name]
         {
             get{
                 if(name == null){
-                    throw new ArgumentNullException("name");
+                    throw new ArgumentNullException(nameof(name));
                 }
 
                 List<MIME_h> retVal = new List<MIME_h>();

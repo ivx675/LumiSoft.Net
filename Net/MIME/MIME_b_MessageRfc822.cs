@@ -3,20 +3,23 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.IO;
 using LumiSoft.Net.Mail;
 
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME message/rfc822 body. Defined in RFC 2046 5.2.1.
+    /// Represents a MIME <c>message/rfc822</c> body.
     /// </summary>
+    /// <remarks>
+    /// Defined by RFC 2046 section 5.2.1. A message/rfc822 body encapsulates
+    /// a complete RFC 5322 message, including its headers and body.
+    /// </remarks>
     public class MIME_b_MessageRfc822 : MIME_b
     {
         private Mail_Message m_pMessage;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b_MessageRfc822"/> class.
         /// </summary>
         public MIME_b_MessageRfc822() : base(new MIME_h_ContentType("message/rfc822"))
         {
@@ -24,31 +27,33 @@ namespace LumiSoft.Net.MIME
         }
 
 
-        #region static method Parse
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses a <c>message/rfc822</c> body from the specified stream.
         /// </summary>
         /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>defaultContentType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="stream">
+        /// Stream containing the encapsulated message.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME body.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="owner"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        internal static async Task<MIME_b_MessageRfc822> ParseAsync(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
             MIME_b_MessageRfc822 retVal = new MIME_b_MessageRfc822();
-            retVal.m_pMessage = Mail_Message.ParseFromStream(stream);
+            retVal.m_pMessage = await Mail_Message.ParseFromStreamAsync(stream,true,false);
 
             return retVal;
         }
@@ -56,24 +61,16 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
-        #region method ToStream
+        #region method ToStreamAsync
 
-        /// <summary>
-        /// Stores MIME entity body to the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        internal protected override void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
+        /// <inheritdoc/>
+        internal protected override async Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
             }
 
-            m_pMessage.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
+            await m_pMessage.ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
         }
 
         #endregion
@@ -82,7 +79,7 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
         
         /// <summary>
-        /// Gets if body has modified.
+        /// Gets a value indicating whether the encapsulated message has been modified.
         /// </summary>
         public override bool IsModified
         {
@@ -90,10 +87,14 @@ namespace LumiSoft.Net.MIME
         }
     
         /// <summary>
-        /// Gets embbed mail message.
+        /// Gets or sets the encapsulated message.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when a <see langword="null"/> value is assigned.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not bound to a MIME entity.
+        /// </exception>
         public Mail_Message Message
         {
             get{ return m_pMessage; }

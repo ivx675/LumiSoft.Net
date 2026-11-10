@@ -3,32 +3,38 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.IO;
-
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class is base class for MIME entity bodies.
+    /// Represents the body of a MIME entity.
     /// </summary>
+    /// <remarks>
+    /// Derived classes implement specific MIME body types such as text,
+    /// multipart, message, image, audio, video, and application bodies.
+    /// </remarks>
     public abstract class MIME_b
     {
         private MIME_Entity?       m_pEntity      = null;
         private MIME_h_ContentType m_pContentType;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b"/> class.
         /// </summary>
-        /// <param name="contentType">Content type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>contentType</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="contentType">
+        /// Content-Type associated with this MIME body.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="contentType"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public MIME_b(MIME_h_ContentType contentType)
         {
             if(contentType == null){
-                throw new ArgumentNullException("contentType");
+                throw new ArgumentNullException(nameof(contentType));
             }
 
             m_pContentType = contentType;
-        }                       
+        }
 
         /// <summary>
         /// Internal constructor. No Content-Type is created, user must do it manually.
@@ -38,31 +44,16 @@ namespace LumiSoft.Net.MIME
             m_pContentType = new MIME_h_ContentType("text/plain");
         }
 
-
-        #region static method Parse
+        #region method Dispose
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Releases all resources used by this instance.
         /// </summary>
-        /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>defaultContentType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <remarks>
+        /// If this instance owns a backing stream, the stream is disposed.
+        /// </remarks>
+        internal virtual void Dispose()
         {
-            if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
-            }
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
-            throw new NotImplementedException("Body provider class does not implement required Parse method.");
         }
 
         #endregion
@@ -87,18 +78,32 @@ namespace LumiSoft.Net.MIME
 
         #endregion
 
-        #region method ToStream
+        #region method ToStreamAsync
 
         /// <summary>
-        /// Stores MIME entity body to the specified stream.
+        /// Stores the MIME body to the specified stream.
         /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        internal protected abstract void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode);
+        /// <param name="stream">
+        /// Stream to which to write the body data.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        internal protected abstract Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default);
 
         #endregion
 
@@ -106,7 +111,7 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if body has modified.
+        /// Gets a value indicating whether the body has been modified.
         /// </summary>
         public abstract bool IsModified
         {
@@ -114,15 +119,19 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets body owner entity. Returns null if body not bounded to any entity yet.
+        /// Gets the MIME entity that owns this body.
         /// </summary>
+        /// <remarks>
+        /// Returns <see langword="null"/> if the body is not bound to an entity.
+        /// </remarks>
         public MIME_Entity? Entity
         {
             get{ return m_pEntity; }
         }
 
         /// <summary>
-        /// Gets body media type. For example: 'text/plain'.
+        /// Gets the MIME media type of this body, for example
+        /// <c>text/plain</c>.
         /// </summary>
         public string MediaType
         {
@@ -131,7 +140,7 @@ namespace LumiSoft.Net.MIME
 
 
         /// <summary>
-        /// Gets content-type.
+        /// Gets or sets the Content-Type header.
         /// </summary>
         internal MIME_h_ContentType ContentType
         {

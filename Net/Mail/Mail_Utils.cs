@@ -22,10 +22,8 @@ namespace LumiSoft.Net.Mail
         internal static string? SMTP_Mailbox(MIME_Reader reader)
         {
             if(reader == null){
-                throw new ArgumentNullException("reader");
+                throw new ArgumentNullException(nameof(reader));
             }
-
-            // TODO:
 
             /* RFC 5321.
                 Mailbox        = Local-part "@" ( Domain / address-literal )

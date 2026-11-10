@@ -8,9 +8,12 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// Represents "Received:" header. Defined in RFC 5321 4.4.
+    /// Represents a <c>Received</c> header field.
     /// </summary>
     /// <remarks>
+    /// Defined by RFC 5321, section 4.4. A received field records the hosts,
+    /// protocols, and timestamp associated with an SMTP hop.
+    ///
     /// <code>
     /// RFC 5321 4.4.
     ///     Time-stamp-line = "Received:" FWS Stamp CRLF
@@ -66,26 +69,26 @@ namespace LumiSoft.Net.Mail
         private DateTime        m_Time;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_h_Received"/> class.
         /// </summary>
-        /// <param name="from">Host from where message was received.</param>
-        /// <param name="by">Host name what received message.</param>
-        /// <param name="time">Date time when message was received.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>from</b> or <b>by</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="from">The host from which the message was received.</param>
+        /// <param name="by">The host that received the message.</param>
+        /// <param name="time">The date and time when the message was received.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="from"/> or <paramref name="by"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ArgumentException">Thrown when <paramref name="from"/> or <paramref name="by"/> is empty.</exception>
         public Mail_h_Received(string from,string by,DateTime time)
         {
             if(from == null){
-                throw new ArgumentNullException("from");
+                throw new ArgumentNullException(nameof(from));
             }
             if(from == string.Empty){
-                throw new ArgumentException("Argument 'from' value must be specified.","from");
+                throw new ArgumentException("The source host cannot be empty.",nameof(from));
             }
             if(by == null){
-                throw new ArgumentNullException("by");
+                throw new ArgumentNullException(nameof(by));
             }
             if(by == string.Empty){
-                throw new ArgumentException("Argument 'by' value must be specified.","by");
+                throw new ArgumentException("The receiving host cannot be empty.",nameof(by));
             }
 
             m_From = from;
@@ -97,21 +100,21 @@ namespace LumiSoft.Net.Mail
         #region static method Parse
 
         /// <summary>
-        /// Parses header field from the specified value.
+        /// Parses a <c>Received</c> header field from its serialized representation.
         /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Sender: john.doe@domain.com'.</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <param name="value">The serialized header field, including its name; for example, <c>Received: from host.example by relay.example; Tue, 1 Jan 2024 12:00:00 +0000</c>.</param>
+        /// <returns>A parsed <see cref="Mail_h_Received"/> instance.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when the <c>For</c> clause contains an invalid mailbox.</exception>
         public static Mail_h_Received Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             string[] name_value = value.Split(new char[]{':'},2);
             if(name_value.Length != 2){
-                throw new ParseException("Invalid header field value '" + value + "'.");
+                throw new ParseException("The Received header field must contain a field name followed by a colon.");
             }
 
             Mail_h_Received retVal = new Mail_h_Received("a","b",DateTime.MinValue);
@@ -211,7 +214,7 @@ namespace LumiSoft.Net.Mail
                         else{
                             string? mailbox = Mail_Utils.SMTP_Mailbox(r);
                             if(mailbox == null){
-                                throw new ParseException("Invalid Received: For parameter value '" + r.ToEnd() + "'.");
+                                throw new ParseException("The Received header field contains an invalid For mailbox.");
                             }
                             retVal.m_For = mailbox;  
                         }
@@ -234,13 +237,12 @@ namespace LumiSoft.Net.Mail
         #region override method ToString
 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized <c>Received</c> header field.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8">Specifies whether regenerated header values may contain UTF-8 characters as defined by RFC 6532.</param>
+        /// <param name="reEncode">Specifies whether the header field is regenerated. If <see langword="false"/> and the parsed value is unchanged, its original representation may be returned.</param>
+        /// <returns>The serialized header field.</returns>
+        public override string ToString(bool utf8,bool reEncode)
         {
             if(m_ParseValue == null || reEncode || this.IsModified){
                 StringBuilder retVal = new StringBuilder();
@@ -283,17 +285,16 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was parsed.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public override bool IsModified
         {
             get{ return m_IsModified; }
         }
 
         /// <summary>
-        /// Returns always "Received".
+        /// Gets the header field name, which is always <c>Received</c>.
         /// </summary>
         public override string Name
         {
@@ -301,21 +302,21 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets host from where message was received.
+        /// Gets or sets the host from which the message was received.
         /// </summary>
-        /// <remarks>Normally this is just EHLO/HELO host name what client reported to SMTP server.</remarks>
-        /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
-        /// <exception cref="ArgumentException">Is raised when invalid value passed.</exception>
+        /// <remarks>Normally this is the host name reported by the client in EHLO or HELO.</remarks>
+        /// <exception cref="ArgumentNullException">Thrown when the assigned value is <see langword="null"/>.</exception>
+        /// <exception cref="ArgumentException">Thrown when the assigned value is empty.</exception>
         public string From
         {
             get{ return m_From; }
 
             set{
                 if(value == null){
-                    throw new ArgumentNullException("From");
+                    throw new ArgumentNullException(nameof(From));
                 }
                 if(value == string.Empty){
-                    throw new ArgumentException("Property 'From' value must be specified","From");
+                    throw new ArgumentException("The source host cannot be empty.",nameof(From));
                 }
 
                 m_From = value;
@@ -324,10 +325,9 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets From TCP-Info value. Value null means not specified.
+        /// Gets or sets the TCP information reported for the receiving connection.
         /// </summary>
-        /// <remarks>This value is message sender host IP and optional dns host name.
-        /// This value is based on server connection info, not client reported info(EHLO/HELO).
+        /// <remarks>A <see langword="null"/> value means that this information is not specified. The value is based on server connection information, not client-reported EHLO or HELO information.
         /// </remarks>
         public Mail_t_TcpInfo? From_TcpInfo
         {
@@ -340,20 +340,20 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets host name what received message.
+        /// Gets or sets the host that received the message.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
-        /// <exception cref="ArgumentException">Is raised when invalid value passed.</exception>
+        /// <exception cref="ArgumentNullException">Thrown when the assigned value is <see langword="null"/>.</exception>
+        /// <exception cref="ArgumentException">Thrown when the assigned value is empty.</exception>
         public string By
         {
             get{ return m_By; }
 
             set{
                 if(value == null){
-                    throw new ArgumentNullException("By");
+                    throw new ArgumentNullException(nameof(By));
                 }
                 if(value == string.Empty){
-                    throw new ArgumentException("Property 'By' value must be specified","By");
+                    throw new ArgumentException("The receiving host cannot be empty.",nameof(By));
                 }
 
                 m_By = value;
@@ -362,9 +362,9 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets By TCP-Info value. Value null means not specified.
+        /// Gets or sets the TCP information reported for the receiving host.
         /// </summary>
-        /// <remarks>RFC defines it, but i don't see any point about that value.</remarks>
+        /// <remarks>A <see langword="null"/> value means that this information is not specified.</remarks>
         public Mail_t_TcpInfo? By_TcpInfo
         {
             get{ return m_pBy_TcpInfo; }
@@ -376,8 +376,9 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets non-internet transport. Value null means not specified.
+        /// Gets or sets the non-Internet transport used for delivery.
         /// </summary>
+        /// <remarks>A <see langword="null"/> value means that this information is not specified.</remarks>
         public string? Via
         {
             get{ return m_Via; }
@@ -389,8 +390,9 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets receiving protocol. Value null means not specified.
+        /// Gets or sets the protocol used to receive the message.
         /// </summary>
+        /// <remarks>A <see langword="null"/> value means that this information is not specified.</remarks>
         public string? With
         {
             get{ return m_With; }
@@ -402,8 +404,9 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets ID value. Value null means not specified.
+        /// Gets or sets the receiving server's message identifier.
         /// </summary>
+        /// <remarks>A <see langword="null"/> value means that this information is not specified.</remarks>
         public string? ID
         {
             get{ return m_ID; }
@@ -428,7 +431,7 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets or sets time when message was received.
+        /// Gets or sets the date and time when the message was received.
         /// </summary>
         public DateTime Time
         {

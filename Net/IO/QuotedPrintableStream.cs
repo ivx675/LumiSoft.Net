@@ -1,246 +1,467 @@
 ﻿using System;
 using System.IO;
-using System.Collections.Generic;
-using System.Text;
+using System.Buffers;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LumiSoft.Net.IO
 {
     /// <summary>
-    /// Implements RFC 2045 6.7. Quoted-Printable stream.
+    /// Implements RFC 2045 Section 6.7 Quoted-Printable stream encoding and decoding.
     /// </summary>
     public class QuotedPrintableStream : Stream
     {
-        private SmartStream m_pStream;
-        private FileAccess  m_AccessMode     = FileAccess.ReadWrite;
-        private byte[]      m_pDecodedBuffer;
-        private int         m_DecodedOffset  = 0;
-        private int         m_DecodedCount   = 0;
-        private byte[]      m_pEncodedBuffer;
-        private int         m_EncodedCount   = 0;
+        private readonly Stream _innerStream;
+        private readonly FileAccess _accessMode;
+        
+        // Internal buffer for raw encoded stream chunks (larger to accommodate trailing shifts)
+        private readonly byte[] _rawReadBuffer = new byte[8192];
+        private int _bytesInReadBuffer = 0;
+
+        // Decoding state buffers
+        private readonly byte[] _decodedBuffer = new byte[32000];
+        private int _decodedOffset = 0;
+        private int _decodedCount = 0;
+        
+        // Encoding state buffers and flags
+        private readonly byte[] _encodedBuffer = new byte[78];
+        private int _encodedCount = 0;
+        private byte _lastByte = 0;
+        private bool _isFinalized = false;
+
+        private bool _disposed;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="QuotedPrintableStream"/> class.
         /// </summary>
-        /// <param name="stream">Source stream.</param>
-        /// <param name="access">Specifies stream access mode.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        public QuotedPrintableStream(SmartStream stream,FileAccess access)
+        /// <param name="stream">The underlying source or destination stream.</param>
+        /// <param name="access">Specifies the stream access mode (Read, Write, or ReadWrite).</param>
+        /// <exception cref="ArgumentNullException">Raised when <paramref name="stream"/> is null.</exception>
+        public QuotedPrintableStream(Stream stream,FileAccess access)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
-            m_pStream    = stream;
-            m_AccessMode = access;
-
-            m_pDecodedBuffer = new byte[32000];
-            m_pEncodedBuffer = new byte[78];
+            _innerStream = stream ?? throw new ArgumentNullException(nameof(stream));
+            _accessMode = access;
         }
 
+        #region override method Dispose
 
-        #region override method Flush
+        /// <inheritdoc />
+        protected override void Dispose(bool disposing)
+        {
+            if(disposing && !_isFinalized){
+                try{
+                    Finish();
+                }
+                catch{
+                    // Suppress or handle exceptions during disposal if necessary
+                }
+            }
+            _disposed = true;
+    
+            base.Dispose(disposing);
+        }
+
+        #endregion
+
+        #region override method DisposeAsync
+
+        /// <inheritdoc />
+        public override async ValueTask DisposeAsync()
+        {
+            if(!_isFinalized){
+                try{
+                    await FinishAsync().ConfigureAwait(false);
+                }
+                catch{
+                    // Suppress or handle exceptions during disposal
+                }
+            }
+
+            GC.SuppressFinalize(this);
+        }
+
+        #endregion
+
+
+        #region method Flush
 
         /// <summary>
-        /// Clears all buffers for this stream and causes any buffered data to be written to the underlying device.
+        /// Flushes the stream. Ignored as per stream lifecycle design; all final writing occurs in <see cref="FinishAsync"/>.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
         public override void Flush()
         {
-            if(m_EncodedCount > 0){
-                m_pStream.Write(m_pEncodedBuffer,0,m_EncodedCount);
-                m_EncodedCount = 0;
-            }
+            // No implementation; ignored without raising errors.
         }
 
         #endregion
 
-        #region override method Seek
+        #region method FlushAsync
 
         /// <summary>
-        /// Sets the position within the current stream. This method is not supported and always throws a NotSupportedException.
+        /// Asynchronously flushes the stream. Ignored as per stream lifecycle design; all final writing occurs in <see cref="FinishAsync"/>.
         /// </summary>
-        /// <param name="offset">A byte offset relative to the <b>origin</b> parameter.</param>
-        /// <param name="origin">A value of type SeekOrigin indicating the reference point used to obtain the new position.</param>
-        /// <returns>The new position within the current stream.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
-        public override long Seek(long offset,SeekOrigin origin)
+        /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+        public override Task FlushAsync(CancellationToken cancellationToken)
         {
-            throw new NotSupportedException();
+            // No implementation; ignored without raising errors.
+            return Task.CompletedTask;
         }
 
         #endregion
 
-        #region override method SetLength
+        #region method Finish
 
         /// <summary>
-        /// Sets the length of the current stream. This method is not supported and always throws a NotSupportedException.
+        /// Synchronously signals the end of the input stream, processes remaining tail state, and flushes data.
         /// </summary>
-        /// <param name="value">The desired length of the current stream in bytes.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
-        public override void SetLength(long value)
+        public void Finish()
         {
-            throw new NotSupportedException();
+            FinishAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region override method Read
+        #region method FinishAsync
 
         /// <summary>
-        /// Reads a sequence of bytes from the current stream and advances the position within the stream by the number of bytes read.
+        /// Signals the end of the input stream, processes any remaining tail state 
+        /// (such as a dangling trailing carriage return), flushes all data to the underlying stream, and locks further writes.
         /// </summary>
-        /// <param name="buffer">An array of bytes. When this method returns, the buffer contains the specified byte array with the values between offset and (offset + count - 1) replaced by the bytes read from the current source.</param>
-        /// <param name="offset">The zero-based byte offset in buffer at which to begin storing the data read from the current stream.</param>
-        /// <param name="count">The maximum number of bytes to be read from the current stream.</param>
-        /// <returns>The total number of bytes read into the buffer. This can be less than the number of bytes requested if that many bytes are not currently available, or zero (0) if the end of the stream has been reached.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="NotSupportedException">Is raised when reading not supported.</exception>
-        public override int Read(byte[] buffer,int offset,int count)
+        /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+        public async Task FinishAsync(CancellationToken cancellationToken = default)
         {
-            if(buffer == null){
-                throw new ArgumentNullException("buffer");
-            }
-            if(offset < 0 || offset > buffer.Length){
-                throw new ArgumentException("Invalid argument 'offset' value.");
-            }
-            if(offset + count > buffer.Length){
-                throw new ArgumentException("Invalid argument 'count' value.");
-            }
-            if((m_AccessMode & FileAccess.Read) == 0){
-                throw new NotSupportedException();
+            if (_isFinalized) return;
+            if (!CanWrite) return;
+
+            // If the very last byte of the stream was a standalone '\r', flush it now as a hard line break.
+            if(_lastByte == (byte)'\r'){
+                await WriteHardLineBreakAsync(cancellationToken).ConfigureAwait(false);
+                _lastByte = 0;
             }
 
-            var lineBuffer = new byte[32000];
-            while(true){
-                // Read next quoted-printable line and decode it.
-                if(m_DecodedOffset >= m_DecodedCount){
-                    m_DecodedOffset = 0;
-                    m_DecodedCount  = 0;
-                    var readLineResult = m_pStream.ReadLine(lineBuffer,SizeExceededAction.ThrowException);
-                    // We reached end of stream.
-                    if(readLineResult.BytesInBuffer == 0){
-                        return 0;
+            // Flush any remaining encoded bytes to the underlying stream
+            if(_encodedCount > 0){
+                await _innerStream.WriteAsync(_encodedBuffer.AsMemory(0, _encodedCount), cancellationToken).ConfigureAwait(false);
+                _encodedCount = 0;
+            }
+
+            await _innerStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            _isFinalized = true;
+        }
+
+        #endregion
+        
+        #region method Read
+
+        /// <inheritdoc />
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (!CanRead) throw new NotSupportedException();
+
+            return ReadAsync(buffer.AsMemory(offset, count), CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method ReadAsync
+
+        /// <inheritdoc />
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (!CanRead) throw new NotSupportedException();
+
+            return await ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!CanRead) throw new NotSupportedException();
+
+            // 1. Drain any already-decoded bytes sitting in our output buffer first
+            if(_decodedOffset < _decodedCount){
+                int copyCount = Math.Min(buffer.Length, _decodedCount - _decodedOffset);
+                _decodedBuffer.AsMemory(_decodedOffset, copyCount).CopyTo(buffer);
+                _decodedOffset += copyCount;
+                return copyCount;
+            }
+
+            _decodedOffset = 0;
+            _decodedCount = 0;
+
+            // 2. Fetch more raw data from the underlying stream if our raw buffer is running low
+            // We leave space at the beginning of the buffer for any shifted incomplete bytes.
+            int bytesRead = await _innerStream.ReadAsync(_rawReadBuffer.AsMemory(_bytesInReadBuffer, _rawReadBuffer.Length - _bytesInReadBuffer), cancellationToken).ConfigureAwait(false);
+            _bytesInReadBuffer += bytesRead;
+
+            if(_bytesInReadBuffer == 0){
+                return 0; // End of stream
+            }
+
+            // 3. Decode as much as possible from _rawReadBuffer
+            int srcIndex = 0;
+            while(srcIndex < _bytesInReadBuffer && _decodedCount < _decodedBuffer.Length){
+                byte b = _rawReadBuffer[srcIndex];
+
+                // Check if we have an escape character '='
+                if(b == (byte)'='){
+                    // Check how many raw bytes remain in the buffer starting from this '='
+                    int remaining = _bytesInReadBuffer - srcIndex;
+
+                    // Case A: Soft line break (=CRLF or =LF) or incomplete escape at the very end of the buffer
+                    if(remaining < 2){
+                        // Not enough bytes to know what follows; stop decoding here and shift remainder
+                        break;
                     }
-                    // Decode quoted-printable line.
-                    else{
-                        // Process bytes.
-                        bool softLineBreak = false;
-                        int lineLength     = readLineResult.LineBytesInBuffer;
-                        for(int i=0;i<readLineResult.LineBytesInBuffer;i++){
-                            byte b = lineBuffer[i];
-                            // We have soft line-break.
-                            if(b == '=' && i == (lineLength - 1)){
-                                softLineBreak = true;
+
+                    byte next1 = _rawReadBuffer[srcIndex + 1];
+
+                    // Soft line break check (= \r \n, = \n, or = \r)
+                    if(next1 == (byte)'\r' || next1 == (byte)'\n'){
+                        if(next1 == (byte)'\r'){
+                            // Check if the \n is also present
+                            if(remaining < 3){
+                                // We have '=\r' but need the final '\n' to complete the soft break
+                                break;
                             }
-                            // We should have =XX hex-byte.
-                            else if(b == '='){
-                                byte b1 = lineBuffer[++i];
-                                byte b2 = lineBuffer[++i];
-                        
-                                byte b3 = 0;
-                                if(byte.TryParse(new string(new char[]{(char)b1,(char)b2}),System.Globalization.NumberStyles.HexNumber,null,out b3)){
-                                    m_pDecodedBuffer[m_DecodedCount++] = b3;
-                                }
-                                // Not hex number, leave it as it is.
-                                else{
-                                    m_pDecodedBuffer[m_DecodedCount++] = (byte)'=';
-                                    m_pDecodedBuffer[m_DecodedCount++] = b1;
-                                    m_pDecodedBuffer[m_DecodedCount++] = b2;
-                                }
+                            if(_rawReadBuffer[srcIndex + 2] == (byte)'\n'){
+                                srcIndex += 3; // Consume '=\r\n'
                             }
-                            // Normal char.
                             else{
-                                m_pDecodedBuffer[m_DecodedCount++] = b;
+                                srcIndex += 2; // Consume '=\r'
                             }
                         }
-
-                        // Add hard line break only if there was one in original data.
-                        if(readLineResult.LineBytesInBuffer != readLineResult.BytesInBuffer && !softLineBreak){
-                            m_pDecodedBuffer[m_DecodedCount++] = (byte)'\r';
-                            m_pDecodedBuffer[m_DecodedCount++] = (byte)'\n';
+                        else{
+                            srcIndex += 2; // Consume '=\n'
                         }
+                        continue;
                     }
+
+                    // Case B: Hex encoded character (=XX)
+                    if(remaining < 3){
+                        // We have '=' and one hex digit, but missing the second digit; stop and shift
+                        break;
+                    }
+
+                    byte hex1 = next1;
+                    byte hex2 = _rawReadBuffer[srcIndex + 2];
+                    byte decodedByte = (byte)((HexValue(hex1) << 4) | HexValue(hex2));
+
+                    _decodedBuffer[_decodedCount++] = decodedByte;
+                    srcIndex += 3; // Consume '=XX'
+                    continue;
                 }
 
-                // We have some decoded data, return it.
-                if(m_DecodedOffset < m_DecodedCount){
-                    int countToCopy = Math.Min(count,m_DecodedCount - m_DecodedOffset);
-                    Array.Copy(m_pDecodedBuffer,m_DecodedOffset,buffer,offset,countToCopy);
-                    m_DecodedOffset += countToCopy;
+                // Standard literal byte
+                _decodedBuffer[_decodedCount++] = b;
+                srcIndex++;
+            }
 
-                    return countToCopy;
+            // 4. Shift any unprocessed/incomplete trailing bytes to the beginning of _rawReadBuffer
+            int leftoverCount = _bytesInReadBuffer - srcIndex;
+            if(leftoverCount > 0 && srcIndex > 0){
+                Buffer.BlockCopy(_rawReadBuffer, srcIndex, _rawReadBuffer, 0, leftoverCount);
+            }
+            _bytesInReadBuffer = leftoverCount;
+
+            // 5. Copy newly decoded data to the caller's target buffer
+            int finalCopyCount = Math.Min(buffer.Length, _decodedCount);
+            if(finalCopyCount > 0){
+                _decodedBuffer.AsMemory(0, finalCopyCount).CopyTo(buffer);
+                _decodedOffset = finalCopyCount;
+            }
+
+            return finalCopyCount;
+        }
+
+        #endregion
+
+        #region method Write
+
+        /// <inheritdoc />
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
+
+            if (!CanWrite) throw new NotSupportedException();
+
+            WriteAsync(buffer.AsMemory(offset, count), CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method WriteAsync
+
+        /// <inheritdoc />
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
+
+            if (!CanWrite) throw new NotSupportedException();
+
+            await WriteAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!CanWrite) throw new NotSupportedException();
+            if (_isFinalized) throw new InvalidOperationException("Cannot write to a stream after FinishAsync() has been called.");
+
+            int length = buffer.Length;
+            int i = 0;
+
+            // Handle boundary condition: previous chunk ended with '\r'
+            if(_lastByte == (byte)'\r'){
+                if(length > 0 && buffer.Span[0] == (byte)'\n'){
+                    await WriteHardLineBreakAsync(cancellationToken).ConfigureAwait(false);
+                    i = 1; // Consume the '\n' from this buffer
+                }
+                else{
+                    await WriteHardLineBreakAsync(cancellationToken).ConfigureAwait(false);
+                }
+                _lastByte = 0;
+            }
+
+            for(; i < length; i++){
+                byte b = buffer.Span[i];
+
+                // Handle Carriage Return (\r)
+                if(b == (byte)'\r'){
+                    if(i + 1 < length){
+                        if(buffer.Span[i + 1] == (byte)'\n'){
+                            i++; // Consume matching '\n'
+                        }
+                        await WriteHardLineBreakAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    else{
+                        // \r is the very last byte of this chunk; defer handling to _lastByte
+                        _lastByte = (byte)'\r';
+                    }
+                    continue;
+                }
+
+                // Handle standalone Line Feed (\n) - normalize to hard line break
+                if(b == (byte)'\n'){
+                    await WriteHardLineBreakAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Printable US-ASCII (33-60, 62-126) and safe whitespace (space, tab)
+                bool isSafeChar = (b >= 33 && b <= 60) || (b >= 62 && b <= 126) || b == (byte)' ' || b == (byte)'\t';
+
+                if(isSafeChar){
+                    if(_encodedCount >= 75){
+                        await FlushSoftBreakAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    _encodedBuffer[_encodedCount++] = b;
+                }
+                else{
+                    if(_encodedCount >= 73){
+                        await FlushSoftBreakAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
+                    _encodedBuffer[_encodedCount++] = (byte)'=';
+                    _encodedBuffer[_encodedCount++] = GetHexHigh(b);
+                    _encodedBuffer[_encodedCount++] = GetHexLow(b);
+                }
+            }
+
+            if(length > 0 && _lastByte != (byte)'\r'){
+                _lastByte = 0;
+            }
+        }
+
+        private async Task InternalFlushBufferAsync(CancellationToken cancellationToken)
+        {
+            await _innerStream.WriteAsync(_encodedBuffer.AsMemory(0, _encodedCount), cancellationToken).ConfigureAwait(false);
+            _encodedCount = 0;
+        }
+
+        private async Task FlushSoftBreakAsync(CancellationToken cancellationToken)
+        {
+            _encodedBuffer[_encodedCount++] = (byte)'=';
+            _encodedBuffer[_encodedCount++] = (byte)'\r';
+            _encodedBuffer[_encodedCount++] = (byte)'\n';
+            await InternalFlushBufferAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task WriteHardLineBreakAsync(CancellationToken cancellationToken)
+        {
+            await EncodeTrailingWhitespaceAsync(cancellationToken);
+
+            if(_encodedCount + 2 > 78){
+                await InternalFlushBufferAsync(cancellationToken).ConfigureAwait(false);
+            }
+            _encodedBuffer[_encodedCount++] = (byte)'\r';
+            _encodedBuffer[_encodedCount++] = (byte)'\n';
+            await InternalFlushBufferAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task EncodeTrailingWhitespaceAsync(CancellationToken cancellationToken)
+        {
+            int wsCount = 0;
+            while(_encodedCount - wsCount > 0){
+                byte b = _encodedBuffer[_encodedCount - 1 - wsCount];
+                if(b == (byte)' ' || b == (byte)'\t'){
+                    wsCount++;
+                }
+                else{
+                    break;
+                }
+            }
+
+            if(wsCount > 0){
+                byte[] wsBytes = new byte[wsCount];
+                Array.Copy(_encodedBuffer, _encodedCount - wsCount, wsBytes, 0, wsCount);
+                _encodedCount -= wsCount;
+
+                foreach(byte b in wsBytes){
+                    if(_encodedCount + 3 > 78){
+                        await InternalFlushBufferAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
+                    _encodedBuffer[_encodedCount++] = (byte)'=';
+                    _encodedBuffer[_encodedCount++] = GetHexHigh(b);
+                    _encodedBuffer[_encodedCount++] = GetHexLow(b);
                 }
             }
         }
 
         #endregion
 
-        #region override method Write
+        #region Helpers & Unsupported Operations
+
+        private static int HexValue(byte hex)
+        {
+            if (hex >= (byte)'0' && hex <= (byte)'9') return hex - (byte)'0';
+            if (hex >= (byte)'A' && hex <= (byte)'F') return hex - (byte)'A' + 10;
+            if (hex >= (byte)'a' && hex <= (byte)'f') return hex - (byte)'a' + 10;
+            return 0;
+        }
+
+        private static byte GetHexHigh(byte b) => (byte)"0123456789ABCDEF"[b >> 4];
+        private static byte GetHexLow(byte b) => (byte)"0123456789ABCDEF"[b & 0x0F];
 
         /// <summary>
-        /// Encodes a sequence of bytes, writes to the current stream and advances the current position within this stream by the number of bytes written.
+        /// Sets the position within the current stream (Not supported).
         /// </summary>
-        /// <param name="buffer">An array of bytes. This method copies count bytes from buffer to the current stream.</param>
-        /// <param name="offset">The zero-based byte offset in buffer at which to begin copying bytes to the current stream.</param>
-        /// <param name="count">The number of bytes to be written to the current stream.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="NotSupportedException">Is raised when reading not supported.</exception>
-        public override void Write(byte[] buffer,int offset,int count)
-        {
-            if(buffer == null){
-                throw new ArgumentNullException("buffer");
-            }
-            if(offset < 0 || offset > buffer.Length){
-                throw new ArgumentException("Invalid argument 'offset' value.");
-            }
-            if(offset + count > buffer.Length){
-                throw new ArgumentException("Invalid argument 'count' value.");
-            }
-            if((m_AccessMode & FileAccess.Write) == 0){
-                throw new NotSupportedException();
-            }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 
-            // Process bytes.
-            for(int i=0;i<count;i++){
-                byte b = buffer[offset + i];
-
-                // We don't need to encode byte.
-                if((b >= 33 && b <= 60) || (b >= 62 && b <= 126)){
-                    // Maximum allowed quoted-printable line length reached, do soft line break.
-                    if(m_EncodedCount >= 75){
-                        m_pEncodedBuffer[m_EncodedCount++] = (byte)'=';
-                        m_pEncodedBuffer[m_EncodedCount++] = (byte)'\r';
-                        m_pEncodedBuffer[m_EncodedCount++] = (byte)'\n';
-
-                        // Write encoded data to underlying stream.
-                        Flush();
-                    }
-
-                    m_pEncodedBuffer[m_EncodedCount++] = b;
-                }
-                // We need to encode byte.
-                else{
-                    // Maximum allowed quote-printable line length reached, do soft line break.
-                    if(m_EncodedCount >= 73){
-                        m_pEncodedBuffer[m_EncodedCount++] = (byte)'=';
-                        m_pEncodedBuffer[m_EncodedCount++] = (byte)'\r';
-                        m_pEncodedBuffer[m_EncodedCount++] = (byte)'\n';
-
-                        // Write encoded data to underlying stream.
-                        Flush();
-                    }
-
-                    // Encode byte.
-                    m_pEncodedBuffer[m_EncodedCount++] = (byte)'=';
-                    m_pEncodedBuffer[m_EncodedCount++] = (byte)(b >> 4).ToString("X")[0];
-                    m_pEncodedBuffer[m_EncodedCount++] = (byte)(b & 0xF).ToString("X")[0];
-                }                
-            }
-        }
+        /// <summary>
+        /// Sets the length of the current stream (Not supported).
+        /// </summary>
+        public override void SetLength(long value) => throw new NotSupportedException();
 
         #endregion
 
@@ -250,56 +471,30 @@ namespace LumiSoft.Net.IO
         /// <summary>
         /// Gets a value indicating whether the current stream supports reading.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public override bool CanRead
-        { 
-            get{ return (m_AccessMode & FileAccess.Read) != 0; } 
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether the current stream supports seeking.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public override bool CanSeek
-        { 
-            get{ return false; } 
-        }
+        public override bool CanRead => (_accessMode & FileAccess.Read) != 0;
 
         /// <summary>
         /// Gets a value indicating whether the current stream supports writing.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public override bool CanWrite
-        { 
-            get{ return (m_AccessMode & FileAccess.Write) != 0; } 
-        }
+        public override bool CanWrite => (_accessMode & FileAccess.Write) != 0;
 
         /// <summary>
-        /// Gets the length in bytes of the stream.  This method is not supported and always throws a NotSupportedException.
+        /// Gets a value indicating whether the current stream supports seeking (false).
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this property is accessed.</exception>
-        public override long Length
-        { 
-            get{
-                throw new NotSupportedException();
-            } 
-        }
+        public override bool CanSeek => false;
 
         /// <summary>
-        /// Gets or sets the position within the current stream. This method is not supported and always throws a NotSupportedException.
+        /// Gets the length in bytes of the stream (not supported).
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this property is accessed.</exception>
+        public override long Length => throw new NotSupportedException();
+
+        /// <summary>
+        /// Gets or sets the position within the current stream (not supported).
+        /// </summary>
         public override long Position
-        { 
-            get{
-                throw new NotSupportedException();
-            } 
-
-            set{
-                throw new NotSupportedException();
-            }
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
         }
 
         #endregion

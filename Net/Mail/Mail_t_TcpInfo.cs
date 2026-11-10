@@ -6,13 +6,17 @@ using System.Net;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// Represents Received: header "TCP-info" value. Defined in RFC 5321. 4.4.
+    /// Represents the <c>TCP-info</c> value of a <c>Received</c> header
+    /// field as defined in RFC 5321 section 4.4.
     /// </summary>
     /// <remarks>
     /// <code>
-    /// RFC 5321 4.4.
-    ///     TCP-info        = address-literal / ( Domain FWS address-literal )
-    ///     address-literal = "[" ( IPv4-address-literal / IPv6-address-literal / General-address-literal ) "]"
+    /// TCP-info        = address-literal /
+    ///                   ( Domain FWS address-literal )
+    ///
+    /// address-literal = "[" ( IPv4-address-literal /
+    ///                         IPv6-address-literal /
+    ///                         General-address-literal ) "]"
     /// </code>
     /// </remarks>
     public class Mail_t_TcpInfo
@@ -21,15 +25,23 @@ namespace LumiSoft.Net.Mail
         private string?   m_HostName = null;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_TcpInfo"/>
+        /// class.
         /// </summary>
-        /// <param name="ip">IP address.</param>
-        /// <param name="hostName">Host name.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>ip</b> is null reference.</exception>
+        /// <param name="ip">
+        /// IP address.
+        /// </param>
+        /// <param name="hostName">
+        /// Host name, or <see langword="null"/> if not specified.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="ip"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public Mail_t_TcpInfo(IPAddress ip,string? hostName)
         {
             if(ip == null){
-                throw new ArgumentNullException("ip");
+                throw new ArgumentNullException(nameof(ip));
             }
 
             m_pIP      = ip;
@@ -40,9 +52,11 @@ namespace LumiSoft.Net.Mail
         #region method ToString
 
         /// <summary>
-        /// Returns this as string.
+        /// Returns the TCP-info value as a string.
         /// </summary>
-        /// <returns>Returns this as string.</returns>
+        /// <returns>
+        /// Returns the TCP-info value as a string.
+        /// </returns>
         public override string ToString()
         {
             if(string.IsNullOrEmpty(m_HostName)){
@@ -59,7 +73,7 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets IP address.
+        /// Gets the IP address.
         /// </summary>
         public IPAddress IP
         {
@@ -67,8 +81,11 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets host value. Value null means not specified.
+        /// Gets the host name.
         /// </summary>
+        /// <remarks>
+        /// Returns <see langword="null"/> if a host name was not specified.
+        /// </remarks>
         public string? HostName
         {
             get{ return m_HostName; }

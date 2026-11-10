@@ -5,31 +5,39 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represent header field what parsing has failed.
+    /// Represents a header field that could not be parsed.
     /// </summary>
+    /// <remarks>
+    /// The original header field text is preserved so that it can be written
+    /// back unchanged, while the parsing error is exposed through
+    /// <see cref="Exception"/>.
+    /// </remarks>
     public class MIME_h_Unparsed : MIME_h
     {
-        private string     m_ParseValue = "";
-        private string     m_Name       = "";
-        private string     m_Value      = "";
-        private Exception? m_pException = null;
+        private string    m_ParseValue = "";
+        private string    m_Name       = "";
+        private string    m_Value      = "";
+        private Exception m_pException;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_h_Unparsed"/> class.
         /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Content-Type: text/plain'.</param>
-        /// <param name="exception">Parsing error.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
-        internal MIME_h_Unparsed(string value,Exception? exception)
+        /// <param name="value">The original serialized header field, including its name; for example, <c>Content-Type: text/plain</c>.</param>
+        /// <param name="exception">The exception produced while parsing the header field.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> or <paramref name="exception"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> does not contain a field name followed by a colon.</exception>
+        internal MIME_h_Unparsed(string value,Exception exception)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
-            
+            if(exception == null){
+                throw new ArgumentNullException(nameof(exception));
+            }
+
             string[] name_value = value.Split(new char[]{':'},2);
             if(name_value.Length != 2){
-                throw new ParseException("Invalid Content-Type: header field value '" + value + "'.");
+                throw new ParseException("The header field must contain a field name followed by a colon.");
             }
 
             m_Name       = name_value[0];
@@ -39,32 +47,15 @@ namespace LumiSoft.Net.MIME
         }
 
 
-        #region static method Parse
-
-        /// <summary>
-        /// Parses header field from the specified value.
-        /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Content-Type: text/plain'.</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="InvalidOperationException">Is alwyas raised when this mewthod is accsessed.</exception>
-        public static MIME_h_Unparsed Parse(string value)
-        {
-            throw new InvalidOperationException();
-        }
-
-        #endregion
-
-
         #region override method ToString
                 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the original serialized header field.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8">Ignored because the original serialized value is returned.</param>
+        /// <param name="reEncode">Ignored because the original serialized value is returned.</param>
+        /// <returns>The original serialized header field.</returns>
+        public override string ToString(bool utf8,bool reEncode)
         {
             return m_ParseValue;
         }
@@ -75,17 +66,16 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
+        /// <remarks>This implementation always returns <see langword="false"/> because the original value is preserved.</remarks>
         public override bool IsModified
         {
             get{ return false; }
         }
 
         /// <summary>
-        /// Gets header field name.
+        /// Gets the header field name extracted from the original value.
         /// </summary>
         public override string Name
         {
@@ -93,7 +83,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets header field value.
+        /// Gets the header field value extracted from the original value.
         /// </summary>
         public string Value
         {
@@ -101,9 +91,9 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets error happened during parse.
+        /// Gets the exception that caused parsing to fail.
         /// </summary>
-        public Exception? Exception
+        public Exception Exception
         {
             get{ return m_pException; }
         }

@@ -5,52 +5,55 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class holds well known Content-Type header field media types. For example: text/plain, application/octet-stream.
-    /// Full IANA registered list can be found from: http://www.iana.org/assignments/media-types.
+    /// Defines well-known MIME media types.
     /// </summary>
-    public class MIME_MediaTypes
+    /// <remarks>
+    /// Additional media types are registered with IANA:
+    /// https://www.iana.org/assignments/media-types/
+    /// </remarks>
+    public static class MIME_MediaTypes
     {
         #region application
 
         /// <summary>
-        /// This class holds well-known application/xxx media types.
+        /// Defines well-known <c>application/*</c> media types.
         /// </summary>
-        public class Application
+        public static class Application
         {
             /// <summary>
-            /// "application/octet-stream". Defined in RFC 2045,2046.
+            /// The <c>application/octet-stream</c> media type.
             /// </summary>
-            public static readonly string octet_stream = "application/octet-stream";
+            public const string octet_stream = "application/octet-stream";
 
             /// <summary>
-            /// "application/pdf". Defined in RFC 3778.
+            /// The <c>application/pdf</c> media type.
             /// </summary>
-            public static readonly string pdf = "application/pdf";
+            public const string pdf = "application/pdf";
 
             /// <summary>
-            /// "application/sdp". Defined in RFC 4566.
+            /// The <c>application/sdp</c> media type.
             /// </summary>
-            public static readonly string sdp = "application/sdp";
+            public const string sdp = "application/sdp";
 
             /// <summary>
-            /// "application/xml". Defined RFC 3023.
+            /// The <c>application/xml</c> media type.
             /// </summary>
-            public static readonly string xml = "application/xml";
+            public const string xml = "application/xml";
 
             /// <summary>
-            /// "application/zip". Defined in RFC 4566.
+            /// The <c>application/zip</c> media type.
             /// </summary>
-            public static readonly string zip = "application/zip";
+            public const string zip = "application/zip";
 
             /// <summary>
-            /// "application/x-pkcs7-signature". Defined in RFC 2311,2633.
+            /// The <c>application/x-pkcs7-signature</c> media type.
             /// </summary>
-            public static readonly string x_pkcs7_signature = "application/x-pkcs7-signature";
+            public const string x_pkcs7_signature = "application/x-pkcs7-signature";
 
             /// <summary>
-            /// "application/pkcs7-mime". Defined in RFC 5751.
+            /// The <c>application/pkcs7-mime</c> media type.
             /// </summary>
-            public static readonly string pkcs7_mime = "application/pkcs7-mime";
+            public const string pkcs7_mime = "application/pkcs7-mime";
         }
 
         #endregion
@@ -58,24 +61,24 @@ namespace LumiSoft.Net.MIME
         #region image
 
         /// <summary>
-        /// This class holds well-known image/xxx media types.
+        /// Defines well-known <c>image/*</c> media types.
         /// </summary>
-        public class Image
+        public static class Image
         {
             /// <summary>
-            /// "image/gif".
+            /// The <c>image/gif</c> media type.
             /// </summary>
-            public static readonly string gif = "image/gif";
+            public const string gif = "image/gif";
 
             /// <summary>
-            /// "image/jpeg".
+            /// The <c>image/jpeg</c> media type.
             /// </summary>
-            public static readonly string jpeg = "image/jpeg";
+            public const string jpeg = "image/jpeg";
 
             /// <summary>
-            /// "image/tiff".
+            /// The <c>image/tiff</c> media type.
             /// </summary>
-            public static readonly string tiff = "image/tiff";
+            public const string tiff = "image/tiff";
         }
                 
         #endregion
@@ -83,44 +86,44 @@ namespace LumiSoft.Net.MIME
         #region text
 
         /// <summary>
-        /// This class holds well-known text/xxx media types.
+        /// Defines well-known <c>text/*</c> media types.
         /// </summary>
-        public class Text
+        public static class Text
         {
             /// <summary>
-            /// "text/calendar". Defined in RFC 2445.
+            /// The <c>text/calendar</c> media type.
             /// </summary>
-            public static readonly string calendar = "text/calendar";
+            public const string calendar = "text/calendar";
         
             /// <summary>
-            /// "text/css". Defined in RFC 2854
+            /// The <c>text/css</c> media type.
             /// </summary>
-            public static readonly string css = "text/css";
+            public const string css = "text/css";
 
             /// <summary>
-            /// "text/html". Defined in RFC 2854.
+            /// The <c>text/html</c> media type.
             /// </summary>
-            public static readonly string html = "text/html";
+            public const string html = "text/html";
 
             /// <summary>
-            /// "text/plain". Defined in RFC 2646,2046.
+            /// The <c>text/plain</c> media type.
             /// </summary>
-            public static readonly string plain = "text/plain";
+            public const string plain = "text/plain";
 
             /// <summary>
-            /// "text/rfc822-headers". Defined in RFC 1892.
+            /// The <c>text/rfc822-headers</c> media type.
             /// </summary>
-            public static readonly string rfc822_headers = "text/rfc822-headers";
+            public const string rfc822_headers = "text/rfc822-headers";
 
             /// <summary>
-            /// "text/richtext". Defined in RFC 2045,2046.
+            /// The <c>text/richtext</c> media type.
             /// </summary>
-            public static readonly string richtext = "text/richtext";
+            public const string richtext = "text/richtext";
 
             /// <summary>
-            /// "text/xml". Defined in RFC 3023.
+            /// The <c>text/xml</c> media type.
             /// </summary>
-            public static readonly string xml = "text/xml";
+            public const string xml = "text/xml";
         }
 
         #endregion
@@ -128,59 +131,59 @@ namespace LumiSoft.Net.MIME
         #region multipart
 
         /// <summary>
-        /// This class holds well-known multipart/xxx media types.
+        /// Defines well-known <c>multipart/*</c> media types.
         /// </summary>
-        public class Multipart
+        public static class Multipart
         {
             /// <summary>
-            /// "multipart/alternative". Defined in RFC 2045,2046.
+            /// The <c>multipart/alternative</c> media type.
             /// </summary>
-            public static readonly string alternative = "multipart/alternative";
+            public const string alternative = "multipart/alternative";
 
             /// <summary>
-            /// "multipart/digest". Defined in RFC 2045,2046.
+            /// The <c>multipart/digest</c> media type.
             /// </summary>
-            public static readonly string digest = "multipart/digest";
+            public const string digest = "multipart/digest";
 
             /// <summary>
-            /// "multipart/digest". Defined in RFC 1847.
+            /// The <c>multipart/encrypted</c> media type.
             /// </summary>
-            public static readonly string encrypted = "multipart/digest";
+            public const string encrypted = "multipart/encrypted";
 
             /// <summary>
-            /// "multipart/form-data". Defined in RFC 2388.
+            /// The <c>multipart/form-data</c> media type.
             /// </summary>
-            public static readonly string form_data = "multipart/form-data";
+            public const string form_data = "multipart/form-data";
 
             /// <summary>
-            /// "multipart/mixed". Defined in RFC 2045,2046.
+            /// The <c>multipart/mixed</c> media type.
             /// </summary>
-            public static readonly string mixed = "multipart/mixed";
+            public const string mixed = "multipart/mixed";
 
             /// <summary>
-            /// "multipart/parallel". Defined in RFC 2045,2046.
+            /// The <c>multipart/parallel</c> media type.
             /// </summary>
-            public static readonly string parallel = "multipart/parallel";
+            public const string parallel = "multipart/parallel";
 
             /// <summary>
-            /// "multipart/related". Defined in RFC 2387.
+            /// The <c>multipart/related</c> media type.
             /// </summary>
-            public static readonly string related  = "multipart/related";
+            public const string related  = "multipart/related";
 
             /// <summary>
-            /// "multipart/report". Defined in RFC 1892.
+            /// The <c>multipart/report</c> media type.
             /// </summary>
-            public static readonly string report = "multipart/report";
+            public const string report = "multipart/report";
 
             /// <summary>
-            /// "multipart/signed". Defined in RFC 1847.
+            /// The <c>multipart/signed</c> media type.
             /// </summary>
-            public static readonly string signed = "multipart/signed";
+            public const string signed = "multipart/signed";
 
             /// <summary>
-            /// "multipart/voice-message". Defined in RFC 2421,2423.
+            /// The <c>multipart/voice-message</c> media type.
             /// </summary>
-            public static readonly string voice_message = "multipart/voice-message";
+            public const string voice_message = "multipart/voice-message";
         }
 
         #endregion
@@ -188,24 +191,24 @@ namespace LumiSoft.Net.MIME
         #region message
 
         /// <summary>
-        /// This class holds well-known message/xxx media types.
+        /// Defines well-known <c>message/*</c> media types.
         /// </summary>
-        public class Message
+        public static class Message
         {
             /// <summary>
-            /// "message/rfc822". 
+            /// The <c>message/rfc822</c> media type.
             /// </summary>
-            public static readonly string rfc822 = "message/rfc822";
+            public const string rfc822 = "message/rfc822";
 
             /// <summary>
-            /// "message/disposition-notification". 
+            /// The <c>message/disposition-notification</c> media type.
             /// </summary>
-            public static readonly string disposition_notification = "message/disposition-notification";
+            public const string disposition_notification = "message/disposition-notification";
 
             /// <summary>
-            /// "message/delivery-status". Defined in RFC 3464.
+            /// The <c>message/delivery-status</c> media type.
             /// </summary>
-            public static readonly string delivery_status = "message/delivery-status";
+            public const string delivery_status = "message/delivery-status";
         }
 
         #endregion        

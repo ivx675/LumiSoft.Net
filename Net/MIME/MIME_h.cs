@@ -5,14 +5,18 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This is base class for MIME header fields. Defined in RFC 2045 3.
+    /// Represents a MIME header field as defined in RFC 2045 section 3.
     /// </summary>
+    /// <remarks>
+    /// Derived classes provide strongly typed access to specific MIME
+    /// header field values.
+    /// </remarks>
     public abstract class MIME_h
     {
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_h"/> class.
         /// </summary>
-        public MIME_h()
+        protected MIME_h()
         {
         }
 
@@ -20,59 +24,63 @@ namespace LumiSoft.Net.MIME
         #region method ToString
 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized header field.
         /// </summary>
-        /// <returns>Returns header field as string.</returns>
+        /// <returns>
+        /// Returns the serialized header field.
+        /// </returns>
         public override string ToString()
         {
-            return ToString(null,null,false);
+            return ToString(true,false);
         }
 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized header field, including the terminating CRLF.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.
-        /// If encoding needed, UTF-8 is strongly reccomended if not sure.</param>
-        /// <returns>Returns header field as string.</returns>
-        public string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset)
-        {
-            return ToString(wordEncoder,parmetersCharset,false);
-        }
-
-        /// <summary>
-        /// Returns header field as string.
-        /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded. 
-        /// If encoding needed, UTF-8 is strongly reccomended if not sure.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public abstract string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode);
+        /// <param name="utf8">
+        /// Specifies whether rewritten header fields may contain UTF-8 characters
+        /// as defined by RFC 6532. If <see langword="false"/>, non-ASCII values
+        /// are encoded using the applicable MIME encoding rules.
+        /// </param>
+        /// <param name="reEncode">
+        /// Specifies whether the header field is regenerated. If
+        /// <see langword="false"/> and the parsed value is unchanged, its original
+        /// representation may be returned.
+        /// </param>
+        /// <returns>The serialized header field.</returns>
+        public abstract string ToString(bool utf8,bool reEncode);
 
         #endregion
 
         #region method ValueToString
 
         /// <summary>
-        /// Returns header field value as string.
+        /// Returns the serialized header field value.
         /// </summary>
-        /// <returns>Returns header field value as string.</returns>
+        /// <returns>
+        /// Returns the serialized header field value.
+        /// </returns>
         public string ValueToString()
         {
-            return ValueToString(null,null);
+            return ValueToString(true,false);
         }
 
         /// <summary>
-        /// Returns header field value as string.
+        /// Returns the header field value as a string.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.
-        /// If encoding needed, UTF-8 is strongly reccomended if not sure.</param>
-        /// <returns>Returns header field value as string.</returns>
-        public string ValueToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset)
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether the header field is regenerated and re-encoded.
+        /// </param>
+        /// <returns>
+        /// Returns the serialized header field value.
+        /// </returns>
+        public string ValueToString(bool utf8Headers,bool reEncodeHeaders)
         {
-            return ToString(wordEncoder,parmetersCharset).Split(new char[]{':'},2)[1].TrimStart();
+            return ToString(utf8Headers,reEncodeHeaders).Split(new char[]{':'},2)[1].TrimStart();
         }
 
         #endregion
@@ -81,18 +89,28 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was loaded.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Newly created header fields always have a value of
+        /// <see langword="true"/>.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this property is accessed.
+        /// </exception>
         public abstract bool IsModified
         {
             get;
         }
 
         /// <summary>
-        /// Gets header field name. For example "Content-Type".
+        /// Gets the header field name.
         /// </summary>
+        /// <remarks>
+        /// Examples include <c>Content-Type</c>, <c>Content-Disposition</c>,
+        /// and <c>Subject</c>.
+        /// </remarks>
         public abstract string Name
         {
             get;

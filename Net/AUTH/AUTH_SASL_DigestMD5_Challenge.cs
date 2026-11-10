@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
-using static LumiSoft.Net.MIME.MIME_b_Multipart._MultipartReader;
 
 namespace LumiSoft.Net.AUTH
 {

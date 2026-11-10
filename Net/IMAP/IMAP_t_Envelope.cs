@@ -8,19 +8,15 @@ using System.Text;
 namespace LumiSoft.Net.IMAP 
 {
     /// <summary>
-    /// Represents the IMAP ENVELOPE element as defined in RFC 3501.
+    /// Represents the IMAP ENVELOPE data item defined in RFC 3501.
     /// </summary>
     /// <remarks>
-    /// The ENVELOPE element provides a structured summary of key message header
-    /// fields, including date, subject, address lists, and message identifiers.
-    /// All fields correspond directly to the values present in the IMAP ENVELOPE
-    /// structure. String fields may be <c>null</c> when the ENVELOPE contained
-    /// <c>NIL</c>, and address lists are normalized so that <c>null</c> inputs
-    /// become empty arrays.
+    /// The properties of this class correspond to the fields of the IMAP
+    /// ENVELOPE structure.
     /// </remarks>
     public class IMAP_t_Envelope
     {
-        private DateTime         m_Date      = DateTime.MinValue;
+        private DateTime?        m_Date      = null;
         private string?          m_Subject   = null;
         private Mail_t_Mailbox[] m_pFrom;
         private Mail_t_Mailbox[] m_pSender;
@@ -32,54 +28,43 @@ namespace LumiSoft.Net.IMAP
         private string?          m_MessageID = null;
 
         /// <summary>
-        /// Initializes a new <see cref="IMAP_t_Envelope"/> instance with the values
-        /// provided for each ENVELOPE field.
+        /// Initializes a new instance of the <see cref="IMAP_t_Envelope"/> class.
         /// </summary>
         /// <param name="date">
-        /// The message date value from the ENVELOPE <c>Date</c> field.
+        /// Message date.
         /// </param>
         /// <param name="subject">
-        /// The message subject value from the ENVELOPE <c>Subject</c> field, or
-        /// <c>null</c> if the ENVELOPE contained <c>NIL</c>.
+        /// Message subject, or <see langword="null"/> if not specified.
         /// </param>
         /// <param name="from">
-        /// The list of addresses from the ENVELOPE <c>From</c> field. If <c>null</c>,
-        /// an empty array is used.
+        /// From addresses. If <see langword="null"/>, an empty array is used.
         /// </param>
         /// <param name="sender">
-        /// The list of addresses from the ENVELOPE <c>Sender</c> field. If <c>null</c>,
-        /// an empty array is used.
+        /// Sender addresses. If <see langword="null"/>, an empty array is used.
         /// </param>
         /// <param name="replyTo">
-        /// The list of addresses from the ENVELOPE <c>Reply-To</c> field. If <c>null</c>,
-        /// an empty array is used.
+        /// Reply-To addresses. If <see langword="null"/>, an empty array is used.
         /// </param>
         /// <param name="to">
-        /// The list of addresses from the ENVELOPE <c>To</c> field. If <c>null</c>,
-        /// an empty array is used.
+        /// Recipient addresses. If <see langword="null"/>, an empty array is used.
         /// </param>
         /// <param name="cc">
-        /// The list of addresses from the ENVELOPE <c>Cc</c> field. If <c>null</c>,
-        /// an empty array is used.
+        /// Cc addresses. If <see langword="null"/>, an empty array is used.
         /// </param>
         /// <param name="bcc">
-        /// The list of addresses from the ENVELOPE <c>Bcc</c> field. If <c>null</c>,
-        /// an empty array is used.
+        /// Bcc addresses. If <see langword="null"/>, an empty array is used.
         /// </param>
         /// <param name="inReplyTo">
-        /// The value of the ENVELOPE <c>In-Reply-To</c> field, or <c>null</c> if the
-        /// ENVELOPE contained <c>NIL</c>.
+        /// In-Reply-To value, or <see langword="null"/> if not specified.
         /// </param>
         /// <param name="messageID">
-        /// The value of the ENVELOPE <c>Message-ID</c> field, or <c>null</c> if the
-        /// ENVELOPE contained <c>NIL</c>.
+        /// Message-ID value, or <see langword="null"/> if not specified.
         /// </param>
         /// <remarks>
-        /// This constructor assigns the provided values directly to the corresponding
-        /// ENVELOPE fields. Address lists are normalized so that <c>null</c> inputs
-        /// become empty arrays.
+        /// Any address-list parameter specified as <see langword="null"/> is
+        /// normalized to an empty array.
         /// </remarks>
-        public IMAP_t_Envelope(DateTime date,string? subject,Mail_t_Mailbox[]? from,Mail_t_Mailbox[]? sender,Mail_t_Mailbox[]? replyTo,Mail_t_Mailbox[]? to,Mail_t_Mailbox[]? cc,Mail_t_Mailbox[]? bcc,string? inReplyTo,string? messageID)
+        public IMAP_t_Envelope(DateTime? date,string? subject,Mail_t_Mailbox[]? from,Mail_t_Mailbox[]? sender,Mail_t_Mailbox[]? replyTo,Mail_t_Mailbox[]? to,Mail_t_Mailbox[]? cc,Mail_t_Mailbox[]? bcc,string? inReplyTo,string? messageID)
         {
             m_Date      = date;
             m_Subject   = subject;
@@ -254,7 +239,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns>A valid IMAP ENVELOPE string.</returns>
         public override string ToString()
         {
-            string dateStr = (Date == DateTime.MinValue) ? "NIL" : $"\"{Date:r}\"";
+            string dateStr = (Date == null) ? "NIL" : $"\"{Date:r}\"";
             string subjectStr = string.IsNullOrEmpty(Subject) ? "NIL" : $"\"{EscapeString(Subject)}\"";
             string inReplyToStr = string.IsNullOrEmpty(InReplyTo) ? "NIL" : $"\"{EscapeString(InReplyTo)}\"";
             string messageIdStr = string.IsNullOrEmpty(MessageID) ? "NIL" : $"\"{EscapeString(MessageID)}\"";
@@ -424,11 +409,11 @@ namespace LumiSoft.Net.IMAP
         /// Gets the message date value from the ENVELOPE element.
         /// </summary>
         /// <remarks>
-        /// The date corresponds to the <c>Date:</c> header field as represented in the
-        /// IMAP ENVELOPE structure. If the ENVELOPE contained a <c>NIL</c> date or an
-        /// unparseable value, this property returns <see cref="DateTime.MinValue"/>.
+        /// The date corresponds to the <c>Date:</c> header field as represented in
+        /// the IMAP ENVELOPE structure.
+        /// Returns <c>null</c> if the ENVELOPE contained <c>NIL</c> for the Date field.
         /// </remarks>
-        public DateTime Date
+        public DateTime? Date
         {
             get{ return m_Date; }
         }

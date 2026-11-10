@@ -3,23 +3,26 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.MIME;
-using LumiSoft.Net.FTP.Server;
-
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Provides MIME related utility methods.
+    /// Provides MIME-related utility methods.
     /// </summary>
     public class MIME_Utils
     {
         #region static method DateTimeToRfc2822
 
 		/// <summary>
-		/// Converts date to RFC 2822 date time string.
-		/// </summary>
-		/// <param name="dateTime">Date time value to convert..</param>
-		/// <returns>Returns RFC 2822 date time string.</returns>
+        /// Converts the specified date and time to an RFC 2822 date-time
+        /// string.
+        /// </summary>
+        /// <param name="dateTime">
+        /// Date and time value to convert.
+        /// </param>
+        /// <returns>
+        /// Returns the RFC 2822 date-time string representation of
+        /// <paramref name="dateTime"/>.
+        /// </returns>
 		public static string DateTimeToRfc2822(DateTime dateTime)
 		{            
             return dateTime.ToString("ddd, dd MMM yyyy HH':'mm':'ss ",System.Globalization.DateTimeFormatInfo.InvariantInfo) + dateTime.ToString("zzz").Replace(":","");
@@ -30,16 +33,26 @@ namespace LumiSoft.Net.MIME
         #region static method ParseRfc2822DateTime
 
         /// <summary>
-        /// Parses RFC 2822 date-time from the specified value.
+        /// Parses an RFC 2822 date-time value.
         /// </summary>
-        /// <param name="value">RFC 2822 date-time string value.</param>
-        /// <returns>Returns parsed datetime value.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="value">
+        /// RFC 2822 date-time string to parse.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed date and time value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="value"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="value"/> is not a valid RFC 822 or
+        /// RFC 2822 date-time value.
+        /// </exception>
         public static DateTime ParseRfc2822DateTime(string value)
         {
             if(value == null){
-                throw new ArgumentNullException(value);
+                throw new ArgumentNullException(nameof(value));
             }
 
             /* RFC 2822 3.
@@ -116,7 +129,7 @@ namespace LumiSoft.Net.MIME
                     month = 12;
                 }
                 else{
-                    throw new ArgumentException("Invalid Invalid RFC 2822.3 month-name value '" + value + "'.");
+                    throw new ArgumentException("Invalid RFC 2822.3 month-name value '" + value + "'.");
                 }
                 int year   = Convert.ToInt32(r.Atom());
                 int hour   = Convert.ToInt32(r.Atom());
@@ -350,7 +363,7 @@ namespace LumiSoft.Net.MIME
                         timeZoneMinutes = -((07 * 60) + 00);
                     }
                     // Uniform Time Zone (military).
-                    else if(v == ""){
+                    else if(v == "U"){
                         timeZoneMinutes = -((08 * 60) + 00);
                     }
                     // Coordinated Universal Time.
@@ -403,7 +416,7 @@ namespace LumiSoft.Net.MIME
             }
             catch(Exception x){
                 string dymmy = x.Message;
-                throw new ArgumentException("Argumnet 'value' value '" + value + "' is not valid RFC 822/2822 date-time string.");
+                throw new ArgumentException($"'{value}' is not a valid RFC 822 or RFC 2822 date-time value.",nameof(value));
             }
         }
 
@@ -413,15 +426,22 @@ namespace LumiSoft.Net.MIME
         #region static method UnfoldHeader
 
         /// <summary>
-        /// Unfolds folded header field.
+        /// Unfolds a folded header field.
         /// </summary>
-        /// <param name="value">Header field.</param>
-        /// <returns>Returns unfolded header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
+        /// <param name="value">
+        /// Header field value to unfold.
+        /// </param>
+        /// <returns>
+        /// Returns the unfolded header field value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="value"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public static string UnfoldHeader(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             /* RFC 2822 2.2.3 Long Header Fields.
@@ -440,124 +460,16 @@ namespace LumiSoft.Net.MIME
         #region static method CreateMessageID
 
 		/// <summary>
-		/// Creates Rfc 2822 3.6.4 message-id. Syntax: '&lt;' id-left '@' id-right '&gt;'.
-		/// </summary>
-		/// <returns></returns>
+        /// Creates an RFC 2822 message identifier.
+        /// </summary>
+        /// <returns>
+        /// Returns a message identifier in the form
+        /// <c>&lt;id-left@id-right&gt;</c>.
+        /// </returns>
 		public static string CreateMessageID()
 		{
-			return "<" + Guid.NewGuid().ToString().Replace("-","").Substring(16) + "@" + Guid.NewGuid().ToString().Replace("-","").Substring(16) + ">";
-		}
-
-		#endregion
-
-
-        #region static method ParseHeaders
-
-		/// <summary>
-		/// Parses headers from message or mime entry.
-		/// </summary>
-		/// <param name="entryStrm">Stream from where to read headers.</param>
-		/// <returns>Returns header lines.</returns>
-		internal static string ParseHeaders(Stream entryStrm)
-		{
-			/* Rfc 2822 3.1.  GENERAL DESCRIPTION
-				A message consists of header fields and, optionally, a body.
-				The  body  is simply a sequence of lines containing ASCII charac-
-				ters.  It is separated from the headers by a null line  (i.e.,  a
-				line with nothing preceding the CRLF).
-			*/
-
-			byte[] crlf = new byte[]{(byte)'\r',(byte)'\n'};
-			MemoryStream msHeaders = new MemoryStream();
-			StreamLineReader r = new StreamLineReader(entryStrm);
-			byte[]? lineData = r.ReadLine();
-			while(lineData != null){
-				if(lineData.Length == 0){
-					break;
-				}
-
-				msHeaders.Write(lineData,0,lineData.Length);
-				msHeaders.Write(crlf,0,crlf.Length);
-				lineData = r.ReadLine();
-			}
-
-			return System.Text.Encoding.Default.GetString(msHeaders.ToArray());
-		}
-
-		#endregion
-
-        #region static method ParseHeaderField
-
-		/// <summary>
-		/// Parse header specified header field value.
-		/// 
-		/// Use this method only if you need to get only one header field, otherwise use
-		/// MimeParser.ParseHeaderField(string fieldName,string headers).
-		/// This avoid parsing headers multiple times.
-		/// </summary>
-		/// <param name="fieldName">Header field which to parse. Eg. Subject: .</param>
-		/// <param name="entryStrm">Stream from where to read headers.</param>
-		/// <returns></returns>
-		public static string ParseHeaderField(string fieldName,Stream entryStrm)
-		{
-			return ParseHeaderField(fieldName,ParseHeaders(entryStrm));
-		}
-
-		/// <summary>
-		/// Parse header specified header field value.
-		/// </summary>
-		/// <param name="fieldName">Header field which to parse. Eg. Subject: .</param>
-		/// <param name="headers">Full headers string. Use MimeParser.ParseHeaders() to get this value.</param>
-		public static string ParseHeaderField(string fieldName,string headers)
-		{
-			/* Rfc 2822 2.2 Header Fields
-				Header fields are lines composed of a field name, followed by a colon
-				(":"), followed by a field body, and terminated by CRLF.  A field
-				name MUST be composed of printable US-ASCII characters (i.e.,
-				characters that have values between 33 and 126, inclusive), except
-				colon.  A field body may be composed of any US-ASCII characters,
-				except for CR and LF.  However, a field body may contain CRLF when
-				used in header "folding" and  "unfolding" as described in section
-				2.2.3.  All field bodies MUST conform to the syntax described in
-				sections 3 and 4 of this standard. 
-				
-			   Rfc 2822 2.2.3 (Multiline header fields)
-				The process of moving from this folded multiple-line representation
-				of a header field to its single line representation is called
-				"unfolding". Unfolding is accomplished by simply removing any CRLF
-				that is immediately followed by WSP.  Each header field should be
-				treated in its unfolded form for further syntactic and semantic
-				evaluation.
-				
-				Example:
-					Subject: aaaaa<CRLF>
-					<TAB or SP>aaaaa<CRLF>
-			*/
-
-			using(TextReader r = new StreamReader(new MemoryStream(System.Text.Encoding.Default.GetBytes(headers)))){
-				string? line = r.ReadLine();
-				while(line != null){
-					// Find line where field begins
-					if(line.ToUpper().StartsWith(fieldName.ToUpper())){
-						// Remove field name and start reading value
-						string fieldValue = line.Substring(fieldName.Length).Trim();
-
-						// see if multi line value. See commnt above.
-						line = r.ReadLine();
-						while(line != null && (line.StartsWith("\t") || line.StartsWith(" "))){
-							fieldValue += line;
-							line = r.ReadLine();
-						}
-
-						return fieldValue;
-					}
-
-					line = r.ReadLine();
-				}
-			}
-
-			return "";
-		}
+            return $"<{Guid.NewGuid():N}@{Guid.NewGuid():N}>";
+        }
 
 		#endregion
 
@@ -565,20 +477,32 @@ namespace LumiSoft.Net.MIME
         #region static method QDecode
 
 		/// <summary>
-		/// "Q" decoder. This is same as quoted-printable, except '_' is converted to ' '.
-        /// Defined in RFC 2047 4.2.
-		/// </summary>
-		/// <param name="encoding">Input string encoding.</param>
-		/// <param name="data">String which to encode.</param>
-		/// <returns>Returns decoded string.</returns>		
-        /// <exception cref="ArgumentNullException">Is raised when <b>encoding</b> or <b>data</b> is null reference.</exception>
+        /// Decodes RFC 2047 Q-encoded text.
+        /// </summary>
+        /// <param name="encoding">
+        /// Character set used to decode the text.
+        /// </param>
+        /// <param name="data">
+        /// Q-encoded text to decode.
+        /// </param>
+        /// <returns>
+        /// Returns the decoded text.
+        /// </returns>
+        /// <remarks>
+        /// Q encoding is similar to quoted-printable encoding except that
+        /// underscore characters (<c>_</c>) are decoded as spaces.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="encoding"/> or
+        /// <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
 		public static string QDecode(Encoding encoding,string data)
 		{
             if(encoding == null){
-                throw new ArgumentNullException("encoding");
+                throw new ArgumentNullException(nameof(encoding));
             }
             if(data == null){
-                throw new ArgumentNullException("data");
+                throw new ArgumentNullException(nameof(data));
             }
 
 			return encoding.GetString(QuotedPrintableDecode(Encoding.ASCII.GetBytes(data.Replace("_"," "))));
@@ -589,15 +513,23 @@ namespace LumiSoft.Net.MIME
         #region static method QuotedPrintableDecode
 
 		/// <summary>
-		/// quoted-printable decoder. Defined in RFC 2045 6.7.
-		/// </summary>
-		/// <param name="data">Data which to encode.</param>
-		/// <returns>Returns decoded data.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>data</b> is null reference.</exception>
+        /// Decodes quoted-printable encoded data as defined in RFC 2045
+        /// section 6.7.
+        /// </summary>
+        /// <param name="data">
+        /// Quoted-printable encoded data to decode.
+        /// </param>
+        /// <returns>
+        /// Returns the decoded data.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="data"/> is
+        /// <see langword="null"/>.
+        /// </exception>
 		public static byte[] QuotedPrintableDecode(byte[] data)
 		{
             if(data == null){
-                throw new ArgumentNullException("data");
+                throw new ArgumentNullException(nameof(data));
             }
 
 			/* RFC 2045 6.7. Quoted-Printable Content-Transfer-Encoding
@@ -685,7 +617,7 @@ namespace LumiSoft.Net.MIME
 					}
 					// Illegal =, just leave as it is
 					else{
-						msRetVal.Write(buffer,0,nCount);
+						msRetVal.WriteByte((byte)'=');
 					}
 				}
 				// Just write back all other bytes

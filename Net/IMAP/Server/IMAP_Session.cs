@@ -3636,7 +3636,7 @@ namespace LumiSoft.Net.IMAP.Server
                         else{
                             Mail_Message? message = null;
                             try{
-                                message = Mail_Message.ParseFromStream(messageStream);
+                                message = await Mail_Message.ParseFromStreamAsync(messageStream,true,false);
                             }
                             catch{
                                 streamToSend = null;
@@ -3651,7 +3651,7 @@ namespace LumiSoft.Net.IMAP.Server
                                 if (string.Equals(body.SectionType,"HEADER",StringComparison.OrdinalIgnoreCase)){
                                     streamToSend = new MemoryStreamEx(64000);
 
-                                    entity.Header.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    await entity.Header.ToStreamAsync(streamToSend,false,false);
                                     // All header fetches must include header terminator(CRLF).
                                     if(streamToSend.Length > 0){
                                         await streamToSend.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'});
@@ -3671,7 +3671,7 @@ namespace LumiSoft.Net.IMAP.Server
                                         MIME_h[] fields = entity.Header[filedName];
                                         if(fields != null){
                                             foreach(MIME_h field in fields){
-                                                byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8));
+                                                byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(false,false));
                                                 await streamToSend.WriteAsync(fieldBytes);
                                             }
                                         }
@@ -3701,7 +3701,7 @@ namespace LumiSoft.Net.IMAP.Server
                                         }
 
                                         if(!contains){
-                                            byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8));
+                                            byte[] fieldBytes = Encoding.UTF8.GetBytes(field.ToString(false,false));
                                             await streamToSend.WriteAsync(fieldBytes);
                                         }
                                     }
@@ -3720,7 +3720,7 @@ namespace LumiSoft.Net.IMAP.Server
                                 else if (string.Equals(body.SectionType,"MIME",StringComparison.OrdinalIgnoreCase)){
                                     streamToSend = new MemoryStreamEx(64000);
 
-                                    entity.Header.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    await entity.Header.ToStreamAsync(streamToSend,false,false);
                                     // All header fetches must include header terminator(CRLF).
                                     if(streamToSend.Length > 0){
                                         await streamToSend.WriteAsync(new byte[]{(byte)'\r',(byte)'\n'});
@@ -3736,7 +3736,7 @@ namespace LumiSoft.Net.IMAP.Server
                                 else if (string.Equals(body.SectionType,"TEXT",StringComparison.OrdinalIgnoreCase)){
                                     streamToSend = new MemoryStreamEx(64000);
 
-                                    entity.Body?.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    await entity.Body!.ToStreamAsync(streamToSend,false,false);
                                     streamToSend.Position = 0;                                    
                                     bytesToSend  = streamToSend.Length - streamToSend.Position;
                                 }
@@ -3748,7 +3748,7 @@ namespace LumiSoft.Net.IMAP.Server
                                 else{
                                     streamToSend = new MemoryStreamEx(64000);
 
-                                    entity.Body?.ToStream(streamToSend,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8,false);
+                                    await entity.Body!.ToStreamAsync(streamToSend,false,false);
                                     streamToSend.Position = 0;                                    
                                     bytesToSend  = streamToSend.Length - streamToSend.Position;
                                 }

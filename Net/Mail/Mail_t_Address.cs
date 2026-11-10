@@ -7,15 +7,18 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// This class represents RFC 5322 3.4 Address class. 
-    /// This class is base class for <see cref="Mail_t_Mailbox">mailbox address</see> and <see cref="Mail_t_Group">group address</see>.
+    /// Represents an RFC 5322 address.
     /// </summary>
+    /// <remarks>
+    /// This is the base class for <see cref="Mail_t_Mailbox"/> and
+    /// <see cref="Mail_t_Group"/> address types.
+    /// </remarks>
     public abstract class Mail_t_Address
     {
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Address"/> class.
         /// </summary>
-        public Mail_t_Address()
+        protected Mail_t_Address()
         {
         }
 
@@ -23,11 +26,11 @@ namespace LumiSoft.Net.Mail
         #region abstract method ToString
 
         /// <summary>
-        /// Returns address as string value.
+        /// Returns the address in its serialized mail-header format.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <returns>Returns address as string value.</returns>
-        public abstract string ToString(MIME_Encoding_EncodedWord? wordEncoder);
+        /// <param name="utf8">Specifies whether non-ASCII text may be written as UTF-8. If <see langword="false"/>, applicable MIME encoded-word encoding is used.</param>
+        /// <returns>The serialized address.</returns>
+        public abstract string ToString(bool utf8);
 
         #endregion
 

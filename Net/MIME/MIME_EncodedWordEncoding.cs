@@ -5,17 +5,17 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This enum specifies MIME RFC 2047 'encoded-word' encoding method.
+    /// Specifies the RFC 2047 encoded-word encoding method.
     /// </summary>
     public enum MIME_EncodedWordEncoding
     {
         /// <summary>
-        /// The "B" encoding. Defined in RFC 2047 (section 4.1).
+        /// The Q encoding as defined in RFC 2047 section 4.1.
         /// </summary>
         Q,
 
         /// <summary>
-        /// The "Q" encoding. Defined in RFC 2047 (section 4.2).
+        /// The B encoding as defined in RFC 2047 section 4.2.
         /// </summary>
         B
     }

@@ -5,7 +5,7 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME headers provider.
+    /// Provides parsing and creation services for MIME header fields.
     /// </summary>
     public class MIME_h_Provider
     {
@@ -13,13 +13,14 @@ namespace LumiSoft.Net.MIME
         private Dictionary<string,Type> m_pHeadrFields;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the
+        /// <see cref="MIME_h_Provider"/> class.
         /// </summary>
         public MIME_h_Provider()
         {
             m_pDefaultHeaderField = typeof(MIME_h_Unstructured);
 
-            m_pHeadrFields = new Dictionary<string,Type>(StringComparer.CurrentCultureIgnoreCase);
+            m_pHeadrFields = new Dictionary<string,Type>(StringComparer.OrdinalIgnoreCase);
             m_pHeadrFields.Add("Content-Type",typeof(MIME_h_ContentType));
             m_pHeadrFields.Add("Content-Disposition",typeof(MIME_h_ContentDisposition));
         }
@@ -28,19 +29,28 @@ namespace LumiSoft.Net.MIME
         #region method Parse
 
         /// <summary>
-        /// Parses specified header field.
+        /// Parses the specified header field.
         /// </summary>
-        /// <param name="field">Header field string (Name: value).</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <param name="field">
+        /// Header field in the format <c>name: value</c>.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed header field.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="field"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the specified value is not a valid header field.
+        /// </exception>
         public MIME_h Parse(string field)
         {
             if(field == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(field));
             }
 
-            // <CRLF> is misssing from end, add it.
+            // <CRLF> is missing from the end, add it.
             if(!field.EndsWith("\r\n")){
                 field += "\r\n";
             }
@@ -61,7 +71,7 @@ namespace LumiSoft.Net.MIME
                     }
                 }
                 catch(Exception x){
-                    headerField = new MIME_h_Unparsed(field,x.InnerException);
+                    headerField = new MIME_h_Unparsed(field,x);
                 }
             }
 
@@ -74,18 +84,26 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets or sets default header field what is used to reperesent unknown header fields.
+        /// Gets or sets the default header field type used to represent
+        /// unrecognized header fields.
         /// </summary>
-        /// <remarks>This property value value must be based on <see cref="MIME_h"/> class.</remarks>
-        /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
-        /// <exception cref="ArgumentException">Is raised when invalid value is passed.</exception>
+        /// <remarks>
+        /// The specified type must derive from <see cref="MIME_h"/>.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <see langword="null"/> is assigned.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when the specified type does not derive from
+        /// <see cref="MIME_h"/>.
+        /// </exception>
         public Type DefaultHeaderField
         {
             get{ return m_pDefaultHeaderField; }
 
             set{
                 if(value == null){
-                    throw new ArgumentNullException("DefaultHeaderField");
+                    throw new ArgumentNullException(nameof(value));
                 }                
                 if(!value.GetType().IsSubclassOf(typeof(MIME_h))){
                     throw new ArgumentException("Property 'DefaultHeaderField' value must be based on MIME_h class.");
@@ -96,8 +114,12 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets header fields parsers collection.
+        /// Gets the collection of registered header field parsers.
         /// </summary>
+        /// <remarks>
+        /// The dictionary key is the header field name and the value is the
+        /// corresponding parser type.
+        /// </remarks>
         public Dictionary<string,Type> HeaderFields
         {
             get{ return m_pHeadrFields; }

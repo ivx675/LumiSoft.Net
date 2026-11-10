@@ -3,24 +3,30 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.IO;
-
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME text/xxx bodies. Defined in RFC 2045.
+    /// Represents a MIME body with a media type whose top-level type is
+    /// <c>text</c>, such as <c>text/plain</c> or <c>text/html</c>.
     /// </summary>
     /// <remarks>
-    /// The "text" media type is intended for sending material which is principally textual in form.
+    /// Defined by RFC 2045 and RFC 2046. Text bodies contain character data
+    /// encoded using the charset specified in the Content-Type header.
     /// </remarks>
     public class MIME_b_Text : MIME_b_SinglepartBase
     {
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b_Text"/> class.
         /// </summary>
-        /// <param name="mediaType">MIME media type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>mediaSubType</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="mediaType">
+        /// MIME media type, for example <c>text/plain</c> or <c>text/html</c>.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="mediaType"/> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="mediaType"/> contains an invalid value.
+        /// </exception>
         public MIME_b_Text(string mediaType) : base(new MIME_h_ContentType(mediaType))
         {            
         }
@@ -28,24 +34,28 @@ namespace LumiSoft.Net.MIME
         #region static method Parse
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses a text MIME body from the specified stream.
         /// </summary>
-        /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>mediaType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="owner">
+        /// MIME entity that owns the body.
+        /// </param>
+        /// <param name="stream">
+        /// Stream containing the encoded body data.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME text body.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="owner"/> or <paramref name="stream"/> is
+        /// <see langword="null" />.
+        /// </exception>
+        internal static MIME_b_Text Parse(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
             MIME_b_Text? retVal = null;
@@ -53,10 +63,10 @@ namespace LumiSoft.Net.MIME
                 retVal = new MIME_b_Text(owner.ContentType.TypeWithSubtype);
             }
             else{
-                retVal = new MIME_b_Text(defaultContentType.TypeWithSubtype);
+                retVal = new MIME_b_Text("text/plain");
             }
 
-            Net_Utils.StreamCopy(stream,retVal.EncodedStream,stream.LineBufferSize);
+            retVal.EncodedStream = stream;
             retVal.SetModified(false);
 
             return retVal;
@@ -68,34 +78,43 @@ namespace LumiSoft.Net.MIME
         #region method SetText
 
         /// <summary>
-        /// Sets text.
+        /// Sets the body text using UTF-8 encoding and the specified
+        /// Content-Transfer-Encoding value.
         /// </summary>
-        /// <param name="transferEncoding">Content transfer encoding.</param>
-        /// <param name="charset">Charset to use to encode text. If not sure, utf-8 is recommended.</param>
-        /// <param name="text">Text.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>transferEncoding</b>, <b>charset</b> or <b>text</b> is null reference.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
-        /// <exception cref="NotSupportedException">Is raised when body contains not supported Content-Transfer-Encoding.</exception>
-        public void SetText(string transferEncoding,Encoding charset,string text)
+        /// <param name="transferEncoding">
+        /// Content-Transfer-Encoding to use when storing the text.
+        /// </param>
+        /// <param name="text">
+        /// Text to store in the body.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="transferEncoding"/> or
+        /// <paramref name="text"/> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not bound to a MIME entity or the entity
+        /// does not have a Content-Type header.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the specified Content-Transfer-Encoding is not supported.
+        /// </exception>
+        public void SetText(string transferEncoding,string text)
         {
             if(transferEncoding == null){
-                throw new ArgumentNullException("transferEncoding");
-            }
-            if(charset == null){
-                throw new ArgumentNullException("charset");
+                throw new ArgumentNullException(nameof(transferEncoding));
             }
             if(text == null){
-                throw new ArgumentNullException("text");
+                throw new ArgumentNullException(nameof(text));
             }
             if(this.Entity == null){
-                throw new InvalidOperationException("Body must be bounded to some entity first.");
+                throw new InvalidOperationException("Body must be bounded to some MIME entity first.");
             }
             if(this.Entity.ContentType == null){
                 throw new InvalidOperationException("Mime entity ContentType must be specified first.");
             }
 
-            SetData(new MemoryStream(charset.GetBytes(text)),transferEncoding);
-            this.Entity.ContentType.Param_Charset = charset.WebName;            
+            SetData(new MemoryStream(Encoding.UTF8.GetBytes(text)),transferEncoding);
+            this.Entity.ContentType.Param_Charset = "utf-8";            
         }
 
         #endregion
@@ -103,16 +122,26 @@ namespace LumiSoft.Net.MIME
         #region method GetCharset
 
         /// <summary>
-        /// Gets charset from Content-Type. If char set isn't specified, "ascii" is defined as default and it will be returned.
+        /// Gets the character encoding specified by the Content-Type charset
+        /// parameter.
         /// </summary>
-        /// <returns>Returns content charset.</returns>
-        /// <exception cref="ArgumentException">Is raised when Content-Type has not supported charset parameter value.</exception>
+        /// <returns>
+        /// Returns the resolved character encoding.
+        /// </returns>
+        /// <remarks>
+        /// If no charset parameter is specified, UTF-8 is returned.
+        /// </remarks>
+        /// <exception cref="ArgumentException">
+        /// Raised when the charset value is not supported by the current
+        /// platform.
+        /// </exception>
         public Encoding GetCharset()
         {
             // RFC 2046 4.1.2. The default character set, US-ASCII.
+            // We default to UTF-8.
             
             if(this.Entity?.ContentType == null || string.IsNullOrEmpty(this.Entity.ContentType.Param_Charset)){
-                return Encoding.ASCII;
+                return Encoding.UTF8;
             }
             else{
                 // Handle custome/extended charsets, just remove "x-" from start.
@@ -143,10 +172,18 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
                 
         /// <summary>
-        /// Gets body decoded text.
+        /// Gets the decoded body text.
         /// </summary>
-        /// <exception cref="ArgumentException">Is raised when not supported content-type charset or not supported content-transfer-encoding value.</exception>
-        /// <exception cref="NotSupportedException">Is raised when body contains not supported Content-Transfer-Encoding.</exception>
+        /// <value>
+        /// The body content decoded using the charset returned by
+        /// <see cref="GetCharset"/>.
+        /// </value>
+        /// <exception cref="ArgumentException">
+        /// Raised when the charset specified in Content-Type is not supported.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the Content-Transfer-Encoding value is not supported.
+        /// </exception>
         public string Text
         {
             get{ return GetCharset().GetString(this.Data); }

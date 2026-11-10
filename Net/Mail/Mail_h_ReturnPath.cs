@@ -7,25 +7,22 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// Represents "Return-Path:" header. Defined in RFC 5322 3.6.7.
+    /// Represents a <c>Return-Path</c> header field.
     /// </summary>
-    /// <example>
-    /// <code>
-    /// RFC 5322 3.6.7.
-    ///     return     = "Return-Path:" path CRLF
-    ///     path       = angle-addr / ([CFWS] "&lt;" [CFWS] "&gt;" [CFWS])
-    ///     angle-addr = [CFWS] "&lt;" addr-spec "&gt;" [CFWS]
-    /// </code>
-    /// </example>
+    /// <remarks>
+    /// Defined by RFC 5322, section 3.6.7.
+    /// A Return-Path field contains a path enclosed in angle brackets,
+    /// or an empty path represented by <c>&lt;&gt;</c>.
+    /// </remarks>
     public class Mail_h_ReturnPath : MIME_h
     {
         private bool    m_IsModified = false;
         private string? m_Address    = null;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_h_ReturnPath"/> class.
         /// </summary>
-        /// <param name="address">Address. Value null means null-path.</param>
+        /// <param name="address">The mailbox address. A <see langword="null"/> value represents the null path.</param>
         public Mail_h_ReturnPath(string? address)
         {
             m_Address = address;
@@ -35,21 +32,21 @@ namespace LumiSoft.Net.Mail
         #region static method Parse
 
         /// <summary>
-        /// Parses header field from the specified value.
+        /// Parses a <c>Return-Path</c> header field from its serialized representation.
         /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Return-Path: &lt;jhon.doe@domain.com&gt;'.</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <param name="value">The serialized header field, including its name; for example, <c>Return-Path: &lt;john.doe@domain.com&gt;</c>.</param>
+        /// <returns>A parsed <see cref="Mail_h_ReturnPath"/> instance.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> does not contain a header field name and value.</exception>
         public static Mail_h_ReturnPath Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             string[] name_value = value.Split(new char[]{':'},2);
             if(name_value.Length != 2){
-                throw new ParseException("Invalid header field value '" + value + "'.");
+                throw new ParseException("The Return-Path header field must contain a field name followed by a colon.");
             }
 
             Mail_h_ReturnPath retVal = new Mail_h_ReturnPath(null);
@@ -73,13 +70,12 @@ namespace LumiSoft.Net.Mail
         #region override method ToString
 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized <c>Return-Path</c> header field, including the terminating CRLF.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8">This header field does not contain encoded words; the parameter is retained for compatibility with the base class.</param>
+        /// <param name="reEncode">This header field does not preserve an original representation; the parameter is retained for compatibility with the base class.</param>
+        /// <returns>The serialized header field.</returns>
+        public override string ToString(bool utf8,bool reEncode)
         {
             if(string.IsNullOrEmpty(m_Address)){
                 return "Return-Path: <>\r\n";
@@ -95,17 +91,16 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was parsed.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public override bool IsModified
         {
             get{ return m_IsModified; }
         }
 
         /// <summary>
-        /// Gets header field name. For example "Sender".
+        /// Gets the header field name, which is always <c>Return-Path</c>.
         /// </summary>
         public override string Name
         {
@@ -113,7 +108,7 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets mailbox address. Value null means null-path.
+        /// Gets the mailbox address. A <see langword="null"/> value represents the null path.
         /// </summary>
         public string? Address
         {

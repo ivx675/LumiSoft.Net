@@ -8,7 +8,9 @@ using LumiSoft.Net.IO;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class is base class for singlepart media bodies like: text,video,audio,image.
+    /// Represents the base class for single-part MIME bodies, such as
+    /// <c>application/*</c>, <c>text/*</c>, <c>image/*</c>,
+    /// <c>audio/*</c>, and <c>video/*</c>.
     /// </summary>
     public abstract class MIME_b_SinglepartBase : MIME_b
     {
@@ -16,28 +18,36 @@ namespace LumiSoft.Net.MIME
         private Stream m_pEncodedDataStream;
                 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the
+        /// <see cref="MIME_b_SinglepartBase"/> class.
         /// </summary>
-        /// <param name="contentType">Content type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>contentType</b> is null reference.</exception>
+        /// <param name="contentType">
+        /// Content type of the MIME body.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="contentType"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public MIME_b_SinglepartBase(MIME_h_ContentType contentType) : base(contentType)
         {
             if(contentType == null){
-                throw new ArgumentNullException("contentType");
+                throw new ArgumentNullException(nameof(contentType));
             }
 
             m_pEncodedDataStream = new MemoryStreamEx();
         }
 
+        #region override method Dispose
+
         /// <summary>
-        /// Destructor - Just incase user won't call dispose.
+        /// Releases all resources used by this instance.
         /// </summary>
-        ~MIME_b_SinglepartBase()
+        internal override void Dispose()
         {
-            if(m_pEncodedDataStream != null){
-                m_pEncodedDataStream.Close();
-            }
+            m_pEncodedDataStream.Dispose();
         }
+
+        #endregion
         
   
         #region override SetParent
@@ -59,24 +69,16 @@ namespace LumiSoft.Net.MIME
 
         #endregion
 
-        #region method ToStream
+        #region override method ToStreamAsync
 
-        /// <summary>
-        /// Stores MIME entity body to the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        internal protected override void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
+        /// <inheritdoc/>
+        internal protected override async Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
             }
 
-            Net_Utils.StreamCopy(GetEncodedDataStream(),stream,84000);
+            await GetEncodedDataStream().CopyToAsync(stream,cancellationToken);
         }
 
         #endregion
@@ -98,19 +100,32 @@ namespace LumiSoft.Net.MIME
         #region method GetEncodedDataStream
 
         /// <summary>
-        /// Gets body encoded data stream.
+        /// Gets a read-only stream containing the encoded body data.
         /// </summary>
-        /// <returns>Returns body encoded data stream.</returns>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
+        /// <returns>
+        /// Returns a stream that provides access to the encoded body data.
+        /// </returns>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <remarks>
+        /// The returned stream should be disposed as soon as it is no longer
+        /// needed.
+        ///
+        /// If this body belongs to a parsed MIME message, no other entity body
+        /// streams should be accessed until the returned stream has been
+        /// disposed, because parsed MIME entities may share the same underlying
+        /// backing stream.
+        /// </remarks>
         public Stream GetEncodedDataStream()
         {
             if(this.Entity == null){
-                throw new InvalidOperationException("Body must be bounded to some entity first.");
+                throw new InvalidOperationException("Body must be associated with a MIME entity.");
             }
 
             m_pEncodedDataStream.Position = 0;
 
-            return m_pEncodedDataStream;
+            return new ReadWriteControlledStream(m_pEncodedDataStream,FileAccess.Read);
         }
 
         #endregion
@@ -118,38 +133,87 @@ namespace LumiSoft.Net.MIME
         #region method SetEncodedData
 
         /// <summary>
-        /// Sets body encoded data from specified stream.
+        /// Sets the encoded body data.
         /// </summary>
-        /// <param name="contentTransferEncoding">Content-Transfer-Encoding in what encoding <b>stream</b> data is.</param>
-        /// <param name="stream">Stream data to add.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>contentTransferEncoding</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
-        public void SetEncodedData(string contentTransferEncoding,Stream stream)
+        /// <param name="stream">
+        /// Stream containing body data already encoded with the specified
+        /// transfer encoding.
+        /// </param>
+        /// <param name="transferEncoding">
+        /// Content transfer encoding of the supplied data.
+        /// </param>
+        /// <remarks>
+        /// The supplied data is stored without additional encoding and the
+        /// Content-Transfer-Encoding header field is updated accordingly.
+        ///
+        /// This method blocks until the body data has been completely stored.
+        /// For asynchronous operation, use
+        /// <see cref="SetEncodedDataAsync(Stream,string,CancellationToken)"/>.
+        /// </remarks>
+        public void SetEncodedData(Stream stream,string transferEncoding)
         {
-            if(contentTransferEncoding == null){
-                throw new ArgumentNullException("contentTransferEncoding");
-            }
-            if(contentTransferEncoding == string.Empty){
-                throw new ArgumentException("Argument 'contentTransferEncoding' value must be specified.");
-            }
+            SetEncodedDataAsync(stream,transferEncoding,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method SetEncodedDataAsync
+
+        /// <summary>
+        /// Sets the encoded body data.
+        /// </summary>
+        /// <param name="stream">
+        /// Stream containing body data already encoded with the specified
+        /// transfer encoding.
+        /// </param>
+        /// <param name="transferEncoding">
+        /// Content transfer encoding of the supplied data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> or
+        /// <paramref name="transferEncoding"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="transferEncoding"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <remarks>
+        /// The supplied data is stored without additional encoding and the
+        /// Content-Transfer-Encoding header field is updated accordingly.
+        /// </remarks>
+        public async Task SetEncodedDataAsync(Stream stream,string transferEncoding,CancellationToken cancellationToken = default)
+        {
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
+            }
+            if(transferEncoding == null){
+                throw new ArgumentNullException(nameof(transferEncoding));
+            }
+            if(string.IsNullOrEmpty(transferEncoding)){
+                throw new ArgumentException("Transfer encoding cannot be empty.",nameof(transferEncoding));
             }
             if(this.Entity == null){
-                throw new InvalidOperationException("Body must be bounded to some entity first.");
+                throw new InvalidOperationException("Body must be associated with a MIME entity.");
             }
 
             // Owner entity has no content-type or has different content-type, just add/overwrite it.
             if(this.Entity.ContentType == null || !string.Equals(this.Entity.ContentType.TypeWithSubtype,this.MediaType,StringComparison.InvariantCultureIgnoreCase)){
                 this.Entity.ContentType = new MIME_h_ContentType(this.MediaType);
             }
-            this.Entity.ContentTransferEncoding = contentTransferEncoding;
+            this.Entity.ContentTransferEncoding = transferEncoding;
 
-            m_pEncodedDataStream.SetLength(0);
-            Net_Utils.StreamCopy(stream,m_pEncodedDataStream,84000);
-       
-            m_IsModified = true;
+            // Release old stream and create new memory-tmp file stream.
+            await m_pEncodedDataStream.DisposeAsync();
+            m_pEncodedDataStream = new MemoryStreamEx();
+
+            await stream.CopyToAsync(m_pEncodedDataStream,cancellationToken);
+            m_pEncodedDataStream.Position = 0;
         }
 
         #endregion
@@ -157,16 +221,31 @@ namespace LumiSoft.Net.MIME
         #region method GetDataStream
 
         /// <summary>
-        /// Gets body decoded data stream.
+        /// Gets a read-only stream containing the decoded body data.
         /// </summary>
-        /// <returns>Returns body decoded data stream.</returns>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
-        /// <exception cref="NotSupportedException">Is raised when body contains not supported Content-Transfer-Encoding.</exception>
-        /// <remarks>The returned stream should be closed/disposed as soon as it's not needed any more.</remarks>
+        /// <returns>
+        /// Returns a stream that provides access to the decoded body data.
+        /// </returns>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the body uses an unsupported
+        /// <c>Content-Transfer-Encoding</c>.
+        /// </exception>
+        /// <remarks>
+        /// The returned stream should be disposed as soon as it is no longer
+        /// needed.
+        ///
+        /// If this body belongs to a parsed MIME message, no other entity body
+        /// streams should be accessed until the returned stream has been
+        /// disposed, because parsed MIME entities may share the same underlying
+        /// backing stream.
+        /// </remarks>
         public Stream GetDataStream()
         {             
             if(this.Entity == null){
-                throw new InvalidOperationException("Body must be bounded to some entity first.");
+                throw new InvalidOperationException("Body must be associated with a MIME entity.");
             }
 
             /* RFC 2045 6.1.
@@ -180,13 +259,10 @@ namespace LumiSoft.Net.MIME
 
             m_pEncodedDataStream.Position = 0;            
             if(transferEncoding == MIME_TransferEncodings.QuotedPrintable){                
-                return new QuotedPrintableStream(new SmartStream(m_pEncodedDataStream,false),FileAccess.Read);
+                return new QuotedPrintableStream(m_pEncodedDataStream,FileAccess.Read);
             }
             else if(transferEncoding == MIME_TransferEncodings.Base64){
-                Base64Stream retVal = new Base64Stream(m_pEncodedDataStream,false,true,FileAccess.Read);
-                retVal.IgnoreInvalidPadding = true;
-
-                return retVal;
+                return new Base64Stream(m_pEncodedDataStream,false,true,FileAccess.Read);
             }            
             else if(transferEncoding == MIME_TransferEncodings.Binary){
                 return new ReadWriteControlledStream(m_pEncodedDataStream,FileAccess.Read);
@@ -198,7 +274,7 @@ namespace LumiSoft.Net.MIME
                 return new ReadWriteControlledStream(m_pEncodedDataStream,FileAccess.Read);
             }
             else{
-                throw new NotSupportedException("Not supported Content-Transfer-Encoding '" + this.Entity.ContentTransferEncoding + "'.");
+                throw new NotSupportedException($"Content-Transfer-Encoding '{this.Entity.ContentTransferEncoding}' is not supported.");
             }
         }
 
@@ -207,50 +283,127 @@ namespace LumiSoft.Net.MIME
         #region method SetData
 
         /// <summary>
-        /// Sets body data from the specified stream.
+        /// Sets the body data.
         /// </summary>
-        /// <param name="stream">Source stream.</param>
-        /// <param name="transferEncoding">Specifies content-transfer-encoding to use to encode data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> or <b>transferEncoding</b> is null reference.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
-        public void SetData(Stream stream,string transferEncoding)
+        /// <param name="stream">
+        /// Stream containing the body data.
+        /// </param>
+        /// <param name="transferEncoding">
+        /// Content transfer encoding to use when storing the body data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> or
+        /// <paramref name="transferEncoding"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="transferEncoding"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the specified content transfer encoding is not supported.
+        /// </exception>
+        /// <remarks>
+        /// The supplied data is encoded using the specified content transfer
+        /// encoding and stored as the body content. The
+        /// <c>Content-Transfer-Encoding</c> header field is updated
+        /// accordingly.
+        ///
+        /// This method blocks until the body data has been completely stored.
+        /// For asynchronous operation, use
+        /// <see cref="SetDataAsync(Stream,string,CancellationToken)"/>.
+        /// </remarks>
+        public void SetData(Stream stream, string transferEncoding)
+        {
+            SetDataAsync(stream,transferEncoding,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method SetDataAsync
+
+        /// <summary>
+        /// Sets the body data.
+        /// </summary>
+        /// <param name="stream">
+        /// Stream containing the body data.
+        /// </param>
+        /// <param name="transferEncoding">
+        /// Content transfer encoding to use when storing the body data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> or
+        /// <paramref name="transferEncoding"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="transferEncoding"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the specified content transfer encoding is not supported.
+        /// </exception>
+        /// <remarks>
+        /// The supplied data is encoded using the specified content transfer
+        /// encoding and stored as the body content. The
+        /// <c>Content-Transfer-Encoding</c> header field is updated
+        /// accordingly.
+        /// </remarks>
+        public async Task SetDataAsync(Stream stream,string transferEncoding,CancellationToken cancellationToken = default)
         {            
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
             if(transferEncoding == null){
-                throw new ArgumentNullException("transferEncoding");
+                throw new ArgumentNullException(nameof(transferEncoding));
+            }
+            if(transferEncoding.Length == 0){
+                throw new ArgumentException("Transfer encoding cannot be empty.",nameof(transferEncoding));
+            }
+            if(this.Entity == null){
+                throw new InvalidOperationException("Body must be associated with a MIME entity.");
             }
 
             if(string.Equals(transferEncoding,MIME_TransferEncodings.QuotedPrintable,StringComparison.InvariantCultureIgnoreCase)){
-                using(MemoryStreamEx fs = new MemoryStreamEx()){
-                    QuotedPrintableStream encoder = new QuotedPrintableStream(new SmartStream(fs,false),FileAccess.ReadWrite);
-                    Net_Utils.StreamCopy(stream,encoder,84000);
-                    encoder.Flush();
-                    fs.Position = 0;
-                    SetEncodedData(transferEncoding,fs);
+                // Release old stream and create new memory-tmp file stream.
+                await m_pEncodedDataStream.DisposeAsync();
+                m_pEncodedDataStream = new MemoryStreamEx();
+
+                this.Entity.ContentTransferEncoding = transferEncoding;
+                using(var encoderStream = new QuotedPrintableStream(m_pEncodedDataStream,FileAccess.ReadWrite)){
+                    await stream.CopyToAsync(encoderStream,cancellationToken);
                 }
+                m_pEncodedDataStream.Position = 0;
             }
             else if(string.Equals(transferEncoding,MIME_TransferEncodings.Base64,StringComparison.InvariantCultureIgnoreCase)){
-                using(MemoryStreamEx fs = new MemoryStreamEx()){
-                    Base64Stream encoder = new Base64Stream(fs,false,true,FileAccess.ReadWrite);                                     
-                    Net_Utils.StreamCopy(stream,encoder,84000);
-                    encoder.Finish();
-                    fs.Position = 0;
-                    SetEncodedData(transferEncoding,fs);
+                // Release old stream and create new memory-tmp file stream.
+                await m_pEncodedDataStream.DisposeAsync();
+                m_pEncodedDataStream = new MemoryStreamEx();
+
+                this.Entity.ContentTransferEncoding = transferEncoding;
+                using(var encoderStream = new Base64Stream(m_pEncodedDataStream,false,true,FileAccess.ReadWrite)){
+                    await stream.CopyToAsync(encoderStream,cancellationToken);
                 }
+                m_pEncodedDataStream.Position = 0;
             }            
             else if(string.Equals(transferEncoding,MIME_TransferEncodings.Binary,StringComparison.InvariantCultureIgnoreCase)){
-                SetEncodedData(transferEncoding,stream);
+                await SetEncodedDataAsync(stream,transferEncoding,cancellationToken);
             }
             else if(string.Equals(transferEncoding,MIME_TransferEncodings.EightBit,StringComparison.InvariantCultureIgnoreCase)){
-                SetEncodedData(transferEncoding,stream);
+                await SetEncodedDataAsync(stream,transferEncoding,cancellationToken);
             }
             else if(string.Equals(transferEncoding,MIME_TransferEncodings.SevenBit,StringComparison.InvariantCultureIgnoreCase)){
-                SetEncodedData(transferEncoding,stream);
+                await SetEncodedDataAsync(stream,transferEncoding,cancellationToken);
             }
             else{
-                throw new NotSupportedException("Not supported Content-Transfer-Encoding '" + transferEncoding + "'.");
+                throw new NotSupportedException($"Content-Transfer-Encoding '{transferEncoding}' is not supported.");
             }
         }
 
@@ -281,18 +434,73 @@ namespace LumiSoft.Net.MIME
         #region method DataToStream
 
         /// <summary>
-        /// Stores body decoded-data to the specified stream.
+        /// Writes the decoded body data to the specified stream.
         /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
+        /// <param name="stream">
+        /// Stream to which to write the decoded body data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the body uses an unsupported
+        /// <c>Content-Transfer-Encoding</c>.
+        /// </exception>
+        /// <remarks>
+        /// The body data is decoded according to the
+        /// <c>Content-Transfer-Encoding</c> header field before being written
+        /// to the specified stream.
+        ///
+        /// This method blocks until the body data has been completely written.
+        /// For asynchronous operation, use
+        /// <see cref="DataToStreamAsync(Stream,CancellationToken)"/>.
+        /// </remarks>
         public void DataToStream(Stream stream)
         {
+            DataToStreamAsync(stream,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method DataToStreamAsync
+
+        /// <summary>
+        /// Writes the decoded body data to the specified stream.
+        /// </summary>
+        /// <param name="stream">
+        /// Stream to which to write the decoded body data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the body uses an unsupported
+        /// <c>Content-Transfer-Encoding</c>.
+        /// </exception>
+        /// <remarks>
+        /// The body data is decoded according to the
+        /// <c>Content-Transfer-Encoding</c> header field before being written
+        /// to the specified stream.
+        /// </remarks>
+        public async Task DataToStreamAsync(Stream stream,CancellationToken cancellationToken = default)
+        {
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
             using(Stream dataStream = GetDataStream()){
-                Net_Utils.StreamCopy(dataStream,stream,64000);
+                await dataStream.CopyToAsync(stream,128000,cancellationToken);
             }
         }
 
@@ -301,24 +509,78 @@ namespace LumiSoft.Net.MIME
         #region method DataToFile
 
         /// <summary>
-        /// Stores body decoded-data to the specified file.
+        /// Writes the decoded body data to the specified file.
         /// </summary>
-        /// <param name="fileName">File name with path, where to store body data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>fileName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="fileName">
+        /// File to which to write the decoded body data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the body uses an unsupported
+        /// <c>Content-Transfer-Encoding</c>.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the body data has been completely written.
+        /// For asynchronous operation, use
+        /// <see cref="DataToFileAsync(string,CancellationToken)"/>.
+        /// </remarks>
         public void DataToFile(string fileName)
         {
+            DataToFileAsync(fileName,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method DataToFileAsync
+
+        /// <summary>
+        /// Writes the decoded body data to the specified file.
+        /// </summary>
+        /// <param name="fileName">
+        /// File to which to write the decoded body data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when this body is not associated with a MIME entity.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the body uses an unsupported
+        /// <c>Content-Transfer-Encoding</c>.
+        /// </exception>
+        /// <remarks>
+        /// The body data is decoded according to the
+        /// <c>Content-Transfer-Encoding</c> header field before being written
+        /// to the specified file.
+        /// </remarks>
+        public async Task DataToFileAsync(string fileName,CancellationToken cancellationToken = default)
+        {
             if(fileName == null){
-                throw new ArgumentNullException("fileName");
-            }            
-            if(fileName == string.Empty){
-                throw new ArgumentException("Argument 'fileName' value must be specified.");
+                throw new ArgumentNullException(nameof(fileName));
+            }
+            if(fileName.Length == 0){
+                throw new ArgumentException("File name cannot be empty.",nameof(fileName));
             }
 
-            using(Stream fs = File.Create(fileName)){
-                using(Stream dataStream = GetDataStream()){
-                    Net_Utils.StreamCopy(dataStream,fs,64000);
-                }
+            await using(FileStream stream = File.Create(fileName)){
+                await DataToStreamAsync(stream,cancellationToken);
             }
         }
 
@@ -328,7 +590,8 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if body has modified.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was parsed.
         /// </summary>
         public override bool IsModified
         {
@@ -336,18 +599,24 @@ namespace LumiSoft.Net.MIME
         }
                 
         /// <summary>
-        /// Gets encoded body data size in bytes.
+        /// Gets the size of the encoded body data, in bytes.
         /// </summary>
-        public int EncodedDataSize
+        public long EncodedDataSize
         {
-            get{ return (int)m_pEncodedDataStream.Length; }
+            get{ return m_pEncodedDataStream.Length; }
         }
 
         /// <summary>
-        /// Gets body encoded data. 
+        /// Gets the encoded body data.
         /// </summary>
-        /// <remarks>NOTE: Use this property with care, because body data may be very big and you may run out of memory.
-        /// For bigger data use <see cref="GetEncodedDataStream"/> method instead.</remarks>
+        /// <remarks>
+        /// Use this property with care because the encoded body data is loaded
+        /// into memory. For large bodies, this may require a significant amount
+        /// of memory.
+        ///
+        /// For large amounts of data, use
+        /// <see cref="GetEncodedDataStream"/> instead.
+        /// </remarks>
         public byte[] EncodedData
         {
             get{ 
@@ -359,11 +628,19 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets body decoded data.
+        /// Gets the decoded body data.
         /// </summary>
-        /// <remarks>NOTE: Use this property with care, because body data may be very big and you may run out of memory.
-        /// For bigger data use <see cref="GetDataStream"/> method instead.</remarks>
-        /// <exception cref="NotSupportedException">Is raised when body contains not supported Content-Transfer-Encoding.</exception>
+        /// <remarks>
+        /// Accessing this property creates a copy of the decoded body data in
+        /// memory.
+        ///
+        /// For large amounts of data, use
+        /// <see cref="GetDataStream"/> instead.
+        /// </remarks>
+        /// <exception cref="NotSupportedException">
+        /// Raised when the body uses an unsupported
+        /// <c>Content-Transfer-Encoding</c>.
+        /// </exception>
         public byte[] Data
         {
             get{
@@ -376,11 +653,13 @@ namespace LumiSoft.Net.MIME
 
 
         /// <summary>
-        /// Gets encoded data stream.
+        /// Gets or sets encoded data stream.
         /// </summary>
         protected Stream EncodedStream
         {
             get{ return m_pEncodedDataStream; }
+
+            set{ m_pEncodedDataStream = value; }
         }
 
         #endregion

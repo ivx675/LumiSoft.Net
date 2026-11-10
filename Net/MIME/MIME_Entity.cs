@@ -4,28 +4,33 @@ using System.Collections.Generic;
 using System.Text;
 
 using LumiSoft.Net.IO;
-using LumiSoft.Net.MIME;
 
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Represents a MIME entity. Defined in RFC 2045 2.4.
+    /// Represents a MIME entity.
     /// </summary>
+    /// <remarks>
+    /// A MIME entity consists of a header section and an optional body.
+    /// MIME entities can be nested to form multipart structures.
+    /// Defined in RFC 2045 section 2.4.
+    /// </remarks>
     public class MIME_Entity : IDisposable
     {
-        private bool              m_IsDisposed    = false;
-        private MIME_Entity?      m_pParent       = null;
+        private bool              m_IsDisposed = false;
+        private MIME_Entity?      m_pParent    = null;
         private MIME_h_Collection m_pHeader;
-        private MIME_b?           m_pBody         = null;
-        private MIME_b_Provider   m_pBodyProvider;
+        private MIME_b?           m_pBody      = null;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_Entity"/> class.
         /// </summary>
+        /// <remarks>
+        /// The entity is created with an empty header collection and no body.
+        /// </remarks>
         public MIME_Entity()
         {
             m_pHeader = new MIME_h_Collection(new MIME_h_Provider());
-            m_pBodyProvider = new MIME_b_Provider();
         }
 
         #region method Dispose
@@ -33,14 +38,15 @@ namespace LumiSoft.Net.MIME
         /// <summary>
         /// Cleans up any resources being used. This method is thread-safe.
         /// </summary>
-        public void Dispose()
+        public virtual void Dispose()
         {
             lock(this){
                 if(m_IsDisposed){
                     return;
                 }
                 m_IsDisposed = true;
-
+                
+                m_pBody?.Dispose();
                 m_pParent = null;
             }
         }
@@ -54,27 +60,23 @@ namespace LumiSoft.Net.MIME
         /// Creates text/plain MIME entity.
         /// </summary>
         /// <param name="transferEncoding">Content transfer encoding.</param>
-        /// <param name="charset">Charset to use to encode text. If not sure, utf-8 is recommended.</param>
         /// <param name="text">Text.</param>
         /// <returns>Returns created entity.</returns>
         /// <exception cref="ArgumentNullException">Is raised when <b>transferEncoding</b>, <b>charset</b> or <b>text</b> is null reference.</exception>
         /// <exception cref="NotSupportedException">Is raised when body contains not supported Content-Transfer-Encoding.</exception>
-        public static MIME_Entity CreateEntity_Text_Plain(string transferEncoding,Encoding charset,string text)
+        public static MIME_Entity CreateEntity_Text_Plain(string transferEncoding,string text)
         {
             if(transferEncoding == null){
-                throw new ArgumentNullException("transferEncoding");
-            }
-            if(charset == null){
-                throw new ArgumentNullException("charset");
+                throw new ArgumentNullException(nameof(transferEncoding));
             }
             if(text == null){
-                throw new ArgumentNullException("text");
+                throw new ArgumentNullException(nameof(text));
             }
 
             MIME_Entity retVal = new MIME_Entity();
             MIME_b_Text body = new MIME_b_Text(MIME_MediaTypes.Text.plain);
             retVal.Body = body;
-            body.SetText(transferEncoding,charset,text);
+            body.SetText(transferEncoding,text);
 
             return retVal;
         }
@@ -87,27 +89,23 @@ namespace LumiSoft.Net.MIME
         /// Creates text/html MIME entity.
         /// </summary>
         /// <param name="transferEncoding">Content transfer encoding.</param>
-        /// <param name="charset">Charset to use to encode text. If not sure, utf-8 is recommended.</param>
         /// <param name="text">Text.</param>
         /// <returns>Returns created entity.</returns>
         /// <exception cref="ArgumentNullException">Is raised when <b>transferEncoding</b>, <b>charset</b> or <b>text</b> is null reference.</exception>
         /// <exception cref="NotSupportedException">Is raised when body contains not supported Content-Transfer-Encoding.</exception>
-        public static MIME_Entity CreateEntity_Text_Html(string transferEncoding,Encoding charset,string text)
+        public static MIME_Entity CreateEntity_Text_Html(string transferEncoding,string text)
         {
             if(transferEncoding == null){
-                throw new ArgumentNullException("transferEncoding");
-            }
-            if(charset == null){
-                throw new ArgumentNullException("charset");
+                throw new ArgumentNullException(nameof(transferEncoding));
             }
             if(text == null){
-                throw new ArgumentNullException("text");
+                throw new ArgumentNullException(nameof(text));
             }
 
             MIME_Entity retVal = new MIME_Entity();
             MIME_b_Text body = new MIME_b_Text(MIME_MediaTypes.Text.html);
             retVal.Body = body;
-            body.SetText(transferEncoding,charset,text);
+            body.SetText(transferEncoding,text);
 
             return retVal;
         }
@@ -125,7 +123,7 @@ namespace LumiSoft.Net.MIME
         public static MIME_Entity CreateEntity_Attachment(string fileName)
         {
             if(fileName == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(fileName));
             }
 
             using(Stream stream = File.OpenRead(fileName)){
@@ -143,7 +141,7 @@ namespace LumiSoft.Net.MIME
         public static MIME_Entity CreateEntity_Attachment(string attachmentName,string fileName)
         {
             if(fileName == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(fileName));
             }
 
             using(Stream stream = File.OpenRead(fileName)){
@@ -161,10 +159,10 @@ namespace LumiSoft.Net.MIME
         public static MIME_Entity CreateEntity_Attachment(string attachmentName,Stream stream)
         {
             if(attachmentName == null){
-                throw new ArgumentNullException("attachmentName");
+                throw new ArgumentNullException(nameof(attachmentName));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
             long fileSize = stream.CanSeek ? (stream.Length - stream.Position) : -1;
@@ -189,152 +187,255 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
-        #region method ToFile
-
-        /// <summary>
-        /// Stores MIME entity to the specified file.
-        /// </summary>
-        /// <param name="file">File name with path where to store MIME entity.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public void ToFile(string file,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset)
-        {
-            ToFile(file,headerWordEncoder,headerParmetersCharset,false);
-        }
-
-        /// <summary>
-        /// Stores MIME entity to the specified file.
-        /// </summary>
-        /// <param name="file">File name with path where to store MIME entity.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public void ToFile(string file,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
-        {
-            if(file == null){
-                throw new ArgumentNullException("file");
-            }
-            if(file == ""){
-                throw new ArgumentException("Argument 'file' value must be specified.");
-            }
-
-            using(FileStream fs = File.Create(file)){
-                ToStream(fs,headerWordEncoder,headerParmetersCharset,headerReencode);
-            }
-        }
-
-        #endregion
-
         #region method ToStream
 
         /// <summary>
-        /// Store MIME enity to the specified stream.
+        /// Stores the MIME entity to the specified stream.
         /// </summary>
-        /// <param name="stream">Stream where to store MIME entity. Storing starts form stream current position.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset)
+        /// <param name="stream">
+        /// Stream to which to write the MIME entity.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        public void ToStream(Stream stream,bool utf8Headers = false,bool reEncodeHeaders = false)
         {
-            ToStream(stream,headerWordEncoder,headerParmetersCharset,false);
-        }
-
-        /// <summary>
-        /// Store MIME enity to the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream where to store MIME entity. Storing starts form stream current position.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
-        {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
-            m_pHeader.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
-            stream.Write(new byte[]{(int)'\r',(int)'\n'},0,2);
-            m_pBody?.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
+            ToStreamAsync(stream,utf8Headers,reEncodeHeaders).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method ToString
+        #region method ToStreamAsync
 
         /// <summary>
-        /// Returns MIME entity as string.
+        /// Stores the MIME entity to the specified stream.
         /// </summary>
-        /// <returns>Returns MIME entity as string.</returns>
-        public override string ToString()
+        /// <param name="stream">
+        /// Stream to which to write the MIME entity.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        public async Task ToStreamAsync(Stream stream,bool utf8Headers = false,bool reEncodeHeaders = false,CancellationToken cancellationToken = default)
         {
-            return ToString(null,null);
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
+            }
+            if(m_pBody == null) {
+                throw new InvalidOperationException("MIME entity body has not been set.");
+            }
+
+            await m_pHeader.ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
+            await stream.WriteAsync(new byte[]{(int)'\r',(int)'\n'},0,2);
+            await m_pBody.ToStreamAsync(stream, utf8Headers, reEncodeHeaders, cancellationToken);
         }
 
+        #endregion
+
+        #region method ToFile
+
         /// <summary>
-        /// Returns MIME entity as string.
+        /// Stores the MIME entity to the specified file.
         /// </summary>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <returns>Returns MIME entity as string.</returns>
-        public string ToString(MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset)
+        /// <param name="fileName">
+        /// File to which to write the MIME entity.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <remarks>
+        /// This method blocks until the MIME entity has been completely written.
+        /// For asynchronous operation, use <see cref="ToFileAsync(string,bool,bool,CancellationToken)"/>.
+        /// </remarks>
+        public void ToFile(string fileName,bool utf8Headers = false,bool reEncodeHeaders = false)
         {
-            return ToString(headerWordEncoder,headerParmetersCharset,false);
+            ToFileAsync(
+                fileName,
+                utf8Headers,
+                reEncodeHeaders,
+                CancellationToken.None
+            ).GetAwaiter().GetResult();
         }
 
-        /// <summary>
-        /// Returns MIME entity as string.
-        /// </summary>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <returns>Returns MIME entity as string.</returns>
-        public string ToString(MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
-        {
-            using(MemoryStream ms = new MemoryStream()){
-                ToStream(ms,headerWordEncoder,headerParmetersCharset,headerReencode);
+        #endregion
 
-                return Encoding.UTF8.GetString(ms.ToArray());
+        #region method ToFileAsync
+
+        /// <summary>
+        /// Stores the MIME entity to the specified file.
+        /// </summary>
+        /// <param name="fileName">
+        /// File to which to write the MIME entity.
+        /// </param>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        public async Task ToFileAsync(
+            string fileName,
+            bool utf8Headers = false,
+            bool reEncodeHeaders = false,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if(fileName == null){
+                throw new ArgumentNullException(nameof(fileName));
+            }
+            if(fileName.Length == 0){
+                throw new ArgumentException("Argument 'fileName' cannot be empty.", nameof(fileName));
+            }
+
+            await using(FileStream stream = File.Create(fileName)){
+                await ToStreamAsync(
+                    stream,
+                    utf8Headers,
+                    reEncodeHeaders,
+                    cancellationToken
+                );
             }
         }
 
         #endregion
 
-        #region method ToByte
+        #region mehtod ToByteArray
 
         /// <summary>
-        /// Returns MIME entity as byte[].
+        /// Stores the MIME entity to a byte array.
         /// </summary>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <returns>Returns MIME entity as byte[].</returns>
-        public byte[] ToByte(MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset)
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <returns>
+        /// Returns the serialized MIME entity.
+        /// </returns>
+        /// <remarks>
+        /// The entire MIME entity is buffered in memory. For large messages
+        /// or messages containing large attachments, use
+        /// <see cref="ToStream(Stream,bool,bool)"/> or
+        /// <see cref="ToStreamAsync(Stream,bool,bool,CancellationToken)"/>
+        /// instead.
+        /// </remarks>
+        public byte[] ToByteArray(
+            bool utf8Headers = false,
+            bool reEncodeHeaders = false
+        )
         {
-            return ToByte(headerWordEncoder,headerParmetersCharset,false);
+            return ToByteArrayAsync(
+                utf8Headers,
+                reEncodeHeaders,
+                CancellationToken.None
+            ).GetAwaiter().GetResult();
         }
 
-        /// <summary>
-        /// Returns MIME entity as byte[].
-        /// </summary>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <returns>Returns MIME entity as byte[].</returns>
-        public byte[] ToByte(MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
-        {
-            using(MemoryStream ms = new MemoryStream()){
-                ToStream(ms,headerWordEncoder,headerParmetersCharset,headerReencode);
+        #endregion
 
-                return ms.ToArray();
-            }
+        #region method ToByteArrayAsync
+
+        /// <summary>
+        /// Stores the MIME entity to a byte array.
+        /// </summary>
+        /// <param name="utf8Headers">
+        /// Specifies whether rewritten header fields are written as RFC 6532
+        /// UTF-8 headers. If <see langword="false"/>, rewritten non-ASCII
+        /// header values are encoded using UTF-8 with RFC 2047 encoded-words
+        /// and RFC 2231 parameter encoding.
+        /// </param>
+        /// <param name="reEncodeHeaders">
+        /// Specifies whether all header fields are regenerated and re-encoded.
+        /// If <see langword="false"/>, unchanged parsed header fields retain
+        /// their original wire representation.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the serialized MIME entity.
+        /// </returns>
+        /// <remarks>
+        /// The entire MIME entity is buffered in memory. For large messages
+        /// or messages containing large attachments, use
+        /// <see cref="ToStreamAsync(Stream,bool,bool,CancellationToken)"/>
+        /// instead.
+        /// </remarks>
+        public async Task<byte[]> ToByteArrayAsync(
+            bool utf8Headers = false,
+            bool reEncodeHeaders = false,
+            CancellationToken cancellationToken = default
+        )
+        {
+            using MemoryStream stream = new MemoryStream();
+
+            await ToStreamAsync(
+                stream,
+                utf8Headers,
+                reEncodeHeaders,
+                cancellationToken
+            );
+
+            return stream.ToArray();
         }
 
         #endregion
@@ -342,26 +443,70 @@ namespace LumiSoft.Net.MIME
         #region method DataToStream
 
         /// <summary>
-        /// Stores body decoded-data to the specified stream. Note: This method is available for single part entities only.
+        /// Writes the decoded body data to the specified stream.
         /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is called for multipart entity.</exception>
+        /// <param name="stream">
+        /// Stream to which to write the decoded body data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not a single-part MIME body.
+        /// </exception>
+        /// <remarks>
+        /// This method is only valid for single-part MIME bodies. The written
+        /// data is decoded according to the entity's Content-Transfer-Encoding.
+        /// </remarks>
         public void DataToStream(Stream stream)
         {
+            DataToStreamAsync(stream,CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method DataToStreamAsync
+
+        /// <summary>
+        /// Writes the decoded body data to the specified stream.
+        /// </summary>
+        /// <param name="stream">
+        /// Stream to which to write the decoded body data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not a single-part MIME body.
+        /// </exception>
+        /// <remarks>
+        /// This method is only valid for single-part MIME bodies. The written
+        /// data is decoded according to the entity's Content-Transfer-Encoding.
+        /// </remarks>
+        public async Task DataToStreamAsync(Stream stream,CancellationToken cancellationToken = default)
+        {
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
             if(this.Body == null){
-                throw new InvalidOperationException("Mime entity body has been not set yet.");
+                throw new InvalidOperationException("MIME entity body has not been set.");
             }
-            if(!(this.Body is MIME_b_SinglepartBase)){
-                throw new InvalidOperationException("This method is available only for single part entities, not for multipart.");
+            if(this.Body is not MIME_b_SinglepartBase){
+                throw new InvalidOperationException("This method is only valid for single-part MIME bodies.");
             }
 
             MIME_b_SinglepartBase body = (MIME_b_SinglepartBase)this.Body;
             using(Stream dataStream = body.GetDataStream()){
-                Net_Utils.StreamCopy(dataStream,stream,64000);
+                await dataStream.CopyToAsync(stream,cancellationToken);
             }
         }
 
@@ -370,90 +515,177 @@ namespace LumiSoft.Net.MIME
         #region method DataToFile
 
         /// <summary>
-        /// Stores body decoded-data to the specified file. Note: This method is available for single part entities only.
+        /// Writes the decoded body data to the specified file.
         /// </summary>
-        /// <param name="fileName">File name with path, where to store body data.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>fileName</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is called for multipart entity.</exception>
+        /// <param name="fileName">
+        /// File to which to write the decoded body data.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not a single-part MIME body.
+        /// </exception>
+        /// <remarks>
+        /// This method is only valid for single-part MIME bodies. The written
+        /// data is decoded according to the entity's Content-Transfer-Encoding.
+        /// For asynchronous operation, use
+        /// <see cref="DataToFileAsync(string,CancellationToken)"/>.
+        /// </remarks>
         public void DataToFile(string fileName)
         {
-            if(fileName == null){
-                throw new ArgumentNullException("fileName");
-            }            
-            if(fileName == string.Empty){
-                throw new ArgumentException("Argument 'fileName' value must be specified.");
-            }
-            if(this.Body == null){
-                throw new InvalidOperationException("Mime entity body has been not set yet.");
-            }
-            if(!(this.Body is MIME_b_SinglepartBase)){
-                throw new InvalidOperationException("This method is available only for single part entities, not for multipart.");
-            }
-
-            MIME_b_SinglepartBase body = (MIME_b_SinglepartBase)this.Body;
-            using(Stream fs = File.Create(fileName)){
-                using(Stream dataStream = body.GetDataStream()){
-                    Net_Utils.StreamCopy(dataStream,fs,64000);
-                }
-            }
+            DataToFileAsync(fileName,CancellationToken.None).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method DataToByte
+        #region method DataToFileAsync
 
         /// <summary>
-        /// Returns body data as byte[]. Note: This method is available for single part entities only.
+        /// Writes the decoded body data to the specified file.
         /// </summary>
-        /// <exception cref="InvalidOperationException">Is raised when this method is called for multipart entity.</exception>
-        /// <returns>Returns body data as byte[].</returns>
-        public byte[] DataToByte()
+        /// <param name="fileName">
+        /// File to which to write the decoded body data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not a single-part MIME body.
+        /// </exception>
+        /// <remarks>
+        /// This method is only valid for single-part MIME bodies. The written
+        /// data is decoded according to the entity's Content-Transfer-Encoding.
+        /// </remarks>
+        public async Task DataToFileAsync(string fileName,CancellationToken cancellationToken = default)
         {
-            if(this.Body == null){
-                throw new InvalidOperationException("Mime entity body has been not set yet.");
+            if(fileName == null){
+                throw new ArgumentNullException(nameof(fileName));
             }
-            if(!(this.Body is MIME_b_SinglepartBase)){
-                throw new InvalidOperationException("This method is available only for single part entities, not for multipart.");
-            }
-
-            MemoryStream stream = new MemoryStream();
-            MIME_b_SinglepartBase body = (MIME_b_SinglepartBase)this.Body;
-            using(Stream dataStream = body.GetDataStream()){
-                Net_Utils.StreamCopy(dataStream,stream,64000);
+            if(fileName.Length == 0){
+                throw new ArgumentException("Argument 'fileName' cannot be empty.",nameof(fileName));
             }
 
-            return stream.ToArray();
+            await using(FileStream stream = File.Create(fileName)){
+                await DataToStreamAsync(stream, cancellationToken);
+            }
+        }
+
+        #endregion
+
+        #region method DataToByteArray
+
+        /// <summary>
+        /// Returns the decoded body data as a byte array.
+        /// </summary>
+        /// <returns>
+        /// Returns the decoded body data.
+        /// </returns>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not a single-part MIME body.
+        /// </exception>
+        /// <remarks>
+        /// This method is only valid for single-part MIME bodies. The returned
+        /// data is decoded according to the entity's Content-Transfer-Encoding.
+        ///
+        /// The entire decoded body is buffered in memory. For large attachments,
+        /// use <see cref="DataToStream(Stream)"/> or
+        /// <see cref="DataToFile(string)"/> instead.
+        /// </remarks>
+        public byte[] DataToByteArray()
+        {
+            return DataToByteArrayAsync(CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region method DataToByteArrayAsync
+
+        /// <summary>
+        /// Returns the decoded body data as a byte array.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the decoded body data.
+        /// </returns>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the MIME entity body has not been set.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the body is not a single-part MIME body.
+        /// </exception>
+        /// <remarks>
+        /// This method is only valid for single-part MIME bodies. The returned
+        /// data is decoded according to the entity's Content-Transfer-Encoding.
+        ///
+        /// The entire decoded body is buffered in memory. For large attachments,
+        /// use <see cref="DataToStreamAsync(Stream,CancellationToken)"/> or
+        /// <see cref="DataToFileAsync(string,CancellationToken)"/> instead.
+        /// </remarks>
+        public async Task<byte[]> DataToByteArrayAsync(CancellationToken cancellationToken = default)
+        {
+            using(MemoryStream stream = new MemoryStream()){
+                await DataToStreamAsync(stream, cancellationToken);
+
+                return stream.ToArray();
+            }
         }
 
         #endregion
 
 
-        #region method Parse
+        #region method ParseInternalAsync
 
         /// <summary>
-        /// Parses MIME entiry from the specified stream.
+        /// Asynchronously parses a MIME entiy from a stream by reading and processing its headers, 
+        /// verifying constraints, and delegating the remaining body stream to the body provider.
         /// </summary>
-        /// <param name="stream">Source stream.</param>
-        /// <param name="headerEncoding">Header reading encoding. If not sure UTF-8 is recommended.</param>
-        /// <param name="defaultContentType">Default content type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>,<b>headerEncoding</b> or <b>defaultContentType</b> is null reference.</exception>
-        internal protected void Parse(SmartStream stream,Encoding headerEncoding,MIME_h_ContentType defaultContentType)
+        /// <param name="stream">The source stream containing the raw MIME message.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="stream"/> is <c>null</c>.</exception>
+        internal async Task ParseInternalAsync(Stream stream,CancellationToken cancellationToken = default)
         {
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
-            if(headerEncoding == null){
-                throw new ArgumentNullException("headerEncoding");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
-            }
-            
-            m_pHeader.Parse(stream,headerEncoding); 
-          
-            m_pBody = m_pBodyProvider.Parse(this,stream,defaultContentType);
-            m_pBody.SetParent(this,false);         
+
+            // 1. Read headers (enforces 1 MB limit, handles loose mode fallback, and leaves stream positioned at body start)
+            long maxHeaderBytes = 1 * 1024 * 1024; // 1 MB
+            string rawHeader = await ReadHeaderAsync(stream,maxHeaderBytes,true,cancellationToken);
+                        
+            // Feed header to your header parser component
+            m_pHeader.ParseFromString(rawHeader);
+
+            // 2. Stream is now perfectly positioned at the body start.
+            // Create the BoundedStream and hand off to the body provider.
+            long bodyStart = stream.Position;
+            long bodyLength = stream.Length - bodyStart;
+
+            var bodyStream = new BoundedStream(stream,bodyStart,bodyLength);
+            bodyStream.Position = 0;
+
+            m_pBody = await ParseBodyAsync(bodyStream,cancellationToken);
+            m_pBody.SetParent(this,false);
         }
 
         #endregion
@@ -472,6 +704,187 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
+        #region method ReadHeaderAsync
+
+        /// <summary>
+        /// Asynchronously reads and extracts MIME headers from the stream up to the standard <c>\r\n\r\n</c> terminator, 
+        /// enforcing a strict maximum size limit to protect against memory exhaustion attacks.
+        /// <para>
+        /// This method uses an efficient vectorized sliding window with a 3-byte overlap to reliably detect 
+        /// terminators even if they span across buffer read boundaries. Upon completion, the underlying 
+        /// stream's position is automatically repositioned precisely at the start of the body payload.
+        /// </para>
+        /// </summary>
+        /// <param name="stream">The source stream positioned at the start of the MIME entity.</param>
+        /// <param name="maxHeaderSize">The maximum allowed size of the header block in bytes (e.g., 1,048,576 for 1 MB).</param>
+        /// <param name="looseMode">
+        /// If <c>true</c>, reaching the end of the stream without finding a <c>\r\n\r\n</c> terminator 
+        /// will treat all accumulated content as headers and assume an empty body rather than throwing an exception.
+        /// </param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A string containing the raw ASCII header block.</returns>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="stream"/> is null.</exception>
+        /// <exception cref="InvalidDataException">
+        /// Thrown if the headers exceed the <paramref name="maxHeaderSize"/> threshold, 
+        /// or if the end of the stream is reached before finding the <c>\r\n\r\n</c> terminator (when <paramref name="looseMode"/> is <c>false</c>).
+        /// </exception>
+        private async Task<string> ReadHeaderAsync(Stream stream,long maxHeaderSize,bool looseMode,CancellationToken cancellationToken = default)
+        {
+            if(stream == null){
+                throw new ArgumentNullException(nameof(stream));
+            }
+
+            int bufferSize = 8192;
+            byte[] buffer = new byte[bufferSize];
+            int bytesInBuffer = 0;
+            long totalBytesRead = 0;
+            int searchOffset = 0;
+
+            using var headerMemoryStream = new MemoryStream();
+
+            while(true){
+                int bytesRead = await stream.ReadAsync(buffer.AsMemory(bytesInBuffer, bufferSize - bytesInBuffer), cancellationToken);
+                bytesInBuffer += bytesRead;
+                totalBytesRead += bytesRead;
+
+                // Enforce strict header size limit against DoS
+                if(totalBytesRead > maxHeaderSize){
+                    throw new InvalidDataException($"MIME headers exceeded the maximum allowed size of {maxHeaderSize / 1024} KB.");
+                }
+
+                // Check for EOF
+                if(bytesRead == 0){
+                    if(looseMode){
+                        // Loose Mode Fallback: Treat all accumulated content as headers, zero-length body.
+                        if(bytesInBuffer > 0){
+                            headerMemoryStream.Write(buffer,0,bytesInBuffer);
+                        }
+
+                        return Encoding.UTF8.GetString(headerMemoryStream.ToArray());
+                    }
+
+                    throw new InvalidDataException("Reached end of stream while searching for MIME headers (\r\n\r\n not found).");
+                }
+
+                // Search for \r\n\r\n using vectorized SIMD search
+                ReadOnlySpan<byte> span = buffer.AsSpan(0, bytesInBuffer);
+                int relativeIndex = span.Slice(searchOffset).IndexOf("\r\n\r\n"u8);
+                int matchIndex = relativeIndex != -1 ? searchOffset + relativeIndex : -1;
+
+                if(matchIndex != -1){
+                    // 1. Write the header block up to the terminator
+                    headerMemoryStream.Write(buffer, 0, matchIndex);
+
+                    // 2. Adjust underlying stream position to the start of the body payload
+                    long excessBytes = bytesInBuffer - (matchIndex + 4);
+                    stream.Position -= excessBytes;
+
+                    // 3. Return decoded headers string
+                    return Encoding.UTF8.GetString(headerMemoryStream.ToArray());
+                }
+
+                // Buffer management for sliding window tail overlap
+                int overlapSize = 3;
+                if(bytesInBuffer > overlapSize){
+                    int safeToWriteCount = bytesInBuffer - overlapSize;
+                    headerMemoryStream.Write(buffer, 0, safeToWriteCount);
+
+                    // Retain the last 3 bytes at the front of the buffer
+                    Array.Copy(buffer, safeToWriteCount, buffer, 0, overlapSize);
+                    bytesInBuffer = overlapSize;
+            
+                    // Reset search offset to 0 so the next iteration scans the overlap region
+                    searchOffset = 0;
+                }
+                else{
+                    searchOffset = bytesInBuffer;
+                }
+            }
+        }
+
+        #endregion
+
+        #region method ParseBodyAsync
+
+        private async Task<MIME_b> ParseBodyAsync(Stream stream,CancellationToken cancellationToken = default)
+        {
+            if(stream == null){
+                throw new ArgumentNullException(nameof(stream));
+            }
+
+            var defaultContentType = new MIME_h_ContentType("text/plain");
+
+            string typeWithSubtype = defaultContentType.TypeWithSubtype;
+            string type = "text";
+            try{
+                if(this.ContentType != null){
+                    typeWithSubtype = this.ContentType.TypeWithSubtype;
+                    type            = this.ContentType.Type;
+                }
+            }
+            catch{
+                // Do nothing, content will be MIME_b_Unknown.
+                typeWithSubtype = "unknown/unknown";
+            }
+
+            if(string.Equals(typeWithSubtype,"application/pkcs7-mime",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_ApplicationPkcs7Mime.Parse(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"message/rfc822",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MessageRfc822.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"message/delivery-status",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_MessageDeliveryStatus.Parse(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/alternative",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartAlternative.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/encrypted",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartEncrypted.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/form-data",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartFormData.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/mixed",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartMixed.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/related",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartRelated.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/report",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartReport.ParseAsync(this,stream);
+            }
+            else if(string.Equals(typeWithSubtype,"multipart/signed",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_MultipartSigned.ParseAsync(this,stream);
+            }
+            else if(string.Equals(type,"application",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_Application.Parse(this,stream);
+            }
+            else if(string.Equals(type,"audio",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_Audio.Parse(this,stream);
+            }
+            else if(string.Equals(type,"image",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_Image.Parse(this,stream);
+            }
+            else if(string.Equals(type,"message",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_Message.Parse(this,stream);
+            }
+            else if(string.Equals(type,"multipart",StringComparison.OrdinalIgnoreCase)){
+                return await MIME_b_Multipart.ParseAsync(this,stream);
+            }
+            else if(string.Equals(type,"text",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_Text.Parse(this,stream);
+            }
+            else if(string.Equals(type,"video",StringComparison.OrdinalIgnoreCase)){
+                return MIME_b_Video.Parse(this,stream);
+            }
+            
+            return MIME_b_Unknown.Parse(this,stream);
+        }
+
+        #endregion
+
+
         #region Properties Implementation
 
         // Permanent headerds list: http://www.rfc-editor.org/rfc/rfc4021.txt
@@ -485,7 +898,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets if this entity is modified since it has loaded.
+        /// Gets whether this entity has been modified since it was loaded.
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public bool IsModified
@@ -500,9 +913,14 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets the parent entity of this entity, returns null if this is the root entity.
+        /// Gets the parent entity.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <remarks>
+        /// Returns <c>null</c> if this entity is the root entity.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public MIME_Entity? Parent
         {
             get{
@@ -515,9 +933,11 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets MIME entity header field collection.
+        /// Gets the collection of header fields associated with this entity.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public MIME_h_Collection Header
         {
             get{ 
@@ -530,11 +950,17 @@ namespace LumiSoft.Net.MIME
         }
                                 
         /// <summary>
-        /// Gets or sets MIME version number. Value null means that header field does not exist. Normally this value is 1.0. Defined in RFC 2045 section 4.
+        /// Gets or sets the MIME-Version header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>An indicator that this message is formatted according to the MIME
-        /// standard, and an indication of which version of MIME is used.</remarks>
+        /// <remarks>
+        /// Specifies the MIME version used by this entity.
+        /// Returns <c>null</c> if the header field is not present.
+        /// The value is typically <c>1.0</c>.
+        /// Defined in RFC 2045 section 4.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? MimeVersion
         {
             get{ 
@@ -573,10 +999,16 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets content body part ID. Value null means that header field does not exist. Defined in RFC 2045 7.
+        /// Gets or sets the Content-ID header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Specifies a Unique ID for one MIME body part of the content of a message.</remarks>
+        /// <remarks>
+        /// Specifies a unique identifier for this MIME entity.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2045 section 7.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentID
         {
             get{ 
@@ -615,10 +1047,16 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets description of message body part. Value null means that header field does not exist. Defined in RFC 2045 8.
+        /// Gets or sets the Content-Description header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Description of a particular body part of a message; for example, a caption for an image body part.</remarks>
+        /// <remarks>
+        /// Provides a human-readable description of this MIME entity.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2045 section 8.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentDescription
         {
             get{
@@ -700,10 +1138,18 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets MIME content type. Value null means that header field does not exist. Defined in RFC 2045 5.
+        /// Gets or sets the Content-Transfer-Encoding header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies the transfer encoding used for the entity body.
+        /// Common values include 7bit, 8bit, binary, quoted-printable, and base64.
+        /// Returns <c>null</c> if the header field is not present.
+        /// RFC-defined values are available in <see cref="MIME_TransferEncodings"/>.
+        /// Defined in RFC 2045 section 6.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public MIME_h_ContentType? ContentType
         {
             get{
@@ -745,10 +1191,16 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets base to be used for resolving relative URIs within this content part. Value null means that header field does not exist.
+        /// Gets or sets the Content-Base header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Base to be used for resolving relative URIs within this content part. See also Content-Location.</remarks>
+        /// <remarks>
+        /// Specifies the base URI used to resolve relative URIs within this MIME entity.
+        /// Returns <c>null</c> if the header field is not present.
+        /// See also <see cref="ContentLocation"/>.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentBase
         {
             get{
@@ -787,11 +1239,18 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets URI for retrieving a body part. Value null means that header field does not exist.
+        /// Gets or sets the Content-Location header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>URI using which the content of this body-part part was retrieved,
-        /// might be retrievable, or which otherwise gives a globally unique identification of the content.</remarks>
+        /// <remarks>
+        /// Specifies a URI associated with this MIME entity.
+        /// The URI may identify the original location of the content or provide a
+        /// globally unique identifier for it.
+        /// Returns <c>null</c> if the header field is not present.
+        /// See also <see cref="ContentBase"/>.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentLocation
         {
             get{
@@ -830,11 +1289,17 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets content features of a MIME body part. Value null means that header field does not exist.
+        /// Gets or sets the Content-features header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>The 'Content-features:' header can be used to annotate a MIME body part with a media feature expression, 
-        /// to indicate features of the body part content. See also RFC 2533, RFC 2506, and RFC 2045.</remarks>
+        /// <remarks>
+        /// Specifies media feature information associated with this MIME entity.
+        /// Returns <c>null</c> if the header field is not present.
+        /// This header is rarely used in modern MIME messages.
+        /// See RFC 2533 and RFC 2506.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? Contentfeatures
         {
             get{
@@ -873,12 +1338,23 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets content disposition. Value null means that header field does not exist.
+        /// Gets or sets the Content-Disposition header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Indicates whether a MIME body part is to be shown inline or is an attachment; can also indicate a 
-        /// suggested filename for use when saving an attachment to a file.</remarks>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <remarks>
+        /// Specifies how the MIME entity should be presented to the recipient.
+        /// Common disposition types are <c>inline</c> and <c>attachment</c>.
+        /// This header may also specify a suggested file name and other
+        /// disposition parameters.
+        /// Returns <c>null</c> if the header field is not present.
+        /// Defined in RFC 2183.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when the header field cannot be parsed as a
+        /// <see cref="MIME_h_ContentDisposition"/>.
+        /// </exception>
         public MIME_h_ContentDisposition? ContentDisposition
         {
             get{
@@ -920,11 +1396,17 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets language of message content. Value null means that header field does not exist.
+        /// Gets or sets the Content-Language header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Can include a code for the natural language used in a message; e.g., 'en' for English. 
-        /// Can also contain a list of languages for a message containing more than one language.</remarks>
+        /// <remarks>
+        /// Specifies the natural language or languages of this MIME entity.
+        /// Common values include language tags such as <c>en</c>, <c>en-US</c>,
+        /// and <c>et</c>.
+        /// Returns <c>null</c> if the header field is not present.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentLanguage
         {
             get{
@@ -963,10 +1445,16 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets message alternative content. Value null means that header field does not exist.
+        /// Gets or sets the Content-Alternative header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Information about the media features of alternative content formats available for the current message.</remarks>
+        /// <remarks>
+        /// Provides information about alternative representations of this MIME entity.
+        /// Returns <c>null</c> if the header field is not present.
+        /// This header is rarely used in modern MIME messages.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentAlternative
         {
             get{
@@ -1005,10 +1493,16 @@ namespace LumiSoft.Net.MIME
         }
         
         /// <summary>
-        /// Gets or sets content MD5 checksum. Value null means that header field does not exist.
+        /// Gets or sets the Content-MD5 header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Checksum of content to ensure that it has not been modified.</remarks>
+        /// <remarks>
+        /// Specifies an MD5 checksum of the entity body for integrity verification.
+        /// Returns <c>null</c> if the header field is not present.
+        /// This header is rarely used in modern MIME messages.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentMD5
         {
             get{
@@ -1047,10 +1541,17 @@ namespace LumiSoft.Net.MIME
         }
         
         /// <summary>
-        /// Gets or sets time duration of content. Value null means that header field does not exist.
+        /// Gets or sets the Content-Duration header field.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <remarks>Time duration of body part content, in seconds (e.g., for audio message).</remarks>
+        /// <remarks>
+        /// Specifies the duration of the entity body, in seconds.
+        /// Returns <c>null</c> if the header field is not present.
+        /// This header is most commonly used with audio and video content and is
+        /// rarely used in modern MIME messages.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Is raised when this object is disposed and this property is accessed.
+        /// </exception>
         public string? ContentDuration
         {
             get{
@@ -1089,9 +1590,15 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets MIME entity body.
+        /// Gets or sets the MIME entity body.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
+        /// <remarks>
+        /// Returns <c>null</c> if the entity does not currently have a body.
+        /// Assigning <c>null</c> is not permitted.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when a null value is assigned.
+        /// </exception>
         public MIME_b? Body
         {
             get{ return m_pBody; }

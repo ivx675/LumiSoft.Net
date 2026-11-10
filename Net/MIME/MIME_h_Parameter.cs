@@ -5,7 +5,7 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Represents MIME header field parameter.
+    /// Represents a MIME header field parameter.
     /// </summary>
     public class MIME_h_Parameter
     {
@@ -14,14 +14,29 @@ namespace LumiSoft.Net.MIME
         private string? m_Value      = null;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the
+        /// <see cref="MIME_h_Parameter"/> class.
         /// </summary>
-        /// <param name="name">Parameter name.</param>
-        /// <param name="value">Parameter value. Value null means not specified.</param>
+        /// <param name="name">
+        /// Parameter name.
+        /// </param>
+        /// <param name="value">
+        /// Parameter value, or <see langword="null"/> if not specified.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="name"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="name"/> is empty.
+        /// </exception>
         public MIME_h_Parameter(string name,string? value)
         {
             if(name == null){
-                throw new ArgumentNullException("name");
+                throw new ArgumentNullException(nameof(name));
+            }
+            if(string.IsNullOrEmpty(name)) {
+                throw new ArgumentException("Parameter name cannot be empty.",nameof(name));
             }
 
             m_Name  = name;
@@ -32,17 +47,16 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field parameter is modified since it has loaded.
+        /// Gets a value indicating whether this parameter has been modified
+        /// since it was loaded.
         /// </summary>
-        /// <remarks>All new added header fields parameters has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public bool IsModified
         {
             get{ return m_IsModified; }
         }
 
         /// <summary>
-        /// Gets parameter name.
+        /// Gets the parameter name.
         /// </summary>
         public string Name
         {
@@ -50,7 +64,8 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets parameter value. Value null means not specified.
+        /// Gets or sets the parameter value, or <see langword="null"/> if the
+        /// value is not specified.
         /// </summary>
         public string? Value
         {

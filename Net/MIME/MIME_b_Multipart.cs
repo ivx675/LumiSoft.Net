@@ -1,558 +1,50 @@
-﻿using System;
-using System.IO;
+﻿using LumiSoft.Net.IO;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
-
-using LumiSoft.Net.IO;
 
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME application/xxx bodies. Defined in RFC 2046 5.1.
+    /// Represents a MIME body with a media type whose top-level type is
+    /// <c>multipart</c>.
     /// </summary>
     /// <remarks>
-    /// The "multipart" represents single MIME body containing multiple child MIME entities.
-    /// The "multipart" body must contain at least 1 MIME entity.
+    /// Defined by RFC 2046 section 5.1. A multipart body contains one or more
+    /// child MIME entities separated by a boundary delimiter. A multipart
+    /// body must contain at least one body part.
     /// </remarks>
     public class MIME_b_Multipart : MIME_b
     {
-        #region class _MultipartReader
-
-        /// <summary>
-        /// Implements  multipart "body parts" reader.
-        /// </summary>
-        public class _MultipartReader : Stream
-        {
-            #region enum State
-
-            /// <summary>
-            /// This enum specified multipart reader sate.
-            /// </summary>
-            internal enum State
-            {
-                /// <summary>
-                /// First boundary must be seeked.
-                /// </summary>
-                SeekFirst = 0,
-
-                /// <summary>
-                /// Read next boundary. (Method Next must be called to continue next boundary reading)
-                /// </summary>
-                ReadNext = 1,
-
-                /// <summary>
-                /// Active boundary reading pending.
-                /// </summary>
-                InBoundary = 2,
-
-                /// <summary>
-                /// All boundraies readed.
-                /// </summary>
-                Done = 3,
-            }
-
-            #endregion
-
-            #region class _DataLine
-
-            /// <summary>
-            /// This class holds readed data line info.
-            /// </summary>
-            private class _DataLine
-            {
-                private byte[] m_pLineBuffer;
-                private int    m_BytesInBuffer = 0;
-
-                /// <summary>
-                /// Default constructor.
-                /// </summary>
-                /// <param name="lineBufferSize">Line buffer size in bytes.</param>
-                public _DataLine(int lineBufferSize)
-                {
-                    m_pLineBuffer = new byte[lineBufferSize];
-                }
-
-
-                #region method AssignFrom
-
-                /// <summary>
-                /// Assigns data line info from read line operation.
-                /// </summary>
-                /// <param name="buffer">Read line buffer.</param>
-                /// <param name="bytesInBuffer">Number of bytes in read line buffer.</param>
-                /// <exception cref="ArgumentNullException">Is raised when <b>op</b> is null reference.</exception>
-                public void AssignFrom(byte[] buffer,int bytesInBuffer)
-                {
-                    m_BytesInBuffer = bytesInBuffer;
-                    Array.Copy(buffer,m_pLineBuffer,bytesInBuffer);
-                }
-
-                #endregion
-
-
-                #region Properties implementation
-
-                /// <summary>
-                /// Gets line data buffer.
-                /// </summary>
-                public byte[] LineBuffer
-                {
-                    get{ return m_pLineBuffer; }
-                }
-
-                /// <summary>
-                /// Gets number of bytes used in <b>LineBuffer</b>.
-                /// </summary>
-                public int BytesInBuffer
-                {
-                    get{ return m_BytesInBuffer; }
-                }
-
-                #endregion
-            }
-
-            #endregion
-
-            private State                       m_State          = State.SeekFirst;
-            private SmartStream                 m_pStream;
-            private string                      m_Boundary       = "";
-            private byte[]                      m_pLineBuffer    = new byte[84000];
-            private _DataLine?                  m_pPreviousLine  = null;
-            private StringBuilder               m_pTextPreamble;
-            private StringBuilder               m_pTextEpilogue;
-
-            /// <summary>
-            /// Default constructor.
-            /// </summary>
-            /// <param name="stream">Stream from where to read body part.</param>
-            /// <param name="boundary">Boundry ID what separates body parts.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> or <b>boundary</b> is null reference.</exception>
-            public _MultipartReader(SmartStream stream,string boundary)
-            {
-                if(stream == null){
-                    throw new ArgumentNullException("stream");
-                }
-                if(boundary == null){
-                    throw new ArgumentNullException("boundary");
-                }
-
-                m_pStream  = stream;
-                m_Boundary = boundary;
-
-                m_pTextPreamble = new StringBuilder();
-                m_pTextEpilogue = new StringBuilder();
-            }
-
-
-            #region method Next
-
-            /// <summary>
-            /// Moves to next "body part". Returns true if moved to next "body part" or false if there are no more parts.
-            /// </summary>
-            /// <returns>Returns true if moved to next "body part" or false if there are no more body parts.</returns>
-            public bool Next()
-            {
-                /* RFC 2046 5.1.1.                 
-                    dash-boundary := "--" boundary
-                 
-                    multipart-body := [preamble CRLF]
-                                      dash-boundary transport-padding CRLF
-                                      body-part *encapsulation
-                                      close-delimiter transport-padding
-                                      [CRLF epilogue]
-                 
-                    encapsulation := delimiter transport-padding
-                                     CRLF body-part
-
-                    delimiter := CRLF dash-boundary
-
-                    close-delimiter := delimiter "--"
-                */
-
-                if(m_State == State.InBoundary){
-                    throw new InvalidOperationException("You must read all boundary data, before calling this method.");
-                }
-                else if(m_State == State.Done){
-                    return false;
-                }
-                else if(m_State == State.SeekFirst){
-                    m_pPreviousLine = null;
-
-                    // Read preamble and move into first boundary. 
-                    while(true){
-                        var readLineResult = m_pStream.ReadLine(m_pLineBuffer,SizeExceededAction.JunkAndThrowException);                                                
-                        // We reached end of stream. Bad boundary: boundary end tag missing.
-                        if(readLineResult.BytesInBuffer == 0){
-                            m_State = State.Done;
-
-                            return false;
-                        }
-                        // We have boundary start.
-                        else if(readLineResult.LineUtf8?.Trim() == ("--" + m_Boundary)){
-                            m_State = State.InBoundary;
-
-                            return true;
-                        }
-                        // Preamble line.
-                        else{
-                            m_pTextPreamble.Append(readLineResult.LineUtf8 + "\r\n");
-                        }                    
-                    }                   
-                }
-                else if(m_State == State.ReadNext){
-                    m_pPreviousLine = null;
-                    m_State = State.InBoundary;
-
-                    return true;
-                }
-           
-                return false;
-            }
-
-            #endregion
-
-
-            #region override method Flush
-
-            /// <summary>
-            /// Clears all buffers for this stream and causes any buffered data to be written to the underlying device.
-            /// </summary>
-            public override void Flush()
-            {            
-            }
-
-            #endregion
-
-            #region override method Seek
-
-            /// <summary>
-            /// Sets the position within the current stream. This method is not supported and always throws a NotSupportedException.
-            /// </summary>
-            /// <param name="offset">A byte offset relative to the <b>origin</b> parameter.</param>
-            /// <param name="origin">A value of type SeekOrigin indicating the reference point used to obtain the new position.</param>
-            /// <returns>The new position within the current stream.</returns>
-            /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
-            public override long Seek(long offset,SeekOrigin origin)
-            {
-                throw new NotSupportedException();
-            }
-
-            #endregion
-
-            #region override method SetLength
-
-            /// <summary>
-            /// Sets the length of the current stream. This method is not supported and always throws a NotSupportedException.
-            /// </summary>
-            /// <param name="value">The desired length of the current stream in bytes.</param>
-            /// <exception cref="Seek">Is raised when this method is accessed.</exception>
-            public override void SetLength(long value)
-            {
-                throw new NotSupportedException();
-            }
-
-            #endregion
-
-            #region override method Read
-
-            /// <summary>
-            /// Reads a sequence of bytes from the current stream and advances the position within the stream by the number of bytes read.
-            /// </summary>
-            /// <param name="buffer">An array of bytes. When this method returns, the buffer contains the specified byte array with the values between offset and (offset + count - 1) replaced by the bytes read from the current source.</param>
-            /// <param name="offset">The zero-based byte offset in buffer at which to begin storing the data read from the current stream.</param>
-            /// <param name="count">The maximum number of bytes to be read from the current stream.</param>
-            /// <returns>The total number of bytes read into the buffer. This can be less than the number of bytes requested if that many bytes are not currently available, or zero (0) if the end of the stream has been reached.</returns>
-            /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
-            public override int Read(byte[] buffer,int offset,int count)
-            {
-                if(buffer == null){
-                    throw new ArgumentNullException("buffer");
-                }
-                if(m_State == State.SeekFirst){
-                    throw new InvalidOperationException("Read method is not valid in '" + m_State + "' state.");
-                }
-                if(m_State == State.ReadNext || m_State == State.Done){
-                    return 0;
-                }
-
-                /* RFC 2046 5.1.1.
-                    NOTE:  The CRLF preceding the boundary delimiter line is conceptually
-                    attached to the boundary so that it is possible to have a part that
-                    does not end with a CRLF (line  break).  
-                 
-                    NOTE: We just need read 1 line ahead, otherwise we can't remove boundary preceeding CRLF.
-                  
-                   dash-boundary := "--" boundary
-                 
-                    multipart-body := [preamble CRLF]
-                                      dash-boundary transport-padding CRLF
-                                      body-part *encapsulation
-                                      close-delimiter transport-padding
-                                      [CRLF epilogue]
-                 
-                    encapsulation := delimiter transport-padding
-                                     CRLF body-part
-
-                    delimiter := CRLF dash-boundary
-
-                    close-delimiter := delimiter "--"
-                */
-                
-                ReadLineResult readLineResult;
-                // Read line ahead, if none available. This is done for the boundary first line only.
-                if(m_pPreviousLine == null){
-                    m_pPreviousLine = new _DataLine(m_pStream.LineBufferSize);
-
-                    readLineResult = m_pStream.ReadLine(m_pLineBuffer,SizeExceededAction.JunkAndThrowException);
-                    // We reached end of stream. Bad boundary: boundary end tag missing.
-                    if(readLineResult.BytesInBuffer == 0){
-                        m_State = State.Done;
-
-                        return 0;
-                    }
-                    // We have readed all MIME entity body parts.(boundary end tag reached)
-                    else if(m_pLineBuffer[0] == '-' && string.Equals("--" + m_Boundary + "--",readLineResult.LineUtf8)){
-                        m_State = State.Done;
-
-                        // Read "epilogoue",if has any.
-                        while(true){
-                            readLineResult = m_pStream.ReadLine(m_pLineBuffer,SizeExceededAction.JunkAndThrowException);
-
-                            // We reached end of stream. Epilogue reading completed.
-                            if(readLineResult.BytesInBuffer == 0){
-                                break;
-                            }
-                            else{
-                                m_pTextEpilogue.Append(readLineResult.LineUtf8 + "\r\n");
-                            }
-                        }
-
-                        return 0;
-                    }
-                    // We have readed all active boundary data, next boundary start tag.
-                    else if(m_pLineBuffer[0] == '-' && string.Equals("--" + m_Boundary,readLineResult.LineUtf8)){
-                        m_State = State.ReadNext;
-
-                        return 0;
-                    }
-                    // Store first read-ahead line.
-                    else{
-                        m_pPreviousLine.AssignFrom(m_pLineBuffer,readLineResult.BytesInBuffer);
-                    }
-                }
-
-                readLineResult = m_pStream.ReadLine(m_pLineBuffer,SizeExceededAction.JunkAndThrowException);
-                // We reached end of stream. Bad boundary: boundary end tag missing.
-                if(readLineResult.BytesInBuffer == 0){
-                    m_State = State.Done;
-
-                    if(count < m_pPreviousLine.BytesInBuffer){
-                        throw new ArgumentException("Argument 'buffer' is to small. This should never happen.");
-                    }
-                    if(m_pPreviousLine.BytesInBuffer > 0){
-                        Array.Copy(m_pPreviousLine.LineBuffer,0,buffer,offset,m_pPreviousLine.BytesInBuffer);
-                    }
-
-                    return m_pPreviousLine.BytesInBuffer;
-                }
-                // We have readed all MIME entity body parts.(boundary end tag reached)
-                else if(m_pLineBuffer[0] == '-' && string.Equals("--" + m_Boundary + "--",readLineResult.LineUtf8)){
-                    m_State = State.Done;
-
-                    // The CRLF at the end of boundry is part of epilogue.
-                    if(m_pLineBuffer[readLineResult.BytesInBuffer - 1] == '\n'){
-                        m_pTextEpilogue.Append("\r\n");
-                    }
-
-                    // Read "epilogoue",if has any.
-                    while(true){
-                        readLineResult = m_pStream.ReadLine(m_pLineBuffer,SizeExceededAction.JunkAndThrowException);
-                        // We reached end of stream. Epilogue reading completed.
-                        if(readLineResult.BytesInBuffer == 0){
-                            break;
-                        }
-                        else{
-                            m_pTextEpilogue.Append(readLineResult.LineUtf8 + "\r\n");
-                        }
-                    }
-                                        
-                    if(count < m_pPreviousLine.BytesInBuffer){
-                        throw new ArgumentException("Argument 'buffer' is to small. This should never happen.");
-                    }
-                    // Return previous line data - CRLF, because CRLF if part of boundary tag.
-                    if(m_pPreviousLine.BytesInBuffer > 2){
-                        Array.Copy(m_pPreviousLine.LineBuffer,0,buffer,offset,m_pPreviousLine.BytesInBuffer - 2);
-
-                        return m_pPreviousLine.BytesInBuffer - 2;
-                    }
-                    else{
-                        return 0;
-                    }
-                }
-                // We have readed all active boundary data, next boundary start tag.
-                else if(m_pLineBuffer[0] == '-' && string.Equals("--" + m_Boundary,readLineResult.LineUtf8)){
-                    m_State = State.ReadNext;
-
-                    // Return previous line data - CRLF, because CRLF if part of boundary tag.
-                    if(count < m_pPreviousLine.BytesInBuffer){
-                        throw new ArgumentException("Argument 'buffer' is to small. This should never happen.");
-                    }
-                    if(m_pPreviousLine.BytesInBuffer > 2){
-                        Array.Copy(m_pPreviousLine.LineBuffer,0,buffer,offset,m_pPreviousLine.BytesInBuffer - 2);
-
-                        return m_pPreviousLine.BytesInBuffer - 2;
-                    }
-                    else{
-                        return 0;
-                    }
-                }
-                // We have boundary data-line.
-                else{
-                    // Here we actually process previous line and store current.
-
-                    if(count < m_pPreviousLine.BytesInBuffer){
-                        throw new ArgumentException("Argument 'buffer' is to small. This should never happen.");
-                    }                    
-                    Array.Copy(m_pPreviousLine.LineBuffer,0,buffer,offset,m_pPreviousLine.BytesInBuffer);
-
-                    int countCopied = m_pPreviousLine.BytesInBuffer;
-
-                    // Store current line as previous.
-                    m_pPreviousLine.AssignFrom(m_pLineBuffer,readLineResult.BytesInBuffer);
-                                        
-                    return countCopied;
-                }
-            }
-
-            #endregion
-
-            #region override method Write
-
-            /// <summary>
-            /// Writes sequence of bytes to the current stream and advances the current position within this stream by the number of bytes written.
-            /// </summary>
-            /// <param name="buffer">An array of bytes. This method copies count bytes from buffer to the current stream.</param>
-            /// <param name="offset">The zero-based byte offset in buffer at which to begin copying bytes to the current stream.</param>
-            /// <param name="count">The number of bytes to be written to the current stream.</param>
-            /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
-            public override void Write(byte[] buffer,int offset,int count)        
-            {
-                throw new NotSupportedException();
-            }
-
-            #endregion
-
-
-            #region Properties implementation
-
-            /// <summary>
-            /// Gets a value indicating whether the current stream supports reading.
-            /// </summary>
-            public override bool CanRead
-            { 
-                get{
-                    return true;
-                } 
-            }
-
-            /// <summary>
-            /// Gets a value indicating whether the current stream supports seeking.
-            /// </summary>
-            public override bool CanSeek
-            { 
-                get{
-                    return false;
-                } 
-            }
-
-            /// <summary>
-            /// Gets a value indicating whether the current stream supports writing.
-            /// </summary>
-            public override bool CanWrite
-            { 
-                get{
-                    return false;
-                } 
-            }
-
-            /// <summary>
-            /// Gets the length in bytes of the stream.  This method is not supported and always throws a NotSupportedException.
-            /// </summary>
-            /// <exception cref="NotSupportedException">Is raised when this property is accessed.</exception>
-            public override long Length
-            { 
-                get{
-                    throw new NotSupportedException();
-                } 
-            }
-
-            /// <summary>
-            /// Gets or sets the position within the current stream. This method is not supported and always throws a NotSupportedException.
-            /// </summary>
-            /// <exception cref="NotSupportedException">Is raised when this property is accessed.</exception>
-            public override long Position
-            { 
-                get{
-                    throw new NotSupportedException();
-                } 
-
-                set{
-                    throw new NotSupportedException();
-                }
-            }
-                        
-            /// <summary>
-            /// Gets "preamble" text. Defined in RFC 2046 5.1.1.
-            /// </summary>
-            /// <remarks>Preamble text is text between MIME entiy headers and first boundary.</remarks>
-            public string TextPreamble
-            {
-                get{ return m_pTextPreamble.ToString(); }
-            }
-
-            /// <summary>
-            /// Gets "epilogue" text. Defined in RFC 2046 5.1.1.
-            /// </summary>
-            /// <remarks>Epilogue text is text after last boundary end.</remarks>
-            public string TextEpilogue
-            {
-                get{ return m_pTextEpilogue.ToString(); }
-            }
-
-            /// <summary>
-            /// Gets reader state.
-            /// </summary>
-            internal State ReaderState
-            {
-                get{ return m_State; }
-            }
-
-            #endregion
-        }
-
-        #endregion
-
         private MIME_EntityCollection m_pBodyParts;
         private string                m_TextPreamble = "";
         private string                m_TextEpilogue = "";
         
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b_Multipart"/> class.
         /// </summary>
-        /// <param name="contentType">Content type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>contentType</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="contentType">
+        /// Multipart Content-Type header value.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="contentType"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="contentType"/> does not contain the
+        /// required <c>boundary</c> parameter.
+        /// </exception>
         public MIME_b_Multipart(MIME_h_ContentType contentType) : base(contentType)
         {
             if(contentType == null){
-                throw new ArgumentNullException("contentType");
+                throw new ArgumentNullException(nameof(contentType));
             }
             if(string.IsNullOrEmpty(contentType.Param_Boundary)){
-                throw new ArgumentException("Argument 'contentType' doesn't contain required boundary parameter.");
+                throw new ArgumentException("Argument 'contentType' doesn't contain required boundary parameter.",nameof(contentType));
             }
 
             m_pBodyParts = new MIME_EntityCollection();
-        }               
+        }
 
         /// <summary>
         /// Internal constructor. No Content-Type is created, user must do it manually.
@@ -562,82 +54,237 @@ namespace LumiSoft.Net.MIME
             m_pBodyParts = new MIME_EntityCollection();
         }
 
-
-        #region static method Parse
+        #region override method Dispose
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Releases all resources used by this instance.
+        /// </summary>
+        internal override void Dispose()
+        {
+            foreach(var bodyPart in m_pBodyParts) {
+                bodyPart.Dispose();
+            }
+        }
+
+        #endregion
+
+
+        #region static method ParseAsync
+
+        /// <summary>
+        /// Parses a multipart MIME body from the specified stream.
         /// </summary>
         /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>defaultContentType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="stream">
+        /// Stream containing the encoded body data.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME body.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="owner"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the multipart entity is missing the required
+        /// <c>boundary</c> parameter.
+        /// </exception>
+        internal static async Task<MIME_b> ParseAsync(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
                 throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
             }
             if(stream == null){
                 throw new ArgumentNullException("stream");
             }
             if(owner.ContentType == null || owner.ContentType.Param_Boundary == null){
-                throw new ParseException("Multipart entity has not required 'boundary' paramter.");
+                throw new ParseException("Multipart Content-Type is missing the required 'boundary' parameter.");
             }
-            
+          
             MIME_b_Multipart retVal = new MIME_b_Multipart(owner.ContentType);
-            ParseInternal(owner,owner.ContentType.TypeWithSubtype,stream,retVal);
+            await retVal.ParseInternalAsync(owner,owner.ContentType.Param_Boundary,stream);
 
             return retVal;
         }
 
         #endregion
+                     
 
-        #region static method ParseInternal
+        #region method ParseInternalAsync
 
-        /// <summary>
-        /// Internal body parsing.
-        /// </summary>
-        /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="mediaType">MIME media type. For example: text/plain.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <param name="body">Multipart body instance.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>mediaType</b>, <b>stream</b> or <b>body</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static void ParseInternal(MIME_Entity owner,string mediaType,SmartStream stream,MIME_b_Multipart body)
+        internal async Task ParseInternalAsync(MIME_Entity owner,string boundaryId,Stream stream)
         {
-            if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(mediaType == null){
-                throw new ArgumentNullException("mediaType");
-            }
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-            if(owner.ContentType == null || owner.ContentType.Param_Boundary == null){
-                throw new ParseException("Multipart entity has not required 'boundary' parameter.");
-            }
-            if(body == null){
-                throw new ArgumentNullException("body");
+            // =========================================================================
+            // RFC 2046 BOUNDARY SYNTAX RULES (Section 5.1.1)
+            // -------------------------------------------------------------------------
+            // 1. DASH-BOUNDARY: --boundaryId
+            // 2. ENCAPSULATION BOUNDARY: \r\n--boundaryId
+            // 3. CLOSING BOUNDARY: \r\n--boundaryId--
+            // =========================================================================
+
+            List<Stream> bodyParts = new List<Stream>();
+            Stream? preambleStream = null;
+            Stream? epilogueStream = null;
+
+            byte[] boundaryBytes = Encoding.UTF8.GetBytes("\r\n--" + boundaryId);
+            byte[] openingBoundaryBytes = Encoding.UTF8.GetBytes("--" + boundaryId);
+    
+            int boundaryLen = boundaryBytes.Length; 
+            int standardDashBoundaryLen = 2 + boundaryId.Length; 
+            int maxBoundaryMarkerLen = boundaryLen + 4;
+
+            const int bufferSize = 64000;
+            byte[] buffer = new byte[bufferSize];
+
+            int bytesInBuffer = 0;
+            long absoluteBufferStart = 0;
+            long previousBoundaryEndPos = -1;
+            long firstBoundaryAbsPos = -1;
+            int searchOffset = 0;
+
+            while(true){
+                // Shift leftover unparsed bytes to the front of the buffer
+                if(searchOffset < bytesInBuffer){
+                    int unparsedCount = bytesInBuffer - searchOffset;
+                    Array.Copy(buffer, searchOffset, buffer, 0, unparsedCount);
+                    absoluteBufferStart += searchOffset;
+                    bytesInBuffer = unparsedCount;
+                }
+                // Buffer was fully consumed; align absolute start and reset buffer count
+                else{
+                    absoluteBufferStart = stream.Position - bytesInBuffer;
+                    if (absoluteBufferStart < 0) absoluteBufferStart = 0;
+                    bytesInBuffer = 0;
+                }
+
+                int bytesRead = await stream.ReadAsync(buffer.AsMemory(bytesInBuffer, bufferSize - bytesInBuffer));
+                if(bytesRead == 0 && bytesInBuffer == 0){
+                    break;
+                }
+
+                bytesInBuffer += bytesRead;
+                searchOffset = 0; 
+
+                ReadOnlySpan<byte> span = buffer.AsSpan(0, bytesInBuffer);
+
+                while(true){
+                    int absoluteIndex = -1;
+                    int dashBoundaryLen = standardDashBoundaryLen;
+                    bool matched = false;
+
+                    // 1. Check if we are at the absolute start of the stream looking for the opening boundary
+                    if(firstBoundaryAbsPos == -1 && absoluteBufferStart == 0 && searchOffset == 0){
+                        if(span.Length < openingBoundaryBytes.Length){
+                            // Not enough bytes yet in the first chunk to verify the opening boundary;
+                            // break out to read more data from the stream.
+                            break;
+                        }
+
+                        if(span.Slice(0,openingBoundaryBytes.Length).SequenceEqual(openingBoundaryBytes)){
+                            absoluteIndex = 0;
+                            dashBoundaryLen = openingBoundaryBytes.Length;
+                            matched = true;
+                        }
+                    }
+
+                    // 2. If not matched at start, search for standard encapsulation boundary (\r\n--boundaryId)
+                    if(!matched){
+                        int relativeIndex = span.Slice(searchOffset).IndexOf(boundaryBytes);
+                        if(relativeIndex == -1){
+                            searchOffset = Math.Max(0, bytesInBuffer - maxBoundaryMarkerLen);
+                            break; 
+                        }
+
+                        absoluteIndex = searchOffset + relativeIndex;
+                    }
+            
+                    // Ensures we have at least 2 bytes remaining in the buffer after the boundary ID 
+                    // to read its trailer (\r\n or --). If the buffer cuts off here, pause and read more.
+                    int afterBoundaryIndex = absoluteIndex + (absoluteIndex == 0 ? 0 : 2) + dashBoundaryLen;
+                    if(afterBoundaryIndex + 2 > bytesInBuffer){
+                        searchOffset = absoluteIndex;
+                        break;
+                    }
+
+                    ReadOnlySpan<byte> trailer = span.Slice(afterBoundaryIndex, 2);
+
+                    bool isClosing = trailer[0] == (byte)'-' && trailer[1] == (byte)'-';
+                    bool isCRLF = trailer[0] == (byte)'\r' && trailer[1] == (byte)'\n';
+
+                    long absMatchPos = absoluteBufferStart + absoluteIndex + (absoluteIndex == 0 ? 0 : 2);
+
+                    if(isCRLF || isClosing){
+                        int trailerLen = 2;
+                        searchOffset = (absoluteIndex + (absoluteIndex == 0 ? 0 : 2)) + dashBoundaryLen + trailerLen;
+
+                        if(firstBoundaryAbsPos == -1){
+                            firstBoundaryAbsPos = absMatchPos;
+
+                            long preambleLength = firstBoundaryAbsPos > 2 ? firstBoundaryAbsPos - 2 : firstBoundaryAbsPos;
+                            if(preambleLength > 0){
+                                preambleStream = new BoundedStream(stream, 0, preambleLength);
+                            }
+                        }
+
+                        if(previousBoundaryEndPos != -1){
+                            long currentPartEndPos = absMatchPos - 2; 
+                            long partLength = currentPartEndPos - previousBoundaryEndPos;
+                    
+                            bodyParts.Add(new BoundedStream(stream, previousBoundaryEndPos, partLength));
+                        }
+
+                        if(isClosing){
+                            if(searchOffset + 1 < bytesInBuffer && span[searchOffset] == (byte)'\r' && span[searchOffset + 1] == (byte)'\n'){
+                                searchOffset += 2;
+                            }
+
+                            long epilogueStart = absoluteBufferStart + searchOffset;
+                            long epilogueLength = stream.Length - epilogueStart;
+
+                            if(epilogueLength > 0){
+                                epilogueStream = new BoundedStream(stream, epilogueStart, epilogueLength);
+                            }
+
+                            break;
+                        }
+
+                        previousBoundaryEndPos = absMatchPos + dashBoundaryLen + trailerLen;
+                    }
+                    else{
+                        searchOffset = afterBoundaryIndex;
+                    }
+                }
+
+                if(bytesRead == 0){
+                    break;
+                }
             }
 
-            _MultipartReader multipartReader = new _MultipartReader(stream,owner.ContentType.Param_Boundary);       
-            while(multipartReader.Next()){
+            foreach(var bodyPart in bodyParts){
+                bodyPart.Position = 0;
                 MIME_Entity entity = new MIME_Entity();
-                entity.Parse(new SmartStream(multipartReader,false),Encoding.UTF8,body.DefaultBodyPartContentType);
-                body.m_pBodyParts.Add(entity);
+                await entity.ParseInternalAsync(bodyPart);
+                m_pBodyParts.Add(entity);
                 entity.SetParent(owner);
             }
 
-            body.m_TextPreamble = multipartReader.TextPreamble;
-            body.m_TextEpilogue = multipartReader.TextEpilogue;
+            if(preambleStream != null){
+                preambleStream.Position = 0;
+                if(preambleStream.Length < 1000){
+                    using var reader = new StreamReader(preambleStream, Encoding.UTF8,leaveOpen: true);
+                    m_TextPreamble = reader.ReadToEnd();
+                }
+            }
 
-            body.BodyParts.SetModified(false);
+            if(epilogueStream != null){
+                epilogueStream.Position = 0;
+                if(epilogueStream.Length < 1000){
+                    using var reader = new StreamReader(epilogueStream, Encoding.UTF8, leaveOpen: true);
+                    m_TextEpilogue = reader.ReadToEnd();
+                }
+            }
+
+            m_pBodyParts.SetModified(false);
         }
 
         #endregion
@@ -662,21 +309,17 @@ namespace LumiSoft.Net.MIME
 
         #endregion
 
-        #region method ToStream
+        #region method ToStreamAsync
 
-        /// <summary>
-        /// Stores MIME entity body to the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        internal protected override void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
+        /// <inheritdoc/>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the multipart body is not bound to a MIME entity or the
+        /// owner MIME entity does not have a Content-Type header.
+        /// </exception>
+        internal protected override async Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
             }
             if(this.Entity == null){
                 throw new InvalidOperationException("Multipart body is not bound to any MIME entity.");
@@ -708,14 +351,8 @@ namespace LumiSoft.Net.MIME
 
             // Set "preamble" text if any.
             if (!string.IsNullOrEmpty(m_TextPreamble)){
-                if(m_TextPreamble.EndsWith("\r\n")){
-                    byte[] preableBytes = Encoding.UTF8.GetBytes(m_TextPreamble);
-                    stream.Write(preableBytes,0,preableBytes.Length);
-                }
-                else{
-                    byte[] preableBytes = Encoding.UTF8.GetBytes(m_TextPreamble + "\r\n");
-                    stream.Write(preableBytes,0,preableBytes.Length);
-                }
+                string preamble = m_TextPreamble.EndsWith("\r\n") ? m_TextPreamble : m_TextPreamble + "\r\n";
+                await stream.WriteAsync(Encoding.UTF8.GetBytes(preamble),cancellationToken);
             }
 
             for(int i=0;i<m_pBodyParts.Count;i++){
@@ -723,34 +360,25 @@ namespace LumiSoft.Net.MIME
 
                 // First boundary has no preceeding CRLF.
                 if(i == 0){
-                    byte[] bStart = Encoding.UTF8.GetBytes("--" + this.Entity.ContentType.Param_Boundary + "\r\n");
-                    stream.Write(bStart,0,bStart.Length);
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes("--" + this.Entity.ContentType.Param_Boundary + "\r\n"), cancellationToken);
                 }
                 // Boundaries > 1.
                 else{
-                    byte[] bStart = Encoding.UTF8.GetBytes("\r\n--" + this.Entity.ContentType.Param_Boundary + "\r\n");
-                    stream.Write(bStart,0,bStart.Length);
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes("\r\n--" + this.Entity.ContentType.Param_Boundary + "\r\n"), cancellationToken);
                 }
                                 
-                bodyPart.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
+                await bodyPart.ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
 
                 // Last body part, close boundary.
                 if(i == (m_pBodyParts.Count - 1)){
-                    byte[] bEnd = Encoding.UTF8.GetBytes("\r\n--" + this.Entity.ContentType.Param_Boundary + "--");
-                    stream.Write(bEnd,0,bEnd.Length);
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes("\r\n--" + this.Entity.ContentType.Param_Boundary + "--"), cancellationToken);
                 }
             }
 
             // Set "epilogoue" text if any.
             if(!string.IsNullOrEmpty(m_TextEpilogue)){
-                if(m_TextEpilogue.StartsWith("\r\n")){                    
-                    byte[] epilogoueBytes = Encoding.UTF8.GetBytes(m_TextEpilogue);
-                    stream.Write(epilogoueBytes,0,epilogoueBytes.Length);
-                }
-                else{                    
-                    byte[] epilogoueBytes = Encoding.UTF8.GetBytes("\r\n" + m_TextEpilogue);
-                    stream.Write(epilogoueBytes,0,epilogoueBytes.Length);
-                }
+                string epilogoue = m_TextEpilogue.StartsWith("\r\n") ? m_TextEpilogue : "\r\n" + m_TextEpilogue;
+                await stream.WriteAsync(Encoding.UTF8.GetBytes(epilogoue), cancellationToken);
             }
         }
 
@@ -760,44 +388,34 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
         
         /// <summary>
-        /// Gets if body has modified.
+        /// Gets a value indicating whether any child MIME entity has been modified.
         /// </summary>
         public override bool IsModified
         {
             get{ return m_pBodyParts.IsModified; }
         }
-   
-        /// <summary>
-        /// Gets default body part Content-Type. For more info see RFC 2046 5.1.
-        /// </summary>
-        public virtual MIME_h_ContentType DefaultBodyPartContentType
-        {
-            /* RFC 2026 5.1.
-                The absence of a Content-Type header usually indicates that the corresponding body has
-                a content-type of "text/plain; charset=US-ASCII".
-            */
-
-            get{ 
-                MIME_h_ContentType retVal = new MIME_h_ContentType("text/plain");
-                retVal.Param_Charset = "US-ASCII";
-
-                return retVal; 
-            }
-        }
 
         /// <summary>
-        /// Gets multipart body body-parts collection.
+        /// Gets the collection of child MIME entities contained in this multipart
+        /// body.
         /// </summary>
-        /// <remarks>Multipart entity child entities are called "body parts" in RFC 2045.</remarks>
+        /// <remarks>
+        /// Child MIME entities of a multipart body are referred to as
+        /// <i>body parts</i> in RFC 2046.
+        /// </remarks>
         public MIME_EntityCollection BodyParts
         {
             get{ return m_pBodyParts; }
         }
 
         /// <summary>
-        /// Gets or sets "preamble" text. Defined in RFC 2046 5.1.1.
+        /// Gets or sets the multipart preamble text.
         /// </summary>
-        /// <remarks>Preamble text is text between MIME entiy headers and first boundary.</remarks>
+        /// <remarks>
+        /// Defined by RFC 2046 section 5.1.1. The preamble is the text that
+        /// appears between the MIME entity headers and the first multipart
+        /// boundary delimiter.
+        /// </remarks>
         public string TextPreamble
         {
             get{ return m_TextPreamble; }
@@ -806,9 +424,13 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets "epilogue" text. Defined in RFC 2046 5.1.1.
+        /// Gets or sets the multipart epilogue text.
         /// </summary>
-        /// <remarks>Epilogue text is text after last boundary end.</remarks>
+        /// <remarks>
+        /// Defined by RFC 2046 section 5.1.1. The epilogue follows the closing
+        /// multipart boundary delimiter and may be ignored by MIME-compliant
+        /// implementations.
+        /// </remarks>
         public string TextEpilogue
         {
             get{ return m_TextEpilogue; }

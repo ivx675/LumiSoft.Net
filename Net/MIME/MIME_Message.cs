@@ -3,183 +3,325 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 using System.Security.Cryptography.X509Certificates;
-
 using LumiSoft.Net.IO;
 
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Represents a MIME message. Defined in RFC 2045 2.3.
+    /// Represents a MIME message as defined by RFC 2045 section 2.3.
     /// </summary>
+    /// <remarks>
+    /// A MIME message is a specialized <see cref="MIME_Entity"/> that
+    /// represents a complete MIME message. In addition to the functionality
+    /// provided by <see cref="MIME_Entity"/>, this class provides methods
+    /// for parsing and serializing MIME messages.
+    /// </remarks>
     public class MIME_Message : MIME_Entity
     {
-        private bool m_IsDisposed = false;
+        private Stream? m_pStream = null;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_Message"/> class.
         /// </summary>
         public MIME_Message()
         {
         }
 
-
-        #region static method ParseFromFile
-
-        /// <summary>
-        /// Parses MIME message from the specified file.
-        /// </summary>
-        /// <param name="file">File name with path from where to parse MIME message.</param>
-        /// <returns>Returns parsed MIME message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public static MIME_Message ParseFromFile(string file)
-        {
-            if(file == null){
-                throw new ArgumentNullException("file");
-            }
-            if(file == ""){
-                throw new ArgumentException("Argument 'file' value must be specified.");
-            }
-
-            using(FileStream fs = File.OpenRead(file)){
-                return ParseFromStream(fs,Encoding.UTF8);
-            }
-        }
+        #region override method Dispose
 
         /// <summary>
-        /// Parses MIME message from the specified file.
+        /// Releases all resources used by this instance.
         /// </summary>
-        /// <param name="file">File name with path from where to parse MIME message.</param>
-        /// <param name="headerEncoding">Header reading encoding. If not sure UTF-8 is recommended.</param>
-        /// <returns>Returns parsed MIME message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> or <b>headerEncoding</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public static MIME_Message ParseFromFile(string file,Encoding headerEncoding)
+        /// <remarks>
+        /// If this instance owns a backing stream, the stream is disposed.
+        /// </remarks>
+        public override void Dispose()
         {
-            if(file == null){
-                throw new ArgumentNullException("file");
-            }
-            if(file == ""){
-                throw new ArgumentException("Argument 'file' value must be specified.");
-            }
-            if(headerEncoding == null){
-                throw new ArgumentNullException("headerEncoding");
+            if(m_pStream != null){
+                m_pStream.Dispose();
+                m_pStream = null;
             }
 
-            using(FileStream fs = File.OpenRead(file)){
-                return ParseFromStream(fs,headerEncoding);
-            }
+            base.Dispose();
         }
 
         #endregion
 
+
         #region static method ParseFromStream
 
         /// <summary>
-        /// Parses MIME message from the specified stream.
+        /// Parses a MIME message from the specified stream.
         /// </summary>
-        /// <param name="stream">Stream from where to parse MIME message. Parsing starts from current stream position.</param>
-        /// <returns>Returns parsed MIME message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public static MIME_Message ParseFromStream(Stream stream)
+        /// <param name="stream">
+        /// Stream from which to parse the MIME message. Parsing begins at the
+        /// current stream position.
+        /// </param>
+        /// <param name="persistentStream">
+        /// Specifies whether the parsed MIME message retains access to the
+        /// source stream after parsing. If <see langword="true"/>, the source
+        /// stream must remain available for the lifetime of the parsed MIME
+        /// message. If <see langword="false"/>, the source stream is no longer
+        /// required after parsing completes.
+        /// </param>
+        /// <param name="ownsStream">
+        /// Specifies whether the returned MIME message takes ownership of the
+        /// backing stream and disposes it when the MIME message is disposed.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the MIME message has been completely parsed.
+        /// For asynchronous operation, use
+        /// <see cref="ParseFromStreamAsync(Stream,bool,bool,CancellationToken)"/>.
+        /// </remarks>
+        public static MIME_Message ParseFromStream(Stream stream,bool persistentStream,bool ownsStream)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-
-            return ParseFromStream(stream,Encoding.UTF8);
+            return ParseFromStreamAsync(stream,persistentStream,ownsStream,CancellationToken.None).GetAwaiter().GetResult();
         }
 
+        #endregion
+
+        #region static method ParseFromStreamAsync
+
         /// <summary>
-        /// Parses MIME message from the specified stream.
+        /// Parses a MIME message from the specified stream.
         /// </summary>
-        /// <param name="stream">Stream from where to parse MIME message. Parsing starts from current stream position.</param>
-        /// <param name="headerEncoding">Header reading encoding. If not sure UTF-8 is recommended.</param>
-        /// <returns>Returns parsed MIME message.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> or <b>headerEncoding</b> is null.</exception>
-        public static MIME_Message ParseFromStream(Stream stream,Encoding headerEncoding)
+        /// <param name="stream">
+        /// Stream from which to parse the MIME message. Parsing begins at the
+        /// current stream position.
+        /// </param>
+        /// <param name="persistentStream">
+        /// Specifies whether the parsed MIME message retains access to the
+        /// source stream after parsing. If <see langword="true"/>, the source
+        /// stream must remain available for the lifetime of the parsed MIME
+        /// message. If <see langword="false"/>, the source stream is no longer
+        /// required after parsing completes.
+        /// </param>
+        /// <param name="ownsStream">
+        /// Specifies whether the returned MIME message takes ownership of the
+        /// backing stream and disposes it when the MIME message is disposed.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// When <paramref name="persistentStream"/> is
+        /// <see langword="true"/>, the parser uses the supplied stream directly
+        /// if it supports seeking. Otherwise, the stream content is copied to an
+        /// internal backing store which remains available for the lifetime of
+        /// the parsed MIME message.
+        ///
+        /// When <paramref name="ownsStream"/> is
+        /// <see langword="true"/>, the returned MIME message takes ownership of
+        /// the backing stream and disposes it when the MIME message is disposed.
+        /// </remarks>
+        public static async Task<MIME_Message> ParseFromStreamAsync(Stream stream,bool persistentStream,bool ownsStream,CancellationToken cancellationToken = default)
         {
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
-            if(headerEncoding == null){
-                throw new ArgumentNullException("headerEncoding");
+            
+            // Stream not persistent or is not seekable, create copy of stream.
+            if(!persistentStream ||!stream.CanSeek){
+                var ms = new MemoryStreamEx(64000);
+                await stream.CopyToAsync(ms,cancellationToken);
+                if(ownsStream) {
+                    await stream.DisposeAsync();
+                }
+                stream = ms;
+                stream.Position = 0;
+                ownsStream = true;
             }
 
             MIME_Message retVal = new MIME_Message();
-            retVal.Parse(new SmartStream(stream,false),headerEncoding,new MIME_h_ContentType("text/plain"));
+            if(ownsStream){
+                retVal.m_pStream = stream;
+            }
+            await retVal.ParseInternalAsync(stream,cancellationToken);
 
             return retVal;
         }
 
         #endregion
 
-
-        #region method ToFile
+        #region static method ParseFromFile
 
         /// <summary>
-        /// Stores message to the specified file.
+        /// Parses a MIME message from the specified file.
         /// </summary>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        public void ToFile(string file)
+        /// <param name="fileName">
+        /// File from which to parse the MIME message.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the MIME message has been completely parsed.
+        /// For asynchronous operation, use
+        /// <see cref="ParseFromFileAsync(string,CancellationToken)"/>.
+        /// </remarks>
+        public static MIME_Message ParseFromFile(string fileName)
         {
-            ToFile(file,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
+            return ParseFromFileAsync(fileName,CancellationToken.None).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method ToStream
+        #region static method ParseFromFileAsync
 
         /// <summary>
-        /// Store message to the specified stream.
+        /// Parses a MIME message from the specified file.
         /// </summary>
-        /// <param name="stream">Stream where to store MIME entity. Storing starts form stream current position.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null.</exception>
-        public void ToStream(Stream stream)
+        /// <param name="fileName">
+        /// File from which to parse the MIME message.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="fileName"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="fileName"/> is empty.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        public static async Task<MIME_Message> ParseFromFileAsync(string fileName,CancellationToken cancellationToken = default)
         {
-            ToStream(stream,new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
+            if(fileName == null){
+                throw new ArgumentNullException(nameof(fileName));
+            }
+            if(fileName.Length == 0){
+                throw new ArgumentException("Argument 'fileName' cannot be empty.",nameof(fileName));
+            }
+
+            var stream = File.OpenRead(fileName);
+
+            return await ParseFromStreamAsync(stream,true,true,cancellationToken);
         }
 
         #endregion
 
-        #region method ToString
+        #region static method ParseFromByteArray
 
         /// <summary>
-        /// Returns message as string.
+        /// Parses a MIME message from the specified byte array.
         /// </summary>
-        /// <returns>Returns message as string.</returns>
-        public override string ToString()
+        /// <param name="data">
+        /// MIME message data.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// This method blocks until the MIME message has been completely parsed.
+        /// For asynchronous operation, use
+        /// <see cref="ParseFromByteArrayAsync(byte[],CancellationToken)"/>.
+        /// </remarks>
+        public static MIME_Message ParseFromByteArray(byte[] data)
         {
-            return ToString(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
+            return ParseFromByteArrayAsync(data,CancellationToken.None).GetAwaiter().GetResult();
         }
 
         #endregion
 
-        #region method ToByte
+        #region static method ParseFromByteArrayAsync
 
         /// <summary>
-        /// Returns message as byte[].
+        /// Parses a MIME message from the specified byte array.
         /// </summary>
-        /// <returns>Returns message as byte[].</returns>
-        public byte[] ToByte()
+        /// <param name="data">
+        /// MIME message data.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token used to monitor for cancellation requests.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed MIME message.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="data"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME message contains invalid data that cannot be
+        /// parsed.
+        /// </exception>
+        /// <remarks>
+        /// The returned MIME message owns the internal stream created for the
+        /// specified byte array and releases it when disposed.
+        /// </remarks>
+        public static async Task<MIME_Message> ParseFromByteArrayAsync(byte[] data,CancellationToken cancellationToken = default)
         {
-            return ToByte(new MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding.B,Encoding.UTF8),Encoding.UTF8);
+            if(data == null){
+                throw new ArgumentNullException(nameof(data));
+            }
+
+            return await ParseFromStreamAsync(new MemoryStream(data,false),true,true,cancellationToken);
         }
 
         #endregion
+
 
         #region method GetAllEntities
 
         /// <summary>
-        /// Gets all MIME entities as list.
+        /// Gets all MIME entities contained in this message.
         /// </summary>
-        /// <param name="includeEmbbedMessage">If true, then embbed RFC822 message child entities are included.</param>
-        /// <returns>Returns all MIME entities as list.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this class is disposed and this method is accessed.</exception>
+        /// <param name="includeEmbbedMessage">
+        /// Specifies whether entities contained in embedded
+        /// <c>message/rfc822</c> body parts are included.
+        /// </param>
+        /// <returns>
+        /// Returns all MIME entities in the MIME tree, including the current
+        /// entity.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
         public MIME_Entity[] GetAllEntities(bool includeEmbbedMessage)
         {
-            if(m_IsDisposed){
+            if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
             }
 
@@ -214,23 +356,34 @@ namespace LumiSoft.Net.MIME
         #region method GetEntityByCID
 
         /// <summary>
-        /// Gets MIME entity with the specified Content-ID. Returns null if no such entity.
+        /// Gets the MIME entity with the specified Content-ID.
         /// </summary>
-        /// <param name="cid">Content ID.</param>
-        /// <returns>Returns MIME entity with the specified Content-ID or null if no such entity.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this class is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>cid</b> is null.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="cid">
+        /// Content-ID value to search for.
+        /// </param>
+        /// <returns>
+        /// Returns the MIME entity with the specified Content-ID, or
+        /// <see langword="null"/> if no matching entity is found.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="cid"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Raised when <paramref name="cid"/> is empty.
+        /// </exception>
         public MIME_Entity? GetEntityByCID(string cid)
         {
-            if(m_IsDisposed){
-                    throw new ObjectDisposedException(this.GetType().Name);
-                }
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
             if(cid == null){
-                throw new ArgumentNullException("cid");
+                throw new ArgumentNullException(nameof(cid));
             }
             if(cid == ""){
-                throw new ArgumentException("Argument 'cid' value must be specified.","cid");
+                throw new ArgumentException("Argument 'cid' value must be specified.",nameof(cid));
             }
 
             foreach(MIME_Entity entity in this.AllEntities){
@@ -250,15 +403,32 @@ namespace LumiSoft.Net.MIME
         #region method ConvertToMultipartSigned
 
         /// <summary>
-        /// Converts message to multipart/signed message.
+        /// Converts this message to a <c>multipart/signed</c> message.
         /// </summary>
-        /// <param name="signerCert">>Signer certificate</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>signerCert</b> is null reference.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this method is called for already signed message.</exception>
+        /// <param name="signerCert">
+        /// Certificate used to generate the message signature.
+        /// </param>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="signerCert"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Raised when the message is already signed.
+        /// </exception>
+        /// <remarks>
+        /// The current message body is wrapped in a
+        /// <see cref="MIME_b_MultipartSigned"/> body and configured to be signed
+        /// with the specified certificate.
+        /// </remarks>
         public void ConvertToMultipartSigned(X509Certificate2 signerCert)
         {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
             if(signerCert == null){
-                throw new ArgumentNullException("signerCert");
+                throw new ArgumentNullException(nameof(signerCert));
             }
             if(this.IsSigned){
                 throw new InvalidOperationException("Message is already signed.");
@@ -281,12 +451,28 @@ namespace LumiSoft.Net.MIME
         #region method VerifySignatures
 
         /// <summary>
-        /// Checks SMIME signed enities signtures. NOTE: For not signed messsages this method always return true.
+        /// Verifies all S/MIME signatures contained in this message.
         /// </summary>
-        /// <returns>Returns true if all signatures are valid.</returns>
-        /// <exception cref="NotSupportedException">Is raised when entity is signed with not supported encryption.</exception>
+        /// <returns>
+        /// Returns <see langword="true"/> if all detected signatures are valid;
+        /// otherwise <see langword="false"/>.
+        /// </returns>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this method is accessed.
+        /// </exception>
+        /// <exception cref="NotSupportedException">
+        /// Raised when a signature uses an unsupported cryptographic algorithm.
+        /// </exception>
+        /// <remarks>
+        /// If the message does not contain any signed entities, this method
+        /// returns <see langword="true"/>.
+        /// </remarks>
         public bool VerifySignatures()
         {
+            if(this.IsDisposed){
+                throw new ObjectDisposedException(this.GetType().Name);
+            }
+
             foreach(MIME_Entity entity in this.AllEntities){
                 if(string.Equals(entity.ContentType?.TypeWithSubtype,MIME_MediaTypes.Application.pkcs7_mime,StringComparison.InvariantCultureIgnoreCase)){
                     if(!((MIME_b_ApplicationPkcs7Mime)entity.Body!).VerifySignature()){
@@ -309,11 +495,23 @@ namespace LumiSoft.Net.MIME
         #region Properties Implementation
 
         /// <summary>
-        /// Gets if message contains signed data.
+        /// Gets a value indicating whether the message contains signed content.
         /// </summary>
+        /// <remarks>
+        /// Returns <see langword="true"/> if the message contains an S/MIME
+        /// signed entity, such as <c>multipart/signed</c> or
+        /// <c>application/pkcs7-mime</c>; otherwise <see langword="false"/>.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this property is accessed.
+        /// </exception>
         public bool IsSigned
         {
             get{
+                if(this.IsDisposed){
+                    throw new ObjectDisposedException(this.GetType().Name);
+                }
+
                 foreach(MIME_Entity entity in this.AllEntities){
                     if(string.Equals(entity.ContentType?.TypeWithSubtype,MIME_MediaTypes.Application.pkcs7_mime,StringComparison.InvariantCultureIgnoreCase)){
                         return true;
@@ -328,14 +526,20 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets all MIME entities as list.
+        /// Gets all MIME entities contained in this message.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this class is disposed and this property is accessed.</exception>
-        /// <remarks>The nestetd entities of embbed messages with <b>Content-Type: Message/Rfc822</b> are also included.</remarks>
+        /// <remarks>
+        /// The returned array includes the current entity and all nested MIME
+        /// entities. Entities contained in embedded <c>message/rfc822</c>
+        /// body parts are also included.
+        /// </remarks>
+        /// <exception cref="ObjectDisposedException">
+        /// Raised when this instance is disposed and this property is accessed.
+        /// </exception>
         public MIME_Entity[] AllEntities
         {
             get{
-                if(m_IsDisposed){
+                if(this.IsDisposed){
                     throw new ObjectDisposedException(this.GetType().Name);
                 }
 
@@ -364,80 +568,6 @@ namespace LumiSoft.Net.MIME
 
                 return retVal.ToArray();
             }
-        }
-
-        #endregion
-
-
-        // --- Obsolete stuff --------
-
-        #region static method CreateAttachment
-
-        /// <summary>
-        /// Creates attachment entity.
-        /// </summary>
-        /// <param name="file">File name with optional path.</param>
-        /// <returns>Returns created attachment entity.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>file</b> is null reference.</exception>
-        [Obsolete("Use MIME_Entity.CreateEntity_Attachment instead.")]
-        public static MIME_Entity CreateAttachment(string file)
-        {
-            if(file == null){
-                throw new ArgumentNullException("file");
-            }
-
-            MIME_Entity retVal = new MIME_Entity();
-            MIME_b_Application body = new MIME_b_Application(MIME_MediaTypes.Application.octet_stream);
-            retVal.Body = body;
-            body.SetDataFromFile(file,MIME_TransferEncodings.Base64);
-            retVal.ContentType!.Param_Name = Path.GetFileName(file);
-
-            FileInfo fileInfo = new FileInfo(file);
-            MIME_h_ContentDisposition disposition = new MIME_h_ContentDisposition(MIME_DispositionTypes.Attachment);
-            disposition.Param_FileName         = Path.GetFileName(file);
-            disposition.Param_Size             = fileInfo.Length;
-            disposition.Param_CreationDate     = fileInfo.CreationTime;
-            disposition.Param_ModificationDate = fileInfo.LastWriteTime;
-            disposition.Param_ReadDate         = fileInfo.LastAccessTime;
-            retVal.ContentDisposition = disposition;
-            
-            return retVal;
-        }
-
-        /// <summary>
-        /// Creates attachment entity.
-        /// </summary>
-        /// <param name="stream">Attachment data stream. Data is read from stream current position.</param>
-        /// <param name="fileName">File name.</param>
-        /// <returns>Returns created attachment entity.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> or <b>fileName</b> is null reference.</exception>        
-        [Obsolete("Use MIME_Entity.CreateEntity_Attachment instead.")]
-        public static MIME_Entity CreateAttachment(Stream stream,string fileName)
-        {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
-            if(fileName == null){
-                throw new ArgumentNullException("fileName");
-            }
-
-            long fileSize = stream.CanSeek ? (stream.Length - stream.Position) : -1;
-
-            MIME_Entity retVal = new MIME_Entity();
-            MIME_b_Application body = new MIME_b_Application(MIME_MediaTypes.Application.octet_stream);
-            retVal.Body = body;
-            body.SetData(stream,MIME_TransferEncodings.Base64);
-            retVal.ContentType!.Param_Name = Path.GetFileName(fileName);
-
-            MIME_h_ContentDisposition disposition = new MIME_h_ContentDisposition(MIME_DispositionTypes.Attachment);
-            disposition.Param_FileName         = Path.GetFileName(fileName);
-            disposition.Param_Size             = fileSize;
-            //disposition.Param_CreationDate     = fileInfo.CreationTime;
-            //disposition.Param_ModificationDate = fileInfo.LastWriteTime;
-            //disposition.Param_ReadDate         = fileInfo.LastAccessTime;
-            retVal.ContentDisposition = disposition;
-
-            return retVal;
         }
 
         #endregion

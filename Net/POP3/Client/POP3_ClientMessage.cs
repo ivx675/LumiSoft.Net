@@ -44,9 +44,7 @@ namespace LumiSoft.Net.POP3.Client
     /// <para>
     /// Header‑only and partial‑body retrieval methods are useful for lightweight
     /// message inspection, such as reading <c>Subject</c>, <c>From</c>, <c>Date</c>,
-    /// or other metadata without downloading the full message body. The MIME parser
-    /// used by <see cref="Mail_Message.ParseFromStream(Stream)"/> supports partial
-    /// MIME structures, allowing safe parsing of truncated message data.
+    /// or other metadata without downloading the full message body.
     /// </para>
     ///
     /// <para>
@@ -297,12 +295,12 @@ namespace LumiSoft.Net.POP3.Client
         /// </remarks>
         public async ValueTask<Mail_Message> HeaderToMailMessageAsync(CancellationToken cancellationToken = default)
         {
-            using var stream = new MemoryStreamEx();
+            var stream = new MemoryStreamEx();
 
             await HeaderToStreamAsync(stream,cancellationToken);
             stream.Position = 0;
 
-            return Mail_Message.ParseFromStream(stream);
+            return await Mail_Message.ParseFromStreamAsync(stream,true,true,cancellationToken);
         }
 
         #endregion
@@ -699,12 +697,12 @@ namespace LumiSoft.Net.POP3.Client
         /// </remarks>
         public async ValueTask<Mail_Message> ToMailMessageAsync(CancellationToken cancellationToken = default)
         {
-            using var stream = new MemoryStreamEx();
+            var stream = new MemoryStreamEx();
 
             await ToStreamAsync(stream,cancellationToken);
             stream.Position = 0;
 
-            return Mail_Message.ParseFromStream(stream);
+            return await Mail_Message.ParseFromStreamAsync(stream,true,true,cancellationToken);
         }
 
         #endregion

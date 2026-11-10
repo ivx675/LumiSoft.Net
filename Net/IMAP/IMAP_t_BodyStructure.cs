@@ -242,7 +242,7 @@ namespace LumiSoft.Net.IMAP
                 innerBodyStructure = FromMessage(rfc822Body.Message);
             }
 
-            int contentSize = 0;
+            long contentSize = 0;
             if(entity.Body is MIME_b_SinglepartBase b1){
                 contentSize =  b1.EncodedDataSize;
             }

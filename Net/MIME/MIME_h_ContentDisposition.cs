@@ -5,13 +5,14 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Represents "Content-Disposition:" header. Defined in RFC 2183.
+    /// Represents a <c>Content-Disposition</c> header field.
     /// </summary>
-    /// <example>
+    /// <remarks>
+    /// Defined by RFC 2183. Disposition types are case-insensitive.
+    ///
     /// <code>
-    /// RFC 2183.
-    ///     In the extended BNF notation of [RFC 822], the Content-Disposition
-    ///     header field is defined as follows:
+    /// disposition := &quot;Content-Disposition&quot; &quot;:&quot; disposition-type
+    ///                *(&quot;;&quot; disposition-parm)
     ///
     ///     disposition := "Content-Disposition" ":" disposition-type *(";" disposition-parm)
     ///
@@ -39,7 +40,7 @@ namespace LumiSoft.Net.MIME
     ///                         ; contents MUST be an RFC 822 `date-time'
     ///                         ; numeric timezones (+HHMM or -HHMM) MUST be used
     /// </code>
-    /// </example>
+    /// </remarks>
     public class MIME_h_ContentDisposition : MIME_h
     {
         private bool                       m_IsModified      = false;
@@ -48,18 +49,18 @@ namespace LumiSoft.Net.MIME
         private MIME_h_ParameterCollection m_pParameters;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_h_ContentDisposition"/> class.
         /// </summary>
-        /// <param name="dispositionType">The disposition-type. Known values are in <see cref="MIME_DispositionTypes">MIME_DispositionTypes</see>.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>dispositionType</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="dispositionType">The disposition type, such as <c>inline</c> or <c>attachment</c>.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="dispositionType"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ArgumentException">Thrown when <paramref name="dispositionType"/> is empty.</exception>
         public MIME_h_ContentDisposition(string dispositionType)
         {
             if(dispositionType == null){
-                throw new ArgumentNullException("dispositionType");
+                throw new ArgumentNullException(nameof(dispositionType));
             }
             if(dispositionType == string.Empty){
-                throw new ArgumentException("Argument 'dispositionType' value must be specified.");
+                throw new ArgumentException("The disposition type cannot be empty.",nameof(dispositionType));
             }
 
             m_DispositionType = dispositionType;
@@ -80,16 +81,16 @@ namespace LumiSoft.Net.MIME
         #region static method Parse
 
         /// <summary>
-        /// Parses header field from the specified value.
+        /// Parses a <c>Content-Disposition</c> header field from its serialized representation.
         /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Content-Type: text/plain'.</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <param name="value">The serialized header field, including its name; for example, <c>Content-Disposition: attachment; filename=&quot;file.txt&quot;</c>.</param>
+        /// <returns>A parsed <see cref="MIME_h_ContentDisposition"/> instance.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> is not a valid <c>Content-Disposition</c> header field.</exception>
         public static MIME_h_ContentDisposition Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             // We should not have encoded words here, but some email clients do this, so encoded them if any.
@@ -99,13 +100,13 @@ namespace LumiSoft.Net.MIME
             
             string[] name_value = valueDecoded.Split(new char[]{':'},2);
             if(name_value.Length != 2){
-                throw new ParseException("Invalid Content-Type: header field value '" + value + "'.");
+                throw new ParseException("The Content-Disposition header field must contain a field name followed by a colon.");
             }
 
             MIME_Reader r = new MIME_Reader(name_value[1]);
             string? type = r.Token();
             if(type == null){
-                throw new ParseException("Invalid Content-Disposition: header field value '" + value + "'.");
+                throw new ParseException("The Content-Disposition header field is missing a disposition type.");
             }
             retVal.m_DispositionType = type.Trim();
 
@@ -122,16 +123,15 @@ namespace LumiSoft.Net.MIME
         #region override method ToString
                 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized <c>Content-Disposition</c> header field.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8">Specifies whether regenerated header values may contain UTF-8 characters as defined by RFC 6532.</param>
+        /// <param name="reEncode">Specifies whether the header field is regenerated. If <see langword="false"/> and the parsed value is unchanged, its original representation may be returned.</param>
+        /// <returns>The serialized header field.</returns>
+        public override string ToString(bool utf8,bool reEncode)
         {
             if(m_ParseValue == null || reEncode || this.IsModified){
-                return "Content-Disposition: " + m_DispositionType + m_pParameters.ToString(parmetersCharset) + "\r\n";
+                return "Content-Disposition: " + m_DispositionType + m_pParameters.ToString(utf8) + "\r\n";
             }
             else{
                 return m_ParseValue;
@@ -144,17 +144,16 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was parsed.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public override bool IsModified
         {
             get{ return m_IsModified || m_pParameters.IsModified; }
         }
 
         /// <summary>
-        /// Returns always "Content-Disposition".
+        /// Gets the header field name, which is always <c>Content-Disposition</c>.
         /// </summary>
         public override string Name
         {
@@ -162,7 +161,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets the disposition-type. Known values are in <see cref="MIME_DispositionTypes">MIME_DispositionTypes</see>.
+        /// Gets the disposition type, such as <c>inline</c> or <c>attachment</c>.
         /// </summary>
         public string DispositionType
         {
@@ -170,7 +169,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets Content-Type parameters collection.
+        /// Gets the <c>Content-Disposition</c> parameter collection.
         /// </summary>
         public MIME_h_ParameterCollection Parameters
         {
@@ -178,7 +177,8 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets the suggested file name. Value null means not specified. Defined in RFC 2183 2.3.
+        /// Gets or sets the suggested file name. A <see langword="null"/> value
+        /// means that the parameter is not specified. Defined in RFC 2183, section 2.3.
         /// </summary>
         public string? Param_FileName
         {
@@ -188,14 +188,15 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets the creation date for a file. Value DateTime.MinValue means not specified. Defined in RFC 2183 2.4.
+        /// Gets or sets the file creation date. A <see langword="null"/> value
+        /// means that the parameter is not specified. Defined in RFC 2183, section 2.4.
         /// </summary>
-        public DateTime Param_CreationDate
+        public DateTime? Param_CreationDate
         {
             get{ 
                 string? value = this.Parameters["creation-date"];
                 if(value == null){
-                    return DateTime.MinValue;
+                    return null;
                 }
                 else{
                     return MIME_Utils.ParseRfc2822DateTime(value);
@@ -203,24 +204,25 @@ namespace LumiSoft.Net.MIME
             }
 
             set{ 
-                if(value == DateTime.MinValue){
+                if(value == null){
                     this.Parameters.Remove("creation-date");
                 }
                 else{
-                    this.Parameters["creation-date"] = MIME_Utils.DateTimeToRfc2822(value);
+                    this.Parameters["creation-date"] = MIME_Utils.DateTimeToRfc2822(value.Value);
                 }
             }
         }
 
         /// <summary>
-        /// Gets or sets the modification date of a file. Value DateTime.MinValue means not specified. Defined in RFC 2183 2.5.
+        /// Gets or sets the file modification date. A <see langword="null"/> value
+        /// means that the parameter is not specified. Defined in RFC 2183, section 2.5.
         /// </summary>
-        public DateTime Param_ModificationDate
+        public DateTime? Param_ModificationDate
         {
             get{
                 string? value = this.Parameters["modification-date"];
                 if(value == null){
-                    return DateTime.MinValue;
+                    return null;
                 }
                 else{
                     return MIME_Utils.ParseRfc2822DateTime(value);
@@ -228,24 +230,25 @@ namespace LumiSoft.Net.MIME
             }
 
             set{ 
-                if(value == DateTime.MinValue){
+                if(value == null){
                     this.Parameters.Remove("modification-date");
                 }
                 else{
-                    this.Parameters["modification-date"] = MIME_Utils.DateTimeToRfc2822(value);
+                    this.Parameters["modification-date"] = MIME_Utils.DateTimeToRfc2822(value.Value);
                 }
             }
         }
 
         /// <summary>
-        /// Gets or sets the last read date of a file. Value DateTime.MinValue means not specified. Defined in RFC 2183 2.6.
+        /// Gets or sets the date when the file was last read. A <see langword="null"/>
+        /// value means that the parameter is not specified. Defined in RFC 2183, section 2.6.
         /// </summary>
-        public DateTime Param_ReadDate
+        public DateTime? Param_ReadDate
         {
             get{
                 string? value = this.Parameters["read-date"];
                 if(value == null){
-                    return DateTime.MinValue;
+                    return null;
                 }
                 else{
                     return MIME_Utils.ParseRfc2822DateTime(value);
@@ -253,24 +256,25 @@ namespace LumiSoft.Net.MIME
             }
 
             set{ 
-                if(value == DateTime.MinValue){
+                if(value == null){
                     this.Parameters.Remove("read-date");
                 }
                 else{
-                    this.Parameters["read-date"] = MIME_Utils.DateTimeToRfc2822(value);
+                    this.Parameters["read-date"] = MIME_Utils.DateTimeToRfc2822(value.Value);
                 }
             }
         }
 
         /// <summary>
-        /// Gets or sets the size of a file. Value -1 means not specified. Defined in RFC 2183 2.7.
+        /// Gets or sets the file size in bytes. A <see langword="null"/> value
+        /// means that the parameter is not specified. Defined in RFC 2183, section 2.7.
         /// </summary>
-        public long Param_Size
+        public long? Param_Size
         {
             get{
                 string? value = this.Parameters["size"];
                 if(value == null){
-                    return -1;
+                    return null;
                 }
                 else{
                     return Convert.ToInt64(value);
@@ -278,7 +282,7 @@ namespace LumiSoft.Net.MIME
             }
 
             set{ 
-                if(value < 0){
+                if(value == null){
                     this.Parameters.Remove("size");
                 }
                 else{

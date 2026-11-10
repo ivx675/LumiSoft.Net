@@ -3,18 +3,22 @@ using System.IO;
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.IO;
-using LumiSoft.Net.Mail;
-
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME <b>message/delivery-status</b> body. Defined in RFC 3464.
+    /// Represents a MIME <c>message/delivery-status</c> body as defined in
+    /// RFC 3464.
     /// </summary>
     /// <remarks>
+    /// A <c>message/delivery-status</c> body contains delivery status
+    /// notification (DSN) fields describing the delivery status of a
+    /// message. It consists of a per-message field block followed by one or
+    /// more per-recipient field blocks.
+    ///
     /// <code>
-    /// delivery-status-content =  per-message-fields 1*( CRLF per-recipient-fields )
-    /// 
+    /// delivery-status-content = per-message-fields
+    ///                           1*( CRLF per-recipient-fields )
+    ///
     /// per-message-fields =
     ///            [ original-envelope-id-field CRLF ]
     ///            reporting-mta-field CRLF
@@ -22,18 +26,18 @@ namespace LumiSoft.Net.MIME
     ///            [ received-from-mta-field CRLF ]
     ///            [ arrival-date-field CRLF ]
     ///            *( extension-field CRLF )
-    ///            
+    ///
     /// per-recipient-fields =
-    ///          [ original-recipient-field CRLF ]
-    ///          final-recipient-field CRLF
-    ///          action-field CRLF
-    ///          status-field CRLF
-    ///          [ remote-mta-field CRLF ]
-    ///          [ diagnostic-code-field CRLF ]
-    ///          [ last-attempt-date-field CRLF ]
-    ///          [ final-log-id-field CRLF ]
-    ///          [ will-retry-until-field CRLF ]
-    ///         *( extension-field CRLF )
+    ///            [ original-recipient-field CRLF ]
+    ///            final-recipient-field CRLF
+    ///            action-field CRLF
+    ///            status-field CRLF
+    ///            [ remote-mta-field CRLF ]
+    ///            [ diagnostic-code-field CRLF ]
+    ///            [ last-attempt-date-field CRLF ]
+    ///            [ final-log-id-field CRLF ]
+    ///            [ will-retry-until-field CRLF ]
+    ///            *( extension-field CRLF )
     /// </code>
     /// </remarks>
     public class MIME_b_MessageDeliveryStatus : MIME_b
@@ -54,44 +58,56 @@ namespace LumiSoft.Net.MIME
         #region static method Parse
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses a <c>message/delivery-status</c> body from the specified
+        /// stream.
         /// </summary>
-        /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>defaultContentType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="owner">
+        /// Owner MIME entity.
+        /// </param>
+        /// <param name="stream">
+        /// Stream from which to read the body data.
+        /// </param>
+        /// <returns>
+        /// Returns the parsed body.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="owner"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the body contains invalid data that cannot be parsed.
+        /// </exception>
+        internal static MIME_b Parse(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
 
-            // We need to buffer all body data, otherwise we don't know if we have readed all data 
-            // from stream.
-            MemoryStream msBuffer = new MemoryStream();
-            Net_Utils.StreamCopy(stream,msBuffer,stream.LineBufferSize);
-            msBuffer.Position = 0;
-
-            SmartStream parseStream = new SmartStream(msBuffer,true);
+            string data;
+            using(var reader = new StreamReader(
+                stream,
+                Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true,
+                leaveOpen: true))
+            {
+                data = reader.ReadToEnd();
+            }
+            string[] blocks = data.Split(["\r\n\r\n"],StringSplitOptions.RemoveEmptyEntries);
 
             MIME_b_MessageDeliveryStatus retVal = new MIME_b_MessageDeliveryStatus();
-            //Pare per-message fields.
-            retVal.m_pMessageFields.Parse(parseStream);
-
-            // Parse per-recipient fields.
-            while(parseStream.Position - parseStream.BytesInReadBuffer < parseStream.Length){
-                MIME_h_Collection recipientFields = new MIME_h_Collection(new MIME_h_Provider());
-                recipientFields.Parse(parseStream);
-                retVal.m_pRecipientBlocks.Add(recipientFields);                
-            }                     
+            for(int i = 0; i < blocks.Length; i++) {
+                if(i == 0) {
+                    retVal.m_pMessageFields.ParseFromString(blocks[i]);
+                }
+                else{
+                    MIME_h_Collection recipientFields = new MIME_h_Collection(new MIME_h_Provider());
+                    recipientFields.ParseFromString(blocks[i]);
+                    retVal.m_pRecipientBlocks.Add(recipientFields);
+                }
+            }
 
             return retVal;
         }
@@ -99,27 +115,19 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
-        #region method ToStream
+        #region method ToStreamAsync
 
-        /// <summary>
-        /// Stores MIME entity body to the specified stream.
-        /// </summary>
-        /// <param name="stream">Stream where to store body data.</param>
-        /// <param name="headerWordEncoder">Header 8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="headerParmetersCharset">Charset to use to encode 8-bit header parameters. Value null means parameters not encoded.</param>
-        /// <param name="headerReencode">If true always specified encoding is used for header. If false and header field value not modified, 
-        /// original encoding is kept.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        internal protected override void ToStream(Stream stream,MIME_Encoding_EncodedWord? headerWordEncoder,Encoding? headerParmetersCharset,bool headerReencode)
+        /// <inheritdoc/>
+        internal protected override async Task ToStreamAsync(Stream stream,bool utf8Headers,bool reEncodeHeaders,CancellationToken cancellationToken = default)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
+            if(stream == null) {
+                throw new ArgumentNullException(nameof(stream));
             }
             
-            m_pMessageFields.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
+            await m_pMessageFields.ToStreamAsync(stream, utf8Headers, reEncodeHeaders, cancellationToken);
             stream.Write(new byte[]{(byte)'\r',(byte)'\n'},0,2);
             foreach(MIME_h_Collection recipientBlock in m_pRecipientBlocks){
-                recipientBlock.ToStream(stream,headerWordEncoder,headerParmetersCharset,headerReencode);
+                await recipientBlock.ToStreamAsync(stream,utf8Headers,reEncodeHeaders,cancellationToken);
                 stream.Write(new byte[]{(byte)'\r',(byte)'\n'},0,2);
             }
         }
@@ -130,7 +138,8 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if body has modified.
+        /// Gets a value indicating whether any delivery status fields have been
+        /// modified.
         /// </summary>
         public override bool IsModified
         {
@@ -149,9 +158,11 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets per-message fields collection.
+        /// Gets the collection of per-recipient field blocks.
         /// </summary>
-        /// <exception cref="InvalidOperationException">Is raised when this method is accessed and this body is not bounded to any entity.</exception>
+        /// <remarks>
+        /// Each item represents the fields associated with a single recipient.
+        /// </remarks>
         public MIME_h_Collection MessageFields
         {
             get{ return m_pMessageFields; }

@@ -7,16 +7,19 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// This class represent generic <b>address-list</b> header fields. For example: To header.
+    /// Represents a header field whose value is an address list, such as
+    /// <c>To</c>, <c>Cc</c>, or <c>Bcc</c>.
     /// </summary>
-    /// <example>
+    /// <remarks>
+    /// The header field name is retained as supplied to the constructor. The
+    /// address list can contain mailboxes and groups as defined by RFC 5322.
+    ///
     /// <code>
-    /// RFC 5322.
-    ///     header       = "FiledName:" address-list CRLF
-    ///     address-list = (address *("," address))
-    ///     address      = mailbox / group
+    /// header       = &quot;FieldName:&quot; address-list CRLF
+    /// address-list = address *(&quot;,&quot; address)
+    /// address      = mailbox / group
     /// </code>
-    /// </example>
+    /// </remarks>
     public class Mail_h_AddressList : MIME_h
     {
         private string?            m_ParseValue = null;
@@ -24,22 +27,26 @@ namespace LumiSoft.Net.Mail
         private Mail_t_AddressList m_pAddresses;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_h_AddressList"/> class.
         /// </summary>
-        /// <param name="fieldName">Header field name. For example: "To".</param>
-        /// <param name="values">Addresses collection.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>filedName</b> or <b>values</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="fieldName">The header field name, such as <c>To</c>.</param>
+        /// <param name="values">The address collection for the header field.</param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="fieldName"/> or <paramref name="values"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="fieldName"/> is empty.
+        /// </exception>
         public Mail_h_AddressList(string fieldName,Mail_t_AddressList values)
         {
             if(fieldName == null){
-                throw new ArgumentNullException("fieldName");
+                throw new ArgumentNullException(nameof(fieldName));
             }
             if(fieldName == string.Empty){
-                throw new ArgumentException("Argument 'fieldName' value must be specified.");
+                throw new ArgumentException("The header field name cannot be empty.",nameof(fieldName));
             }
             if(values == null){
-                throw new ArgumentNullException("values");
+                throw new ArgumentNullException(nameof(values));
             }
 
             m_Name       = fieldName;
@@ -50,21 +57,21 @@ namespace LumiSoft.Net.Mail
         #region static method Parse
 
         /// <summary>
-        /// Parses header field from the specified value.
+        /// Parses an address-list header field from its serialized representation.
         /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Content-Type: text/plain'.</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <param name="value">The serialized header field, including its name; for example, <c>To: user@example.com</c>.</param>
+        /// <returns>A parsed address-list header field.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> is not a valid address-list header field.</exception>
         public static Mail_h_AddressList Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             string[] name_value = value.Split(new char[]{':'},2);
             if(name_value.Length != 2){
-                throw new ParseException("Invalid header field value '" + value + "'.");
+                throw new ParseException("The header field must contain a field name followed by a colon.");
             }
                         
             /* RFC 5322 3.4.
@@ -92,13 +99,20 @@ namespace LumiSoft.Net.Mail
         #region override method ToString
 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized header field, including the terminating CRLF.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8">
+        /// Specifies whether rewritten header fields may contain UTF-8 characters
+        /// as defined by RFC 6532. If <see langword="false"/>, non-ASCII values
+        /// are encoded using the applicable MIME encoding rules.
+        /// </param>
+        /// <param name="reEncode">
+        /// Specifies whether the header field is regenerated. If
+        /// <see langword="false"/> and the parsed value is unchanged, its original
+        /// representation may be returned.
+        /// </param>
+        /// <returns>The serialized header field.</returns>
+        public override string ToString(bool utf8,bool reEncode)
         {            
             if(reEncode || this.IsModified || m_ParseValue == null){
                 StringBuilder retVal = new StringBuilder();
@@ -110,10 +124,10 @@ namespace LumiSoft.Net.Mail
  
                     // Don't add ',' for last item.
                     if(i == (m_pAddresses.Count - 1)){
-                        retVal.Append(m_pAddresses[i].ToString(wordEncoder) + "\r\n");
+                        retVal.Append(m_pAddresses[i].ToString(utf8) + "\r\n");
                     }
                     else{
-                        retVal.Append(m_pAddresses[i].ToString(wordEncoder) + ",\r\n");
+                        retVal.Append(m_pAddresses[i].ToString(utf8) + ",\r\n");
                     }
                 }
                 // No items, we need to add ending CRLF.
@@ -134,17 +148,16 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was parsed.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public override bool IsModified
         {
             get{ return m_pAddresses.IsModified; }
         }
 
         /// <summary>
-        /// Gets header field name. For example "To".
+        /// Gets the header field name, such as <c>To</c>.
         /// </summary>
         public override string Name
         {
@@ -152,8 +165,12 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets addresses collection.
+        /// Gets the address collection represented by this header field.
         /// </summary>
+        /// <remarks>
+        /// The returned collection is the live collection used by the header
+        /// field. Changes to it affect serialization and modification state.
+        /// </remarks>
         public Mail_t_AddressList Addresses
         {
             get{ return m_pAddresses; }

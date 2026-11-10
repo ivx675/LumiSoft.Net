@@ -7,14 +7,16 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// This class represent generic <b>mailbox</b> header fields. For example: Sender: header.
+    /// Represents a header field whose value is a mailbox, such as the
+    /// <c>Sender</c> header field.
     /// </summary>
-    /// <example>
+    /// <remarks>
+    /// Defined by RFC 5322.
+    ///
     /// <code>
-    /// RFC 5322.
-    ///     header = "FiledName:" mailbox CRLF
+    /// header = &quot;FieldName:&quot; mailbox CRLF
     /// </code>
-    /// </example>
+    /// </remarks>
     public class Mail_h_Mailbox : MIME_h
     {
         private string?        m_ParseValue = null;
@@ -22,22 +24,26 @@ namespace LumiSoft.Net.Mail
         private Mail_t_Mailbox m_pAddress;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_h_Mailbox"/> class.
         /// </summary>
-        /// <param name="fieldName">Header field name. For example: "Sender".</param>
-        /// <param name="mailbox">Mailbox value.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>filedName</b> or <b>mailbox</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <param name="fieldName">The header field name, such as <c>Sender</c>.</param>
+        /// <param name="mailbox">The mailbox value for the header field.</param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="fieldName"/> or <paramref name="mailbox"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="fieldName"/> is empty.
+        /// </exception>
         public Mail_h_Mailbox(string fieldName,Mail_t_Mailbox mailbox)
         {
             if(fieldName == null){
-                throw new ArgumentNullException("fieldName");
+                throw new ArgumentNullException(nameof(fieldName));
             }
             if(fieldName == string.Empty){
-                throw new ArgumentException("Argument 'fieldName' value must be specified.");
+                throw new ArgumentException("The header field name cannot be empty.",nameof(fieldName));
             }
             if(mailbox == null){
-                throw new ArgumentNullException("mailbox");
+                throw new ArgumentNullException(nameof(mailbox));
             }
 
             m_Name     = fieldName;
@@ -48,21 +54,21 @@ namespace LumiSoft.Net.Mail
         #region static method Parse
 
         /// <summary>
-        /// Parses header field from the specified value.
+        /// Parses a mailbox header field from its serialized representation.
         /// </summary>
-        /// <param name="value">Header field value. Header field name must be included. For example: 'Sender: john.doe@domain.com'.</param>
-        /// <returns>Returns parsed header field.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when header field parsing errors.</exception>
+        /// <param name="value">The serialized header field, including its name; for example, <c>Sender: john.doe@domain.com</c>.</param>
+        /// <returns>A parsed mailbox header field.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> is not a valid mailbox header field.</exception>
         public static Mail_h_Mailbox Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             string[] name_value = value.Split(new char[]{':'},2);
             if(name_value.Length != 2){
-                throw new ParseException("Invalid header field value '" + value + "'.");
+                throw new ParseException("The header field must contain a field name followed by a colon.");
             }
 
             MIME_Reader r = new MIME_Reader(name_value[1].Trim());
@@ -70,7 +76,7 @@ namespace LumiSoft.Net.Mail
             string? word = r.QuotedReadToDelimiter(new char[]{',','<',':'});
             // Invalid value.
             if(word == null){
-                throw new ParseException("Invalid header field value '" + value + "'.");
+                throw new ParseException("The header field contains an invalid mailbox value.");
             }
             // name-addr
             else if(r.Peek(true) == '<'){
@@ -94,19 +100,25 @@ namespace LumiSoft.Net.Mail
         #region override method ToString
 
         /// <summary>
-        /// Returns header field as string.
+        /// Returns the serialized header field.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <param name="parmetersCharset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <param name="reEncode">If true always specified encoding is used. If false and header field value not modified, original encoding is kept.</param>
-        /// <returns>Returns header field as string.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder,Encoding? parmetersCharset,bool reEncode)
+        /// <param name="utf8">
+        /// Specifies whether a regenerated header field may contain UTF-8
+        /// characters as defined by RFC 6532.
+        /// </param>
+        /// <param name="reEncode">
+        /// Specifies whether the header field is regenerated. If
+        /// <see langword="false"/> and the field was parsed, its original
+        /// representation is returned.
+        /// </param>
+        /// <returns>The serialized header field.</returns>
+        public override string ToString(bool utf8,bool reEncode)
         {
             if(!reEncode && m_ParseValue != null){
                 return m_ParseValue;
             }
             else{
-                return m_Name + ": " + m_pAddress.ToString(wordEncoder) + "\r\n";
+                return m_Name + ": " + m_pAddress.ToString(utf8) + "\r\n";
             }
         }
 
@@ -116,17 +128,16 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field is modified since it has loaded.
+        /// Gets a value indicating whether this header field has been modified
+        /// since it was parsed.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public override bool IsModified
         {
             get{ return false; }
         }
 
         /// <summary>
-        /// Gets header field name. For example "Sender".
+        /// Gets the header field name, such as <c>Sender</c>.
         /// </summary>
         public override string Name
         {
@@ -134,7 +145,7 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets mailbox address.
+        /// Gets the mailbox represented by this header field.
         /// </summary>
         public Mail_t_Mailbox Address
         {

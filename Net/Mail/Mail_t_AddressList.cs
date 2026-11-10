@@ -8,22 +8,24 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {
     /// <summary>
-    /// This class represents <b>address-list</b>. Defined in RFC 5322 3.4.
+    /// Represents an RFC 5322 address list.
     /// </summary>
-    /// <example>
+    /// <remarks>
+    /// Defined by RFC 5322, section 3.4. An address list contains mailboxes
+    /// and groups separated by commas.
+    ///
     /// <code>
-    /// RFC 5322.
-    ///     address-list = (address *("," address))
-    ///     address      = mailbox / group
+    /// address-list = address *(&quot;,&quot; address)
+    /// address      = mailbox / group
     /// </code>
-    /// </example>
-    public class Mail_t_AddressList : IEnumerable
+    /// </remarks>
+    public class Mail_t_AddressList : IEnumerable<Mail_t_Address>
     {
         private bool                 m_IsModified = false;
         private List<Mail_t_Address> m_pList;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes an empty address list.
         /// </summary>
         public Mail_t_AddressList()
         {
@@ -34,16 +36,16 @@ namespace LumiSoft.Net.Mail
         #region static method Parse
 
         /// <summary>
-        /// Parses <b>address-list</b> from specified string value.
+        /// Parses an address list from the specified string.
         /// </summary>
-        /// <param name="value">The <b>address-list</b> string value.</param>
-        /// <returns></returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when <b>value</b> is not valid <b>address-list</b> value.</exception>
+        /// <param name="value">The serialized address list.</param>
+        /// <returns>The parsed address list.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> is not a valid address list.</exception>
         public static Mail_t_AddressList Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             /* RFC 5322 3.4.
@@ -68,11 +70,13 @@ namespace LumiSoft.Net.Mail
                 }
                 // group
                 else if(r.Peek(true) == ':'){
-                    Mail_t_Group group = new Mail_t_Group(word != null ? MIME_Encoding_EncodedWord.DecodeS(TextUtils.UnQuoteString(word)) : null);
+                    string? displayName = word != null ? MIME_Encoding_EncodedWord.DecodeS(TextUtils.UnQuoteString(word)) : null;
+                    
                     // Consume ':'
                     r.Char(true);
            
-                    while(true){
+                    List<Mail_t_Mailbox> members = new List<Mail_t_Mailbox>();
+                    while (true){
                         word = r.QuotedReadToDelimiter(new char[]{',','<',':',';'});
                         // We processed all data.
                         if((word == null && r.Available == 0) || r.Peek(false) == ';'){
@@ -80,15 +84,15 @@ namespace LumiSoft.Net.Mail
                         }
                         // Invalid address list value.
                         else if(string.IsNullOrEmpty(word)){
-                            throw new ParseException("Invalid address-list value '" + value + "'.");
+                            throw new ParseException("The address list contains an invalid group member.");
                         }
                         // name-addr
                         else if(r.Peek(true) == '<'){  
-                            group.Members.Add(new Mail_t_Mailbox(word != null ? MIME_Encoding_EncodedWord.DecodeS(TextUtils.UnQuoteString(word)) : null,r.ReadParenthesized()));                    
+                            members.Add(new Mail_t_Mailbox(word != null ? MIME_Encoding_EncodedWord.DecodeS(TextUtils.UnQuoteString(word)) : null,r.ReadParenthesized()));                    
                         }
                         // addr-spec
                         else{
-                            group.Members.Add(new Mail_t_Mailbox(null,word));
+                            members.Add(new Mail_t_Mailbox(null,word));
                         }
                        
                         // We reached at the end of group.
@@ -102,6 +106,7 @@ namespace LumiSoft.Net.Mail
                         }
                     }
 
+                    Mail_t_Group group = new Mail_t_Group(displayName,members.ToArray());
                     retVal.Add(group);
                 }
                 // name-addr
@@ -128,19 +133,19 @@ namespace LumiSoft.Net.Mail
         #region method Insert
 
         /// <summary>
-        /// Inserts a address into the collection at the specified location.
+        /// Inserts an address into the collection at the specified index.
         /// </summary>
-        /// <param name="index">The location in the collection where you want to add the item.</param>
-        /// <param name="value">Address to insert.</param>
-        /// <exception cref="ArgumentOutOfRangeException">Is raised when <b>index</b> is out of range.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
+        /// <param name="index">The zero-based index at which to insert the address.</param>
+        /// <param name="value">The address to insert.</param>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="index"/> is outside the valid insertion range.</exception>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
         public void Insert(int index,Mail_t_Address value)
         {
             if(index < 0 || index > m_pList.Count){
-                throw new ArgumentOutOfRangeException("index");
+                throw new ArgumentOutOfRangeException(nameof(index));
             }
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             m_pList.Insert(index,value);
@@ -152,14 +157,14 @@ namespace LumiSoft.Net.Mail
         #region method Add
 
         /// <summary>
-        /// Adds specified address to the end of the collection.
+        /// Adds an address to the end of the collection.
         /// </summary>
-        /// <param name="value">Address to add.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference value.</exception>
+        /// <param name="value">The address to add.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
         public void Add(Mail_t_Address value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             m_pList.Add(value);
@@ -171,17 +176,18 @@ namespace LumiSoft.Net.Mail
         #region method Remove
 
         /// <summary>
-        /// Removes specified item from the collection.
+        /// Removes the specified address from the collection.
         /// </summary>
-        /// <param name="value">Address to remove.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference value.</exception>
+        /// <param name="value">The address to remove.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
         public void Remove(Mail_t_Address value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
-            m_pList.Remove(value);
+            m_pList.Remove(value);            
+            m_IsModified = true;
         }
 
         #endregion
@@ -202,9 +208,9 @@ namespace LumiSoft.Net.Mail
         #region method ToArray
 
         /// <summary>
-        /// Copies addresses to new array.
+        /// Copies the addresses to a new array.
         /// </summary>
-        /// <returns>Returns addresses array.</returns>
+        /// <returns>An array containing the addresses in the list.</returns>
         public Mail_t_Address[] ToArray()
         {
             return m_pList.ToArray();
@@ -215,9 +221,9 @@ namespace LumiSoft.Net.Mail
         #region override method ToString
 
         /// <summary>
-        /// Returns address-list as string.
+        /// Returns the address list in serialized mail-header format.
         /// </summary>
-        /// <returns>Returns address-list as string.</returns>
+        /// <returns>The serialized address list.</returns>
         public override string ToString()
         {
             StringBuilder retVal = new StringBuilder();
@@ -239,7 +245,7 @@ namespace LumiSoft.Net.Mail
         #region method AcceptChanges
 
         /// <summary>
-        /// Resets IsModified property to false.
+        /// Marks the address list as unchanged.
         /// </summary>
         internal void AcceptChanges()
         {
@@ -252,20 +258,30 @@ namespace LumiSoft.Net.Mail
         #region interface IEnumerator
 
         /// <summary>
-		/// Gets enumerator.
+        /// Returns an enumerator that iterates through the addresses.
 		/// </summary>
-		/// <returns></returns>
-		public IEnumerator GetEnumerator()
+        /// <returns>An enumerator for the addresses.</returns>
+        IEnumerator IEnumerable.GetEnumerator()
 		{
 			return m_pList.GetEnumerator();
 		}
 
-		#endregion
+        /// <summary>
+        /// Returns a generic enumerator that iterates through the addresses.
+        /// </summary>
+        /// <returns>An enumerator for the addresses.</returns>
+        public IEnumerator<Mail_t_Address> GetEnumerator()
+        {
+            return m_pList.GetEnumerator();
+        }
+
+        #endregion
 
         #region Properties implementation
 
         /// <summary>
-        /// Gets if list has modified since it was loaded.
+        /// Gets a value indicating whether the list has been modified
+        /// since it was parsed.
         /// </summary>
         public bool IsModified
         {            
@@ -273,7 +289,7 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets number of items in the collection.
+        /// Gets the number of addresses in the list.
         /// </summary>
         public int Count
         {
@@ -284,13 +300,13 @@ namespace LumiSoft.Net.Mail
         /// Gets the element at the specified index.
         /// </summary>
         /// <param name="index">The zero-based index of the element to get.</param>
-        /// <returns>Returns the element at the specified index.</returns>
-        /// <exception cref="ArgumentOutOfRangeException">Is raised when <b>index</b> is out of range.</exception>
+        /// <returns>The element at the specified index.</returns>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="index"/> is outside the valid range.</exception>
         public Mail_t_Address this[int index]
         {
             get{ 
                 if(index < 0 || index >= m_pList.Count){
-                    throw new ArgumentOutOfRangeException("index");
+                    throw new ArgumentOutOfRangeException(nameof(index));
                 }
 
                 return m_pList[index]; 
@@ -298,7 +314,8 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets this address list mailboxes(group address mailboxes + mailboxes).
+        /// Gets all mailboxes in the address list, including mailboxes contained
+        /// in group addresses.
         /// </summary>
         public Mail_t_Mailbox[] Mailboxes
         {

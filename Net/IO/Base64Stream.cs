@@ -1,119 +1,102 @@
 using System;
-using System.IO;
-using System.Collections.Generic;
-using System.Text;
+using System.Buffers;
+using System.Buffers.Text;
 
 namespace LumiSoft.Net.IO
 {
     /// <summary>
-    /// This class implements base64 encoder/decoder. Defined in RFC 4648.
+    /// Represents Base64 stream.
     /// </summary>
-    public class Base64Stream : Stream,IDisposable
+    public sealed class Base64Stream : Stream
     {
-        #region BASE64_ENCODE_TABLE
+        private readonly Stream _stream;
+        private readonly bool _isOwner;
+        private readonly bool _addLineBreaks;
+        private readonly FileAccess _accessMode;
 
-        private readonly static byte[] BASE64_ENCODE_TABLE = new byte[]{
-		    (byte)'A',(byte)'B',(byte)'C',(byte)'D',(byte)'E',(byte)'F',(byte)'G',(byte)'H',(byte)'I',(byte)'J',
-            (byte)'K',(byte)'L',(byte)'M',(byte)'N',(byte)'O',(byte)'P',(byte)'Q',(byte)'R',(byte)'S',(byte)'T',
-            (byte)'U',(byte)'V',(byte)'W',(byte)'X',(byte)'Y',(byte)'Z',(byte)'a',(byte)'b',(byte)'c',(byte)'d',
-            (byte)'e',(byte)'f',(byte)'g',(byte)'h',(byte)'i',(byte)'j',(byte)'k',(byte)'l',(byte)'m',(byte)'n',
-            (byte)'o',(byte)'p',(byte)'q',(byte)'r',(byte)'s',(byte)'t',(byte)'u',(byte)'v',(byte)'w',(byte)'x',
-            (byte)'y',(byte)'z',(byte)'0',(byte)'1',(byte)'2',(byte)'3',(byte)'4',(byte)'5',(byte)'6',(byte)'7',
-            (byte)'8',(byte)'9',(byte)'+',(byte)'/'
-		};
+        private readonly byte[] _readBuffer;
+        private readonly byte[] _filteredBuffer;
+        private int _rolloverLen;
+        private bool _isEof;
 
-        #endregion
+        // Write-side state management
+        private readonly byte[] _writeRollover = new byte[2];
+        private int _writeRolloverLen;
+        private bool _isFinalized;
 
-        #region BASE64_DECODE_TABLE
-
-        private readonly static short[] BASE64_DECODE_TABLE = new short[]{
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  // 0 -    9
-		    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  //10 -   19
-		    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  //20 -   29
-		    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  //30 -   39
-		    -1,-1,-1,62,-1,-1,-1,63,52,53,  //40 -   49
-		    54,55,56,57,58,59,60,61,-1,-1,  //50 -   59
-		    -1,-1,-1,-1,-1, 0, 1, 2, 3, 4,  //60 -   69
-		    5, 6, 7, 8, 9,10,11,12,13,14,   //70 -   79
-		    15,16,17,18,19,20,21,22,23,24,  //80 -   89
-		    25,-1,-1,-1,-1,-1,-1,26,27,28,  //90 -   99
-		    29,30,31,32,33,34,35,36,37,38,  //100 - 109
-		    39,40,41,42,43,44,45,46,47,48,  //110 - 119
-		    49,50,51,-1,-1,-1,-1,-1         //120 - 127
-        };
-
-        #endregion
-
-        private bool        m_IsDisposed             = false;
-        private bool        m_IsFinished             = false;
-        private Stream      m_pStream;
-        private bool        m_IsOwner                = false;
-        private bool        m_AddLineBreaks          = true;
-        private FileAccess  m_AccessMode             = FileAccess.ReadWrite;
-        private int         m_EncodeBufferOffset     = 0;
-        private int         m_OffsetInEncode3x8Block = 0;
-        private byte[]      m_pEncode3x8Block        = new byte[3];
-        private byte[]      m_pEncodeBuffer          = new byte[78];
-        private byte[]      m_pDecodedBlock;
-        private int         m_DecodedBlockOffset     = 0;
-        private int         m_DecodedBlockCount      = 0;
-        private Base64      m_pBase64;
-        private bool        m_IgnoreInvalidPadding   = false;
+        private bool _disposed;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Base64Stream"/> class with default read/write access and buffer sizing.
         /// </summary>
-        /// <param name="stream">Stream which to encode/decode.</param>
-        /// <param name="owner">Specifies if Base64Stream is owner of <b>stream</b>.</param>
-        /// <param name="addLineBreaks">Specifies if encoder inserts CRLF after each 76 bytes.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        public Base64Stream(Stream stream,bool owner,bool addLineBreaks) : this(stream,owner,addLineBreaks,FileAccess.ReadWrite)
+        public Base64Stream(Stream stream, bool owner, bool addLineBreaks) 
+            : this(stream, owner, addLineBreaks, FileAccess.ReadWrite, 128000)
         {
         }
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Base64Stream"/> class with custom file access and buffer sizing options.
         /// </summary>
-        /// <param name="stream">Stream which to encode/decode.</param>
-        /// <param name="owner">Specifies if Base64Stream is owner of <b>stream</b>.</param>
-        /// <param name="addLineBreaks">Specifies if encoder inserts CRLF after each 76 bytes.</param>
-        /// <param name="access">This stream access mode.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b> is null reference.</exception>
-        public Base64Stream(Stream stream,bool owner,bool addLineBreaks,FileAccess access)
+        public Base64Stream(Stream stream, bool owner, bool addLineBreaks, FileAccess access, int bufferSize = 128000)
         {
-            if(stream == null){
-                throw new ArgumentNullException("stream");
-            }
+            _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            _isOwner = owner;
+            _addLineBreaks = addLineBreaks;
+            _accessMode = access;
 
-            m_pStream       = stream;
-            m_IsOwner       = owner;
-            m_AddLineBreaks = addLineBreaks;
-            m_AccessMode    = access;
-
-            m_pDecodedBlock = new byte[8000];
-            m_pBase64       = new Base64();
+            // Rent memory buffers from shared array pool to prevent heap allocations
+            _readBuffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+            _filteredBuffer = ArrayPool<byte>.Shared.Rent(bufferSize);
         }
 
-        #region method Dispose
+        #region override method Dispose
 
-        /// <summary>
-        /// Celans up any resources being used.
-        /// </summary>
-        public new void Dispose()
+        /// <inheritdoc />
+        protected override void Dispose(bool disposing)
         {
-            if(m_IsDisposed){
-                return;
+            if(disposing && !_isFinalized){
+                try{
+                    Finish();
+                }
+                catch{
+                    // Suppress or handle exceptions during disposal if necessary
+                }
             }
-            try{
-                Finish();
+            _disposed = true;
+    
+            if(!_isOwner){
+                _stream.Flush();
             }
-            catch{
+            else{
+                _stream.Dispose();
             }
-            m_IsDisposed = true;
+    
+            base.Dispose(disposing);
+        }
 
-            if(m_IsOwner){
-                m_pStream.Close();
+        #endregion
+
+        #region override method DisposeAsync
+
+        /// <inheritdoc />
+        public override async ValueTask DisposeAsync()
+        {
+            if(!_isFinalized){
+                try{
+                    await FinishAsync().ConfigureAwait(false);
+                }
+                catch{
+                    // Suppress or handle exceptions during disposal
+                }
             }
+
+            if(_stream != null){
+                if(_isOwner){
+                    await _stream.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+
+            GC.SuppressFinalize(this);
         }
 
         #endregion
@@ -121,397 +104,365 @@ namespace LumiSoft.Net.IO
 
         #region override method Flush
 
-        /// <summary>
-        /// Clears all buffers for this stream and causes any buffered data to be written to the underlying device.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
+        /// <inheritdoc />
         public override void Flush()
         {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException("Base64Stream");
-            }
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+
+            _stream.Flush();
         }
 
         #endregion
 
-        #region override method Seek
+        #region override method FlushAsync
 
-        /// <summary>
-        /// Sets the position within the current stream. This method is not supported and always throws a NotSupportedException.
-        /// </summary>
-        /// <param name="offset">A byte offset relative to the <b>origin</b> parameter.</param>
-        /// <param name="origin">A value of type SeekOrigin indicating the reference point used to obtain the new position.</param>
-        /// <returns>The new position within the current stream.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this method is accessed.</exception>
-        public override long Seek(long offset,SeekOrigin origin)
+        /// <inheritdoc />
+        public override async Task FlushAsync(CancellationToken cancellationToken)
         {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException("Base64Stream");
-            }
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
 
-            throw new NotSupportedException();
-        }
-
-        #endregion
-
-        #region override method SetLength
-
-        /// <summary>
-        /// Sets the length of the current stream. This method is not supported and always throws a NotSupportedException.
-        /// </summary>
-        /// <param name="value">The desired length of the current stream in bytes.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="Seek">Is raised when this method is accessed.</exception>
-        public override void SetLength(long value)
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException("Base64Stream");
-            }
-
-            throw new NotSupportedException();
+            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
 
         #endregion
 
         #region override method Read
 
-        /// <summary>
-        /// Reads a sequence of bytes from the current stream and advances the position within the stream by the number of bytes read.
-        /// </summary>
-        /// <param name="buffer">An array of bytes. When this method returns, the buffer contains the specified byte array with the values between offset and (offset + count - 1) replaced by the bytes read from the current source.</param>
-        /// <param name="offset">The zero-based byte offset in buffer at which to begin storing the data read from the current stream.</param>
-        /// <param name="count">The maximum number of bytes to be read from the current stream.</param>
-        /// <returns>The total number of bytes read into the buffer. This can be less than the number of bytes requested if that many bytes are not currently available, or zero (0) if the end of the stream has been reached.</returns>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
-        /// <exception cref="ArgumentOutOfRangeException">Is raised when any of the arguments has out of valid range.</exception>
-        /// <exception cref="NotSupportedException">Is raised when reading not supported.</exception>
-        public override int Read(byte[] buffer,int offset,int count)
+        /// <inheritdoc />
+        public override int Read(byte[] buffer, int offset, int count)
         {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException("Base64Stream");
-            }
-            if(buffer == null){
-                throw new ArgumentNullException("buffer");
-            }           
-            if(offset < 0){
-                throw new ArgumentOutOfRangeException("offset","Argument 'offset' value must be >= 0.");
-            }
-            if(count < 0){
-                throw new ArgumentOutOfRangeException("count","Argument 'count' value must be >= 0.");
-            }
-            if(offset + count > buffer.Length){
-                throw new ArgumentOutOfRangeException("count","Argument 'count' is bigger than than argument 'buffer' can store.");
-            }
-            if((m_AccessMode & FileAccess.Read) == 0){
-                throw new NotSupportedException();
-            }
+            ValidateBufferArguments(buffer, offset, count);
 
-            // We havn't any decoded data left, decode new data block.
-            if((m_DecodedBlockCount - m_DecodedBlockOffset) == 0){
-                byte[] readBuffer = new byte[m_pDecodedBlock.Length + 3];
-                int readedCount = m_pStream.Read(readBuffer,0,readBuffer.Length - 3);
-                // We reached end of stream, no more data.
-                if(readedCount == 0){
+            return ReadAsync(buffer.AsMemory(offset, count), CancellationToken.None).AsTask().GetAwaiter().GetResult();
+        }
+
+        #endregion
+
+        #region override method ReadAsync
+
+        /// <inheritdoc />
+        public override async ValueTask<int> ReadAsync(Memory<byte> targetMemory, CancellationToken cancellationToken = default)
+        {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanRead) throw new NotSupportedException("Reading is not supported.");
+            if (targetMemory.Length == 0) return 0;
+
+            // Iterative loop prevents recursive stack growth when chunks consist solely of line breaks or whitespace fragments
+            while(true){
+                // If we've hit EOF and have no rollover data left, reading is complete
+                if(_isEof && _rolloverLen == 0){
                     return 0;
                 }
 
-                // Decode block must contain only integral 4-byte base64 blocks.
-                // Count base64 chars.
-                int base64Count = 0;
-                for(int i=0;i<readedCount;i++){
-                    byte b = readBuffer[i];
-                    if(b == '=' || BASE64_DECODE_TABLE[b] != -1){
-                        base64Count++;
-                    }
-                }
-                // Read while last block is full 4-byte base64 block.
-                while((base64Count % 4) != 0){
-                    int b = m_pStream.ReadByte();
-                    // End of stream reached.
-                    if(b == -1){
-                        // Add missing padding char(s) '='.
-                        if(m_IgnoreInvalidPadding){
-                            // Per speifiction base64 block must have 2 bytes block + 2 padding bytes.
-                            // Some x soft won't honour it, so add second block with 0-bits.
-                            if((base64Count % 4) == 1){
-                                readBuffer[readedCount++] = (byte)'A';
-                                base64Count++;
-                            }
-                            // Add missing paading char.
-                            else{
-                                readBuffer[readedCount++] = (byte)'=';
-                                base64Count++;
-                            }
-                        }
-                        else{
-                            break;
-                        }
-                    }
-                    else if(b == '=' || BASE64_DECODE_TABLE[b] != -1){
-                        readBuffer[readedCount++] = (byte)b;
-                        base64Count++;
+                int bytesRead = 0;
+                if(!_isEof){
+                    // Read next block from underlying stream into _readBuffer right after any existing rollover bytes
+                    bytesRead = await _stream.ReadAsync(_readBuffer.AsMemory(_rolloverLen, _readBuffer.Length - _rolloverLen), cancellationToken).ConfigureAwait(false);
+                    if(bytesRead == 0){
+                        _isEof = true;
                     }
                 }
 
-                // Decode block.
-                m_DecodedBlockCount  = m_pBase64.Decode(readBuffer,0,readedCount,m_pDecodedBlock,0,true);
-                m_DecodedBlockOffset = 0;
+                int totalLen = _rolloverLen + bytesRead;
+                if(totalLen == 0){
+                    return 0;
+                }
+
+                // Copy previous rollover prefix into the target filter workspace
+                if(_rolloverLen > 0){
+                    _readBuffer.AsSpan(0, _rolloverLen).CopyTo(_filteredBuffer);
+                }
+
+                int filteredCount = _rolloverLen;
+                ReadOnlySpan<byte> rawSpan = _readBuffer.AsSpan(_rolloverLen, bytesRead);
+                int sourceIdx = 0;
+
+                // JIT-optimized vectorized scan loop stripping newlines ('\r' and '\n') directly into _filteredBuffer
+                while((uint)sourceIdx < (uint)rawSpan.Length){
+                    ReadOnlySpan<byte> remaining = rawSpan.Slice(sourceIdx);
+                    int lineBreakIdx = remaining.IndexOfAny((byte)'\r', (byte)'\n');
+
+                    if(lineBreakIdx < 0){
+                        remaining.CopyTo(_filteredBuffer.AsSpan(filteredCount));
+                        filteredCount += remaining.Length;
+                        break;
+                    }
+
+                    if(lineBreakIdx > 0){
+                        remaining.Slice(0, lineBreakIdx).CopyTo(_filteredBuffer.AsSpan(filteredCount));
+                        filteredCount += lineBreakIdx;
+                    }
+
+                    byte hit = remaining[lineBreakIdx];
+                    sourceIdx += lineBreakIdx + 1;
+
+                    // Handle CRLF pairs atomically
+                    if(hit == (byte)'\r' && (uint)sourceIdx < (uint)rawSpan.Length && rawSpan[sourceIdx] == (byte)'\n'){
+                        sourceIdx++;
+                    }
+                }
+
+                // Append standard Base64 padding if we reached EOF and total length requires alignment padding
+                if(_isEof){
+                    int remainder = filteredCount % 4;
+                    if(remainder > 0){
+                        while(remainder < 4){
+                            _filteredBuffer[filteredCount++] = (byte)'=';
+                            remainder++;
+                        }
+                    }
+                }
+
+                // Ensure decode length is strictly a multiple of 4 characters unless at EOF
+                int decodeLength = _isEof ? filteredCount : (filteredCount & ~3);
+
+                // If no valid 4x blocks are available yet, roll over data and loop to fetch more stream content
+                if(decodeLength == 0){
+                    _rolloverLen = filteredCount;
+                    _filteredBuffer.AsSpan(0, filteredCount).CopyTo(_readBuffer);
+                
+                    if (_isEof) return 0;
+                    continue; 
+                }
+
+                // Perform high-speed vectorized Base64 decode directly into caller target memory
+                OperationStatus status = Base64.DecodeFromUtf8(_filteredBuffer.AsSpan(0, decodeLength), targetMemory.Span, out int bytesConsumed, out int bytesWritten);
+                if(status != OperationStatus.Done && status != OperationStatus.DestinationTooSmall){
+                    throw new FormatException("Invalid Base64 character sequence encountered.");
+                }
+
+                // Preserve any unconsumed filtered bytes for the next read iteration
+                int unconsumedCount = filteredCount - bytesConsumed;
+                _rolloverLen = unconsumedCount;
+
+                if(unconsumedCount > 0){
+                    _filteredBuffer.AsSpan(bytesConsumed, unconsumedCount).CopyTo(_readBuffer);
+                }
+
+                return bytesWritten;
             }
-
-            int available   = m_DecodedBlockCount - m_DecodedBlockOffset;
-            int countToCopy = Math.Min(count,available);
-            Array.Copy(m_pDecodedBlock,m_DecodedBlockOffset,buffer,offset,countToCopy);
-            m_DecodedBlockOffset += countToCopy;
-
-            return countToCopy;
         }
 
         #endregion
 
         #region override method Write
 
-        /// <summary>
-        /// Encodes a sequence of bytes, writes to the current stream and advances the current position within this stream by the number of bytes written.
-        /// </summary>
-        /// <param name="buffer">An array of bytes. This method copies count bytes from buffer to the current stream.</param>
-        /// <param name="offset">The zero-based byte offset in buffer at which to begin copying bytes to the current stream.</param>
-        /// <param name="count">The number of bytes to be written to the current stream.</param>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
-        /// <exception cref="InvalidOperationException">Is raised when this.Finish has been called and this method is accessed.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>buffer</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
-        /// <exception cref="NotSupportedException">Is raised when reading not supported.</exception>
-        public override void Write(byte[] buffer,int offset,int count)        
+        /// <inheritdoc />
+        public override void Write(byte[] buffer, int offset, int count)
         {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(m_IsFinished){
-                throw new InvalidOperationException("Stream is marked as finished by calling Finish method.");
-            }
-            if(buffer == null){
-                throw new ArgumentNullException("buffer");
-            }
-            if(offset < 0 || offset > buffer.Length){
-                throw new ArgumentException("Invalid argument 'offset' value.");
-            }
-            if(count < 0 || count > (buffer.Length - offset)){
-                throw new ArgumentException("Invalid argument 'count' value.");
-            } 
-            if((m_AccessMode & FileAccess.Write) == 0){
-                throw new NotSupportedException();
-            }           
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanWrite) throw new NotSupportedException("Writing is not supported.");
 
-            /* RFC 4648.
-			
-				Base64 is processed from left to right by 4 6-bit byte block, 4 6-bit byte block 
-				are converted to 3 8-bit bytes.
-				If base64 4 byte block doesn't have 3 8-bit bytes, missing bytes are marked with =. 
-							
-				Value Encoding  Value Encoding  Value Encoding  Value Encoding
-					0 A            17 R            34 i            51 z
-					1 B            18 S            35 j            52 0
-					2 C            19 T            36 k            53 1
-					3 D            20 U            37 l            54 2
-					4 E            21 V            38 m            55 3
-					5 F            22 W            39 n            56 4
-					6 G            23 X            40 o            57 5
-					7 H            24 Y            41 p            58 6
-					8 I            25 Z            42 q            59 7
-					9 J            26 a            43 r            60 8
-					10 K           27 b            44 s            61 9
-					11 L           28 c            45 t            62 +
-					12 M           29 d            46 u            63 /
-					13 N           30 e            47 v
-					14 O           31 f            48 w         (pad) =
-					15 P           32 g            49 x
-					16 Q           33 h            50 y
-					
-				NOTE: 4 base64 6-bit bytes = 3 8-bit bytes				
-					// |    6-bit    |    6-bit    |    6-bit    |    6-bit    |
-					// | 1 2 3 4 5 6 | 1 2 3 4 5 6 | 1 2 3 4 5 6 | 1 2 3 4 5 6 |
-					// |    8-bit         |    8-bit        |    8-bit         |
-			*/
+            Write(buffer.AsSpan(offset, count));
+        }
 
-            int encodeBufSize = m_pEncodeBuffer.Length;
+        /// <inheritdoc />
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanWrite) throw new NotSupportedException("Writing is not supported.");
 
-            // Process all bytes.
-            for(int i=0;i<count;i++){
-                m_pEncode3x8Block[m_OffsetInEncode3x8Block++] = buffer[offset + i];
-
-                // 3x8-bit encode block is full, encode it.
-                if(m_OffsetInEncode3x8Block == 3){
-                    m_pEncodeBuffer[m_EncodeBufferOffset++] = BASE64_ENCODE_TABLE[ m_pEncode3x8Block[0] >> 2];
-                    m_pEncodeBuffer[m_EncodeBufferOffset++] = BASE64_ENCODE_TABLE[(m_pEncode3x8Block[0] & 0x03) << 4 | m_pEncode3x8Block[1] >> 4];
-                    m_pEncodeBuffer[m_EncodeBufferOffset++] = BASE64_ENCODE_TABLE[(m_pEncode3x8Block[1] & 0x0F) << 2 | m_pEncode3x8Block[2] >> 6];
-                    m_pEncodeBuffer[m_EncodeBufferOffset++] = BASE64_ENCODE_TABLE[(m_pEncode3x8Block[2] & 0x3F)];
-                    
-                    // Encode buffer is full, write buffer to underlaying stream (we reserved 2 bytes for CRLF).
-                    if(m_EncodeBufferOffset >= (encodeBufSize - 2)){
-                        if(m_AddLineBreaks){
-                            m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)'\r';
-                            m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)'\n';
-                        }
-
-                        m_pStream.Write(m_pEncodeBuffer,0,m_EncodeBufferOffset);
-                        m_EncodeBufferOffset = 0;
-                    }
-
-                    m_OffsetInEncode3x8Block = 0;
-                }
-            }
+            WriteAsync(buffer.ToArray(), default).GetAwaiter().GetResult();
         }
 
         #endregion
 
+        #region override method WriteAsync
+
+        /// <inheritdoc />
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanWrite) throw new NotSupportedException("Writing is not supported.");
+
+            return WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        }
+        
+        /// <inheritdoc />
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> sourceMemory, CancellationToken cancellationToken = default)
+        {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanWrite) throw new NotSupportedException("Writing is not supported.");
+            if (_isFinalized) throw new InvalidOperationException("Cannot write after the stream has been finalized.");
+
+            ReadOnlySpan<byte> source = sourceMemory.Span;
+            int totalLen = _writeRolloverLen + source.Length;
+            if(totalLen < 3){
+                source.CopyTo(_writeRollover.AsSpan(_writeRolloverLen));
+                _writeRolloverLen += source.Length;
+                return;
+            }
+
+            int convertibleLen = (totalLen / 3) * 3;
+            int remainderLen = totalLen - convertibleLen;
+
+            int maxEncodedLen = Base64.GetMaxEncodedToUtf8Length(convertibleLen);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(convertibleLen + maxEncodedLen);
+            try{
+                Span<byte> combinedRaw = buffer.AsSpan(0, convertibleLen);
+                Span<byte> encoded = buffer.AsSpan(convertibleLen, maxEncodedLen);
+
+                int sourceBytesUsed = 0;
+                if(_writeRolloverLen > 0){
+                    _writeRollover.AsSpan(0, _writeRolloverLen).CopyTo(combinedRaw);
+                    int takeFromSource = Math.Min(source.Length, convertibleLen - _writeRolloverLen);
+                    if(takeFromSource > 0){
+                        source.Slice(0, takeFromSource).CopyTo(combinedRaw.Slice(_writeRolloverLen));
+                        sourceBytesUsed = takeFromSource;
+                    }
+                }
+                else{
+                    source.Slice(0, convertibleLen).CopyTo(combinedRaw);
+                    sourceBytesUsed = convertibleLen;
+                }
+
+                source.Slice(sourceBytesUsed, remainderLen).CopyTo(_writeRollover);
+                _writeRolloverLen = remainderLen;
+
+                Base64.EncodeToUtf8(combinedRaw, encoded, out _, out int encodedLen);
+                ReadOnlyMemory<byte> encodedMemory = buffer.AsMemory(convertibleLen, encodedLen);
+
+                if(_addLineBreaks){
+                    await WriteCrlfFormattedAsync(encodedMemory, cancellationToken).ConfigureAwait(false);
+                }
+                else{
+                    await _stream.WriteAsync(encodedMemory, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally{
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }    
+
+        private async ValueTask WriteCrlfFormattedAsync(ReadOnlyMemory<byte> encodedMemory, CancellationToken cancellationToken)
+        {
+            const int LineLength = 76;
+            ReadOnlySpan<byte> encoded = encodedMemory.Span;
+            int lineCount = (encoded.Length + LineLength - 1) / LineLength;
+            int totalLength = encoded.Length + ((lineCount - 1) * 2);
+
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(totalLength);
+            try{
+                Span<byte> destination = buffer.AsSpan(0, totalLength);
+                int sourceOffset = 0;
+                int destOffset = 0;
+                ReadOnlySpan<byte> crlf = "\r\n"u8;
+
+                while(sourceOffset < encoded.Length){
+                    int chunkLen = Math.Min(LineLength, encoded.Length - sourceOffset);
+                    encoded.Slice(sourceOffset, chunkLen).CopyTo(destination.Slice(destOffset));
+                    sourceOffset += chunkLen;
+                    destOffset += chunkLen;
+
+                    if(sourceOffset < encoded.Length){
+                        crlf.CopyTo(destination.Slice(destOffset));
+                        destOffset += 2;
+                    }
+                }
+
+                await _stream.WriteAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+            }
+            finally{
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        #endregion
 
         #region method Finish
 
         /// <summary>
-        /// Completes encoding. Call this method if all data has written and no more data. 
+        /// Synchronously finalizes the stream by encoding and emitting any remaining bytes 
+        /// with proper Base64 padding, applying final MIME line breaks if enabled, 
+        /// and flushing the underlying stream.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this method is accessed.</exception>
+        /// <exception cref="InvalidOperationException">Thrown if the stream has already been finalized.</exception>
         public void Finish()
         {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException(this.GetType().Name);
-            }
-            if(m_IsFinished){
-                return;
-            }
-            m_IsFinished = true;
-            
-            // PADD left-over, if any. Write encode buffer to underlaying stream.
-            if(m_OffsetInEncode3x8Block == 1){
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)BASE64_ENCODE_TABLE[m_pEncode3x8Block[0] >> 2];
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)BASE64_ENCODE_TABLE[(m_pEncode3x8Block[0] & 0x03) << 4];
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)'=';
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)'=';
-            }
-            else if(m_OffsetInEncode3x8Block == 2){
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)BASE64_ENCODE_TABLE[ m_pEncode3x8Block[0] >> 2];
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)BASE64_ENCODE_TABLE[(m_pEncode3x8Block[0] & 0x03) << 4 | m_pEncode3x8Block[1] >> 4];
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)BASE64_ENCODE_TABLE[(m_pEncode3x8Block[1] & 0x0F) << 2];
-                m_pEncodeBuffer[m_EncodeBufferOffset++] = (byte)'=';
-            }
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanWrite) throw new NotSupportedException("Writing is not supported.");
 
-            if(m_EncodeBufferOffset > 0){
-                m_pStream.Write(m_pEncodeBuffer,0,m_EncodeBufferOffset);
-            }
+            FinishAsync().GetAwaiter().GetResult();
         }
 
         #endregion
 
-
-        #region Properties Implementation
+        #region method FinishAsync
 
         /// <summary>
-        /// Gets if this object is disposed.
+        /// Asynchronously finalizes the stream by encoding and emitting any remaining bytes 
+        /// with proper Base64 padding, applying final MIME line breaks if enabled, 
+        /// and flushing the underlying stream.
         /// </summary>
-        public bool IsDisposed
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>A task that represents the asynchronous finish operation.</returns>
+        public async Task FinishAsync(CancellationToken cancellationToken = default)
         {
-            get{ return m_IsDisposed; }
-        }
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+            if (!CanWrite) return;
+            if (_isFinalized) return;
+            _isFinalized = true;
 
+            if(_writeRolloverLen > 0){
+                Span<byte> finalBytes = _writeRollover.AsSpan(0, _writeRolloverLen);
+                byte[] encodedPool = ArrayPool<byte>.Shared.Rent(4);
+                try{
+                    Base64.EncodeToUtf8(finalBytes, encodedPool, out _, out int encodedLen);
+                    ReadOnlyMemory<byte> finalEncoded = encodedPool.AsMemory(0, encodedLen);
 
-        /// <summary>
-        /// Gets a value indicating whether the current stream supports reading.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public override bool CanRead
-        { 
-            get{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException("SmartStream");
+                    if(_addLineBreaks){
+                        // WriteCrlfFormattedAsync can handle the underlying write
+                        await WriteCrlfFormattedAsync(finalEncoded, cancellationToken).ConfigureAwait(false);
+                    }
+                    else{
+                        await _stream.WriteAsync(finalEncoded, cancellationToken).ConfigureAwait(false);
+                    }
                 }
-
-                return true;
-            } 
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether the current stream supports seeking.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public override bool CanSeek
-        { 
-            get{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException("SmartStream");
+                finally{
+                    ArrayPool<byte>.Shared.Return(encodedPool);
+                    _writeRolloverLen = 0;
                 }
-
-                return false;
-            } 
+            }
         }
 
-        /// <summary>
-        /// Gets a value indicating whether the current stream supports writing.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        public override bool CanWrite
-        { 
-            get{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException("SmartStream");
-                }
+        #endregion    
 
-                return false;
-            } 
-        }
+        #region override method Seek
 
-        /// <summary>
-        /// Gets the length in bytes of the stream.  This method is not supported and always throws a NotSupportedException.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this property is accessed.</exception>
-        public override long Length
-        { 
-            get{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException("SmartStream");
-                }
+        /// <inheritdoc />
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 
-                throw new NotSupportedException();
-            } 
-        }
+        #endregion
 
-        /// <summary>
-        /// Gets or sets the position within the current stream. This method is not supported and always throws a NotSupportedException.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
-        /// <exception cref="NotSupportedException">Is raised when this property is accessed.</exception>
+        #region override method SetLength
+
+        /// <inheritdoc />
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        #endregion
+
+
+        #region Properties implementation
+
+        /// <inheritdoc />
+        public override bool CanRead => (_accessMode & FileAccess.Read) == FileAccess.Read && _stream.CanRead;
+
+        /// <inheritdoc />
+        public override bool CanWrite => (_accessMode & FileAccess.Write) == FileAccess.Write && _stream.CanWrite;
+
+        /// <inheritdoc />
+        public override bool CanSeek => false;
+
+        /// <inheritdoc />
+        public override long Length => throw new NotSupportedException();
+
+        /// <inheritdoc />
         public override long Position
-        { 
-            get{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException("SmartStream");
-                }
-
-                throw new NotSupportedException();
-            } 
-
-            set{
-                if(m_IsDisposed){
-                    throw new ObjectDisposedException("SmartStream");
-                }
-
-                throw new NotSupportedException();
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets if invalid(missing '=' chars) base64 last block padding allowed.
-        /// </summary>
-        public bool IgnoreInvalidPadding
         {
-            get{ return m_IgnoreInvalidPadding; }
-
-            set{ m_IgnoreInvalidPadding = value; }
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
         }
 
-        #endregion
-  
+        #endregion    
     }
 }

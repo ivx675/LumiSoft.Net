@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Implements 'encoded-word' encoding. Defined in RFC 2047.
+    /// Provides RFC 2047 encoded-word encoding and decoding functionality.
     /// </summary>
     public class MIME_Encoding_EncodedWord
     {
@@ -18,15 +18,24 @@ namespace LumiSoft.Net.MIME
         private static readonly Regex encodedword_regex = new Regex(@"\=\?(?<charset>\S+?)\?(?<encoding>[qQbB])\?(?<value>.+?)\?\=(?<whitespaces>\s*)",RegexOptions.IgnoreCase);
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the
+        /// <see cref="MIME_Encoding_EncodedWord"/> class.
         /// </summary>
-        /// <param name="encoding">Encoding to use to encode text.</param>
-        /// <param name="charset">Charset to use for encoding. If not sure UTF-8 is strongly recommended.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>charset</b> is null reference.</exception>
+        /// <param name="encoding">
+        /// Encoded-word encoding method.
+        /// </param>
+        /// <param name="charset">
+        /// Character set used to encode and decode text. UTF-8 is recommended
+        /// unless another character set is required.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="charset"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public MIME_Encoding_EncodedWord(MIME_EncodedWordEncoding encoding,Encoding charset)
         {
             if(charset == null){
-                throw new ArgumentNullException("charset");
+                throw new ArgumentNullException(nameof(charset));
             }
 
             m_Encoding = encoding;
@@ -37,10 +46,15 @@ namespace LumiSoft.Net.MIME
         #region method Encode
 
         /// <summary>
-        /// Encodes specified text if it contains 8-bit chars, otherwise text won't be encoded.
+        /// Encodes the specified text if encoding is required.
         /// </summary>
-        /// <param name="text">Text to encode.</param>
-        /// <returns>Returns encoded text.</returns>
+        /// <param name="text">
+        /// Text to encode.
+        /// </param>
+        /// <returns>
+        /// Returns the encoded text if encoding is required; otherwise returns
+        /// the original text unchanged.
+        /// </returns>
         public string Encode(string text)
         {            
             if(MustEncode(text)){
@@ -56,15 +70,22 @@ namespace LumiSoft.Net.MIME
         #region method Decode
 
         /// <summary>
-        /// Decodes specified encoded-word.
+        /// Decodes the specified encoded-word.
         /// </summary>
-        /// <param name="text">Encoded-word value.</param>
-        /// <returns>Returns decoded text.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>text</b> is null reference.</exception>
+        /// <param name="text">
+        /// Encoded-word value to decode.
+        /// </param>
+        /// <returns>
+        /// Returns the decoded text.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="text"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public string Decode(string text)
         {
             if(text == null){
-                throw new ArgumentNullException("text");
+                throw new ArgumentNullException(nameof(text));
             }
 
             return DecodeS(text);
@@ -76,15 +97,24 @@ namespace LumiSoft.Net.MIME
         #region static method MustEncode
 
         /// <summary>
-        /// Checks if specified text must be encoded.
+        /// Determines whether the specified text requires RFC 2047
+        /// encoded-word encoding.
         /// </summary>
-        /// <param name="text">Text to encode.</param>
-        /// <returns>Returns true if specified text must be encoded, otherwise false.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>text</b> is null reference.</exception>
+        /// <param name="text">
+        /// Text to examine.
+        /// </param>
+        /// <returns>
+        /// Returns <see langword="true"/> if the specified text requires
+        /// encoding; otherwise <see langword="false"/>.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="text"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public static bool MustEncode(string text)
         {
             if(text == null){
-                throw new ArgumentNullException("text");
+                throw new ArgumentNullException(nameof(text));
             }
 
             // Encoding is needed only for non-ASCII chars.
@@ -103,21 +133,37 @@ namespace LumiSoft.Net.MIME
         #region static method EncodeS
 
         /// <summary>
-        /// Encodes specified text if it contains 8-bit chars, otherwise text won't be encoded.
+        /// Encodes the specified text as an RFC 2047 encoded-word if required.
         /// </summary>
-        /// <param name="encoding">Encoding to use to encode text.</param>
-        /// <param name="charset">Charset to use for encoding. If not sure UTF-8 is strongly recommended.</param>
-        /// <param name="split">If true, words are splitted after 75 chars.</param>
-        /// <param name="text">Text to encode.</param>
-        /// <returns>Returns encoded text.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>charset</b> or <b>text</b> is null reference.</exception>
+        /// <param name="encoding">
+        /// Encoded-word encoding method.
+        /// </param>
+        /// <param name="charset">
+        /// Character set used to encode text. UTF-8 is recommended unless
+        /// another character set is required.
+        /// </param>
+        /// <param name="split">
+        /// Specifies whether the encoded text may be split into multiple
+        /// encoded-words.
+        /// </param>
+        /// <param name="text">
+        /// Text to encode.
+        /// </param>
+        /// <returns>
+        /// Returns the encoded text if encoding is required; otherwise returns
+        /// the original text unchanged.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="charset"/> or
+        /// <paramref name="text"/> is <see langword="null"/>.
+        /// </exception>
         public static string EncodeS(MIME_EncodedWordEncoding encoding,Encoding charset,bool split,string text)
         {
             if(charset == null){
-                throw new ArgumentNullException("charset");
+                throw new ArgumentNullException(nameof(charset));
             }
             if(text == null){
-                throw new ArgumentNullException("text");
+                throw new ArgumentNullException(nameof(text));
             }
 
             /* RFC 2047 2.
@@ -201,16 +247,26 @@ namespace LumiSoft.Net.MIME
         #region static method DecodeS
 
         /// <summary>
-        /// Decodes non-ascii word with MIME <b>encoded-word</b> method. Defined in RFC 2047 2.
+        /// Decodes the specified RFC 2047 encoded-word.
         /// </summary>
-        /// <param name="word">MIME encoded-word value.</param>
-        /// <returns>Returns decoded word.</returns>
-        /// <remarks>If <b>word</b> is not encoded-word or has invalid syntax, <b>word</b> is leaved as is.</remarks>
-        /// <exception cref="ArgumentNullException">Is raised when <b>word</b> is null reference.</exception>
+        /// <param name="word">
+        /// Encoded-word value to decode.
+        /// </param>
+        /// <returns>
+        /// Returns the decoded text.
+        /// </returns>
+        /// <remarks>
+        /// If <paramref name="word"/> is not a valid encoded-word, the
+        /// original value is returned unchanged.
+        /// </remarks>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="word"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public static string DecodeS(string word)
         {
             if(word == null){
-                throw new ArgumentNullException("word");
+                throw new ArgumentNullException(nameof(word));
             }
 
             return DecodeTextS(word);
@@ -221,15 +277,22 @@ namespace LumiSoft.Net.MIME
         #region static method DecodeTextS
 
         /// <summary>
-        /// Decodes non-ascii text with MIME <b>encoded-word</b> method. Defined in RFC 2047 2.
+        /// Decodes RFC 2047 encoded-words in the specified text.
         /// </summary>
-        /// <param name="text">Text.</param>
-        /// <returns>Returns decoded text.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>text</b> is null reference.</exception>
+        /// <param name="text">
+        /// Text to decode.
+        /// </param>
+        /// <returns>
+        /// Returns the decoded text.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="text"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public static string DecodeTextS(string text)
         {
             if(text == null){
-                throw new ArgumentNullException("word");
+                throw new ArgumentNullException(nameof(text));
             }
 
             /* RFC 2047 2.
@@ -261,7 +324,7 @@ namespace LumiSoft.Net.MIME
                         encodedWord =  MIME_Utils.QDecode(Encoding.GetEncoding(m.Groups["charset"].Value),m.Groups["value"].Value);
                     }
                     else if(string.Equals(m.Groups["encoding"].Value,"B",StringComparison.InvariantCultureIgnoreCase)){
-                        encodedWord = Encoding.GetEncoding(m.Groups["charset"].Value).GetString(Net_Utils.FromBase64(Encoding.Default.GetBytes(m.Groups["value"].Value)));
+                        encodedWord = Encoding.GetEncoding(m.Groups["charset"].Value).GetString(Convert.FromBase64String(m.Groups["value"].Value));
                     }
                     // Failed to parse encoded-word, leave it as is. RFC 2047 6.3.
                     // else{
@@ -291,7 +354,8 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets or sets if long words(over 75 char) are splitted.
+        /// Gets or sets a value indicating whether long encoded-words are split
+        /// into multiple encoded-words.
         /// </summary>
         public bool Split
         {

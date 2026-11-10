@@ -7,55 +7,62 @@ using LumiSoft.Net.IO;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME multipart/related body. Defined in RFC 2387.
+    /// Represents a MIME multipart/related body. Defined in RFC 2387.
     /// </summary>
     /// <remarks>
-    ///  The Multipart/Related content-type provides a common mechanism for
-    ///  representing objects that are aggregates of related MIME body parts.
+    /// The Multipart/Related content type provides a common mechanism for
+    /// representing objects that are aggregates of related MIME body parts.
     /// </remarks>
     public class MIME_b_MultipartRelated : MIME_b_Multipart
     {
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b_MultipartRelated"/> class.
         /// </summary>
         /// <param name="contentType">Content type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>contentType</b> is null reference.</exception>
-        /// <exception cref="ArgumentException">Is raised when any of the arguments has invalid value.</exception>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when <b>contentType</b> is null reference.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// Is raised when <b>contentType</b> is not 'multipart/related'.
+        /// </exception>
         public MIME_b_MultipartRelated(MIME_h_ContentType contentType) : base(contentType)
         {
             if(!string.Equals(contentType.TypeWithSubtype,"multipart/related",StringComparison.CurrentCultureIgnoreCase)){
-                throw new ArgumentException("Argument 'contentType.TypeWithSubype' value must be 'multipart/related'.");
+                throw new ArgumentException("Specified content type must be 'multipart/related'.",nameof(contentType));
             }
         }
 
-        #region static method Parse
+
+        #region static method ParseAsync
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses MIME multipart/related body from the specified stream.
         /// </summary>
         /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>defaultContentType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="stream">Stream to parse MIME body from.</param>
+        /// <returns>
+        /// Returns parsed MIME multipart/related body.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Is raised when <b>owner</b> or <b>stream</b> is null reference.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Is raised when multipart entity content type is missing required 'boundary' parameter.
+        /// </exception>
+        internal new static async Task<MIME_b_MultipartRelated> ParseAsync(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
             if(owner.ContentType == null || owner.ContentType.Param_Boundary == null){
-                throw new ParseException("Multipart entity has not required 'boundary' paramter.");
+                throw new ParseException("Multipart entity content type is missing required 'boundary' parameter.");
             }
-            
+          
             MIME_b_MultipartRelated retVal = new MIME_b_MultipartRelated(owner.ContentType);
-            ParseInternal(owner,owner.ContentType.TypeWithSubtype,stream,retVal);
+            await retVal.ParseInternalAsync(owner,owner.ContentType.Param_Boundary,stream);
 
             return retVal;
         }

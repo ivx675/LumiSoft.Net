@@ -538,11 +538,6 @@ namespace LumiSoft.Net.IMAP.Client
         /// </param>
         /// <remarks>
         /// <para>
-        /// Internally, this method streams the header data into a <see cref="MemoryStreamEx"/>
-        /// using <see cref="HeaderToStreamAsync(Stream,CancellationToken)"/> and then parses
-        /// the resulting data via <see cref="Mail_Message.ParseFromStream(Stream)"/>.
-        /// </para>
-        /// <para>
         /// All IMAP protocol validation and safety checks—including enforcement of the
         /// maximum allowed literal size (the message's reported <c>RFC822.SIZE</c> plus a
         /// 1 MB margin)—are performed by the underlying streaming implementation.
@@ -557,12 +552,12 @@ namespace LumiSoft.Net.IMAP.Client
         /// </exception>
         public async ValueTask<Mail_Message> HeaderToMailMessageAsync(CancellationToken cancellationToken = default)
         {
-            using var stream = new MemoryStreamEx();
+            var stream = new MemoryStreamEx();
 
             await HeaderToStreamAsync(stream,cancellationToken);
             stream.Position = 0;
 
-            return Mail_Message.ParseFromStream(stream);
+            return await Mail_Message.ParseFromStreamAsync(stream,true,true,cancellationToken);
         }
 
         #endregion
@@ -845,11 +840,6 @@ namespace LumiSoft.Net.IMAP.Client
         /// </param>
         /// <remarks>
         /// <para>
-        /// Internally, this method streams the message into a <see cref="MemoryStreamEx"/>
-        /// using <see cref="ToStreamAsync(Stream,CancellationToken)"/> and then parses the
-        /// resulting data via <see cref="Mail_Message.ParseFromStream(Stream)"/>.
-        /// </para>
-        /// <para>
         /// All IMAP protocol validation and safety checks—including enforcement of the
         /// maximum allowed literal size (the message's reported <c>RFC822.SIZE</c> plus a
         /// 1 MB margin)—are performed by the underlying streaming implementation.
@@ -864,12 +854,12 @@ namespace LumiSoft.Net.IMAP.Client
         /// </exception>
         public async ValueTask<Mail_Message> ToMailMessageAsync(CancellationToken cancellationToken = default)
         {
-            using var stream = new MemoryStreamEx();
+            var stream = new MemoryStreamEx();
 
             await ToStreamAsync(stream,cancellationToken);
             stream.Position = 0;
 
-            return Mail_Message.ParseFromStream(stream);
+            return await Mail_Message.ParseFromStreamAsync(stream,true,true,cancellationToken);
         }
 
         #endregion

@@ -1,3 +1,4 @@
+using LumiSoft.Net.Mail;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -6,15 +7,17 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Represents MIME child entity collection in multipart/xxx entity.
+    /// Represents a collection of child MIME entities contained in a
+    /// <c>multipart/*</c> entity.
     /// </summary>
-    public class MIME_EntityCollection : IEnumerable
+    public class MIME_EntityCollection : IEnumerable<MIME_Entity>
     {
         private bool              m_IsModified  = false;
         private List<MIME_Entity> m_pCollection;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the
+        /// <see cref="MIME_EntityCollection"/> class.
         /// </summary>
         internal MIME_EntityCollection()
         {
@@ -25,14 +28,19 @@ namespace LumiSoft.Net.MIME
         #region method Add
                 
         /// <summary>
-        /// Adds specified MIME enity to the collection.
+        /// Adds the specified MIME entity to the collection.
         /// </summary>
-        /// <param name="entity">MIME entity.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>entity</b> is null reference.</exception>
+        /// <param name="entity">
+        /// MIME entity to add.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="entity"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public void Add(MIME_Entity entity)
         {
             if(entity == null){
-                throw new ArgumentNullException("entity");
+                throw new ArgumentNullException(nameof(entity));
             }
 
             m_pCollection.Add(entity);
@@ -44,16 +52,25 @@ namespace LumiSoft.Net.MIME
         #region method Insert
 
         /// <summary>
-        /// Inserts a new MIME entity into the collection at the specified location.
+        /// Inserts a MIME entity into the collection at the specified index.
         /// </summary>
-        /// <param name="index">The location in the collection where you want to add the MIME entity.</param>
-        /// <param name="entity">MIME entity.</param>
-        /// <exception cref="IndexOutOfRangeException">Is raised when <b>index</b> is out of range.</exception>
-        /// <exception cref="ArgumentNullException">Is raised when <b>entity</b> is null reference.</exception>
+        /// <param name="index">
+        /// Zero-based index at which to insert the MIME entity.
+        /// </param>
+        /// <param name="entity">
+        /// MIME entity to insert.
+        /// </param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Raised when <paramref name="index"/> is out of range.
+        /// </exception>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="entity"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public void Insert(int index,MIME_Entity entity)
         {
             if(entity == null){
-                throw new ArgumentNullException("entity");
+                throw new ArgumentNullException(nameof(entity));
             }
 
             m_pCollection.Insert(index,entity);
@@ -65,14 +82,19 @@ namespace LumiSoft.Net.MIME
         #region method Remove
 
         /// <summary>
-        /// Removes specified MIME entity from the collection.
+        /// Removes the specified MIME entity from the collection.
         /// </summary>
-        /// <param name="entity">MIME entity.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>field</b> is null reference.</exception>
+        /// <param name="entity">
+        /// MIME entity to remove.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="entity"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public void Remove(MIME_Entity entity)
         {
             if(entity == null){
-                throw new ArgumentNullException("field");
+                throw new ArgumentNullException(nameof(entity));
             }
 
             m_pCollection.Remove(entity);
@@ -95,7 +117,7 @@ namespace LumiSoft.Net.MIME
         #region method Clear
 
         /// <summary>
-        /// Removes all items from the collection.
+        /// Removes all MIME entities from the collection.
         /// </summary>
         public void Clear()
         {
@@ -108,15 +130,19 @@ namespace LumiSoft.Net.MIME
         #region mehtod Contains
 
         /// <summary>
-        /// Gets if the collection contains specified MIME entity.
+        /// Removes the specified MIME entity from the collection.
         /// </summary>
-        /// <param name="entity">MIME entity.</param>
-        /// <returns>Returns true if the specified MIME entity exists in the collection, otherwise false.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>entity</b> is null.</exception>
+        /// <param name="entity">
+        /// MIME entity to remove.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="entity"/> is
+        /// <see langword="null"/>.
+        /// </exception>
         public bool Contains(MIME_Entity entity)
         {
             if(entity == null){
-                throw new ArgumentNullException("entity");
+                throw new ArgumentNullException(nameof(entity));
             }
 
             return m_pCollection.Contains(entity);
@@ -140,22 +166,36 @@ namespace LumiSoft.Net.MIME
 
 
         #region interface IEnumerator
-
+                
         /// <summary>
-		/// Gets enumerator.
-		/// </summary>
-		/// <returns>Returns IEnumerator interface.</returns>
-		public IEnumerator GetEnumerator()
+        /// Returns an enumerator that iterates through the collection.
+        /// </summary>
+        /// <returns>
+        /// An enumerator that can be used to iterate through the collection.
+        /// </returns>
+        IEnumerator IEnumerable.GetEnumerator()
 		{
 			return m_pCollection.GetEnumerator();
 		}
+
+        /// <summary>
+        /// Returns an enumerator that iterates through the collection.
+        /// </summary>
+        /// <returns>
+        /// An enumerator that can be used to iterate through the collection.
+        /// </returns>
+        public IEnumerator<MIME_Entity> GetEnumerator()
+        {
+            return m_pCollection.GetEnumerator();
+        }
 
 		#endregion
 
         #region Properties Implementation
 
         /// <summary>
-        /// Gets if enity collection has modified.
+        /// Gets a value indicating whether this collection or any contained
+        /// MIME entity has been modified.
         /// </summary>
         public bool IsModified
         {
@@ -175,7 +215,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets number of items in the collection.
+        /// Gets the number of MIME entities in the collection.
         /// </summary>
         public int Count
         {
@@ -183,10 +223,17 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets MIME entity at the specified index.
+        /// Gets the MIME entity at the specified index.
         /// </summary>
-        /// <param name="index">MIME entity zero-based index.</param>
-        /// <returns>Returns MIME entity.</returns>
+        /// <param name="index">
+        /// Zero-based index of the MIME entity to get.
+        /// </param>
+        /// <returns>
+        /// Returns the MIME entity at the specified index.
+        /// </returns>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Raised when <paramref name="index"/> is out of range.
+        /// </exception>
         public MIME_Entity this[int index]
         {
             get{ return m_pCollection[index]; }

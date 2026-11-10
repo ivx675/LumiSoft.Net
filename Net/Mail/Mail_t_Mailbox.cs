@@ -7,32 +7,34 @@ using LumiSoft.Net.MIME;
 namespace LumiSoft.Net.Mail
 {    
     /// <summary>
-    /// This class represents "mailbox" address. Defined in RFC 5322 3.4.
+    /// Represents a mailbox address.
     /// </summary>
-    /// <example>
+    /// <remarks>
+    /// Defined by RFC 5322, section 3.4. A mailbox may contain an optional
+    /// display name and an angle-address, or an addr-spec by itself.
+    ///
     /// <code>
-    /// RFC 5322 3.4.
-    ///     mailbox    = name-addr / addr-spec
-    ///     name-addr  = [display-name] angle-addr
-    ///     angle-addr = [CFWS] "&lt;" addr-spec "&gt;" [CFWS]
-    ///     addr-spec  = local-part "@" domain
+    /// mailbox    = name-addr / addr-spec
+    /// name-addr  = [display-name] angle-addr
+    /// angle-addr = [CFWS] &quot;&lt;&quot; addr-spec &quot;&gt;&quot; [CFWS]
+    /// addr-spec  = local-part &quot;@&quot; domain
     /// </code>
-    /// </example>
+    /// </remarks>
     public class Mail_t_Mailbox : Mail_t_Address
     {
         private string? m_DisplayName = null;
         private string  m_Address;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="Mail_t_Mailbox"/> class.
         /// </summary>
-        /// <param name="displayName">Display name. Value null means not specified.</param>
-        /// <param name="address">Email address.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>address</b> is null reference.</exception>
+        /// <param name="displayName">The optional display name.</param>
+        /// <param name="address">The mailbox address.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="address"/> is <see langword="null"/>.</exception>
         public Mail_t_Mailbox(string? displayName,string address)
         {
             if(address == null){
-                throw new ArgumentNullException("address");
+                throw new ArgumentNullException(nameof(address));
             }
 
             m_DisplayName = displayName;
@@ -42,16 +44,16 @@ namespace LumiSoft.Net.Mail
         #region static method Parse
 
         /// <summary>
-        /// Parses <b>mailbox</b> from specified string value.
+        /// Parses a mailbox from the specified string.
         /// </summary>
-        /// <param name="value">The <b>mailbox</b> string value.</param>
-        /// <returns>Returns parse mailbox.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when <b>value</b> is not valid <b>mailbox</b> value.</exception>
+        /// <param name="value">The serialized mailbox value, such as <c>user@example.com</c> or <c>John Doe &lt;user@example.com&gt;</c>.</param>
+        /// <returns>The parsed mailbox.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ParseException">Thrown when <paramref name="value"/> is not a valid mailbox.</exception>
         public static Mail_t_Mailbox Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             MIME_Reader        r      = new MIME_Reader(value);
@@ -60,7 +62,7 @@ namespace LumiSoft.Net.Mail
                 string? word = r.QuotedReadToDelimiter(new char[]{',','<'});
                 // We processed all data.
                 if(word == null){
-                    throw new ParseException("Not valid 'mailbox' value '" + value + "'.");
+                    throw new ParseException("The specified value is not a valid mailbox.");
                 }
                 // name-addr
                 else if(r.Peek(true) == '<'){
@@ -72,36 +74,36 @@ namespace LumiSoft.Net.Mail
                 }
             }
 
-            throw new ParseException("Not valid 'mailbox' value '" + value + "'.");
+            throw new ParseException("The specified value is not a valid mailbox.");
         }
 
         #endregion
 
-
+        
         #region method override ToString
 
         /// <summary>
-        /// Returns mailbox as string.
+        /// Returns the mailbox in its default serialized form.
         /// </summary>
-        /// <returns>Returns mailbox as string.</returns>
+        /// <returns>The serialized mailbox.</returns>
         public override string ToString()
         {
-            return ToString(null);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Returns address as string value.
+        /// Returns the mailbox in serialized mail-header format.
         /// </summary>
-        /// <param name="wordEncoder">8-bit words ecnoder. Value null means that words are not encoded.</param>
-        /// <returns>Returns address as string value.</returns>
-        public override string ToString(MIME_Encoding_EncodedWord? wordEncoder)
+        /// <param name="utf8">Specifies whether non-ASCII display-name text may be written as UTF-8. If <see langword="false"/>, RFC 2047 encoded-word encoding is used when required.</param>
+        /// <returns>The serialized mailbox.</returns>
+        public override string ToString(bool utf8)
         {
             if(string.IsNullOrEmpty(m_DisplayName)){
                 return m_Address;
             }
             else{
-                if(wordEncoder != null && MIME_Encoding_EncodedWord.MustEncode(m_DisplayName)){
-                    return wordEncoder.Encode(m_DisplayName) + " " + "<" + m_Address + ">";
+                if(!utf8 && MIME_Encoding_EncodedWord.MustEncode(m_DisplayName)){
+                    return MIME_Encoding_EncodedWord.EncodeS(MIME_EncodedWordEncoding.B,Encoding.UTF8,true,m_DisplayName) + " " + "<" + m_Address + ">";
                 }
                 else if(System.Text.RegularExpressions.Regex.IsMatch(m_DisplayName,@"[""(),:;<>@\[\\\]]")){
                     return TextUtils.QuoteString(m_DisplayName) + " " + "<" + m_Address + ">";
@@ -118,7 +120,7 @@ namespace LumiSoft.Net.Mail
         #region Properties implementation
 
         /// <summary>
-        /// Gets display name. Value null means not specified.
+        /// Gets the optional display name.
         /// </summary>
         public string? DisplayName
         {
@@ -126,7 +128,7 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets address.
+        /// Gets the mailbox address.
         /// </summary>
         public string Address
         {
@@ -134,7 +136,7 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets local-part of address.
+        /// Gets the local part of the mailbox address.
         /// </summary>
         public string LocalPart
         {
@@ -146,8 +148,12 @@ namespace LumiSoft.Net.Mail
         }
 
         /// <summary>
-        /// Gets domain part of address.
+        /// Gets the domain part of the mailbox address.
         /// </summary>
+        /// <remarks>
+        /// Returns an empty string when the address does not contain exactly
+        /// one separator between a local part and a domain.
+        /// </remarks>
         public string Domain
         {
             get{ 

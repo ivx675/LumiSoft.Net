@@ -7,15 +7,21 @@ using LumiSoft.Net.IO;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME unknown bodies.
+    /// Represents a MIME body whose media type is not recognized by the MIME parser.
     /// </summary>
+    /// <remarks>
+    /// This body type is used when no specialized MIME body implementation
+    /// exists for the specified Content-Type.
+    /// </remarks>
     public class MIME_b_Unknown : MIME_b_SinglepartBase
     {
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_b_Unknown"/> class.
         /// </summary>
         /// <param name="mediaType">MIME media type.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>mediaType</b> is null reference.</exception>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="mediaType"/> is <see langword="null"/>.
+        /// </exception>
         public MIME_b_Unknown(string mediaType) : base(new MIME_h_ContentType(mediaType))
         {
         }
@@ -24,36 +30,33 @@ namespace LumiSoft.Net.MIME
         #region static method Parse
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses an unknown MIME body from the specified stream.
         /// </summary>
         /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>defaultContentType</b> or <b>strean</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="stream">Stream containing the encoded body data.</param>
+        /// <returns>Returns the parsed MIME body.</returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="owner"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME entity is missing the required Content-Type header.
+        /// </exception>
+        internal static MIME_b_Unknown Parse(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
+            }                        
+            if(owner.ContentType == null){
+                throw new ParseException("MIME entity is missing the required Content-Type header.");
             }
 
-            string mediaType;
-            try{
-                mediaType = owner.ContentType?.TypeWithSubtype ?? "unparsable/unparsable";
-            }
-            catch{
-                mediaType = "unparsable/unparsable";
-            }
-
-            MIME_b_Unknown retVal = new MIME_b_Unknown(mediaType);
-            Net_Utils.StreamCopy(stream,retVal.EncodedStream,stream.LineBufferSize);
+            MIME_b_Unknown retVal = new MIME_b_Unknown(owner.ContentType.TypeWithSubtype);
+            retVal.EncodedStream = stream;
+            retVal.SetModified(false);
 
             return retVal;
         }

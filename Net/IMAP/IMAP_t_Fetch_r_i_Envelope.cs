@@ -190,8 +190,8 @@ namespace LumiSoft.Net.IMAP
 
 			// date
             try{
-			    if(entity.Date != DateTime.MinValue){
-				    retVal.Append(TextUtils.QuoteString(MIME_Utils.DateTimeToRfc2822(entity.Date)));
+			    if(entity.Date != null){
+				    retVal.Append(TextUtils.QuoteString(MIME_Utils.DateTimeToRfc2822(entity.Date.Value)));
 		    	}
 			    else{
 				    retVal.Append("NIL");

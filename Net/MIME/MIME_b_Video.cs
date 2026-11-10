@@ -2,16 +2,15 @@
 using System.Collections.Generic;
 using System.Text;
 
-using LumiSoft.Net.IO;
-
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// This class represents MIME video/xxx bodies. Defined in RFC 2046 4.4.
+    /// Represents a MIME body with a media type whose top-level type is
+    /// <c>video</c>.
     /// </summary>
     /// <remarks>
-    /// A media type of "video" indicates that the body contains a time-
-    /// varying-picture image, possibly with color and coordinated sound.
+    /// Defined by RFC 2046 section 4.4. A video media type indicates that
+    /// the body contains video data.
     /// </remarks>
     public class MIME_b_Video : MIME_b_SinglepartBase
     {
@@ -28,35 +27,33 @@ namespace LumiSoft.Net.MIME
         #region static method Parse
 
         /// <summary>
-        /// Parses body from the specified stream
+        /// Parses a video MIME body from the specified stream.
         /// </summary>
         /// <param name="owner">Owner MIME entity.</param>
-        /// <param name="defaultContentType">Default content-type for this body.</param>
-        /// <param name="stream">Stream from where to read body.</param>
-        /// <returns>Returns parsed body.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>stream</b>, <b>mediaType</b> or <b>stream</b> is null reference.</exception>
-        /// <exception cref="ParseException">Is raised when any parsing errors.</exception>
-        protected static new MIME_b Parse(MIME_Entity owner,MIME_h_ContentType defaultContentType,SmartStream stream)
+        /// <param name="stream">Stream containing the encoded body data.</param>
+        /// <returns>Returns the parsed MIME body.</returns>
+        /// <exception cref="ArgumentNullException">
+        /// Raised when <paramref name="owner"/> or
+        /// <paramref name="stream"/> is <see langword="null"/>.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Raised when the MIME entity is missing the required Content-Type header.
+        /// </exception>
+        internal static MIME_b_Video Parse(MIME_Entity owner,Stream stream)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
-            }
-            if(defaultContentType == null){
-                throw new ArgumentNullException("defaultContentType");
+                throw new ArgumentNullException(nameof(owner));
             }
             if(stream == null){
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
+            }            
+            if(owner.ContentType == null){
+                throw new ParseException("MIME entity is missing the required Content-Type header.");
             }
 
-            MIME_b_Video? retVal = null;
-            if(owner.ContentType != null){
-                retVal = new MIME_b_Video(owner.ContentType.TypeWithSubtype);
-            }
-            else{
-                retVal = new MIME_b_Video(defaultContentType.TypeWithSubtype);
-            }
-
-            Net_Utils.StreamCopy(stream,retVal.EncodedStream,stream.LineBufferSize);
+            MIME_b_Video retVal = new MIME_b_Video(owner.ContentType.TypeWithSubtype);
+            retVal.EncodedStream = stream;
+            retVal.SetModified(false);
 
             return retVal;
         }

@@ -6,26 +6,26 @@ using System.Text;
 namespace LumiSoft.Net.MIME
 {
     /// <summary>
-    /// Represents MIME header field parameters collection.
+    /// Represents the parameters associated with a MIME header field.
     /// </summary>
     public class MIME_h_ParameterCollection : IEnumerable<MIME_h_Parameter>
     {
         #region class _ParameterBuilder
 
         /// <summary>
-        /// This class represents header field parameter builder.
+        /// Collects and combines the segments of one RFC 2231 parameter.
         /// </summary>
-        public class _ParameterBuilder
+        internal class _ParameterBuilder
         {
             private string                  m_Name;
             private SortedList<int,string?> m_pParts;
             private Encoding?               m_pEncoding = null;
 
             /// <summary>
-            /// Default constructor.
+            /// Initializes a new instance of the <see cref="_ParameterBuilder"/> class.
             /// </summary>
-            /// <param name="name">Parameter name.</param>
-            /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
+            /// <param name="name">The parameter name.</param>
+            /// <exception cref="ArgumentNullException">Thrown when <paramref name="name"/> is <see langword="null"/>.</exception>
             public _ParameterBuilder(string name)
             {
                 if(name == null){
@@ -41,11 +41,11 @@ namespace LumiSoft.Net.MIME
             #region method AddPart
 
             /// <summary>
-            /// Adds header field parameter part to paramter buffer.
+            /// Adds one segment of an RFC 2231 parameter.
             /// </summary>
-            /// <param name="index">Parameter part index.</param>
-            /// <param name="encoded">If true parameter part is encoded.</param>
-            /// <param name="value">Parameter part value.</param>
+            /// <param name="index">The zero-based segment index.</param>
+            /// <param name="encoded">Indicates whether the segment uses RFC 2231 extended encoding.</param>
+            /// <param name="value">The segment value, or <see langword="null"/> for a valueless parameter.</param>
             public void AddPart(int index,bool encoded,string? value)
             {
                 // We should have charset and language information available.
@@ -66,9 +66,9 @@ namespace LumiSoft.Net.MIME
             #region method GetParamter
 
             /// <summary>
-            /// Gets header field parameter(splitted paramter values concated).
+            /// Combines the collected segments into a header field parameter.
             /// </summary>
-            /// <returns>Returns header field parameter.</returns>
+            /// <returns>The combined and decoded header field parameter.</returns>
             public MIME_h_Parameter GetParamter()
             {
                 // Concate parts values and decode value. (SortedList takes care for sorting part indexes)
@@ -106,17 +106,16 @@ namespace LumiSoft.Net.MIME
         private bool                                m_IsModified    = false;
         private MIME_h                              m_pOwner;
         private Dictionary<string,MIME_h_Parameter> m_pParameters;
-        private bool                                m_EncodeRfc2047 = false;
 
         /// <summary>
-        /// Default constructor.
+        /// Initializes a new instance of the <see cref="MIME_h_ParameterCollection"/> class.
         /// </summary>
-        /// <param name="owner">Owner MIME header field.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>owner</b> is null reference.</exception>
+        /// <param name="owner">The MIME header field that owns this collection.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="owner"/> is <see langword="null"/>.</exception>
         public MIME_h_ParameterCollection(MIME_h owner)
         {
             if(owner == null){
-                throw new ArgumentNullException("owner");
+                throw new ArgumentNullException(nameof(owner));
             }
 
             m_pOwner = owner;
@@ -128,10 +127,10 @@ namespace LumiSoft.Net.MIME
         #region method Remove
 
         /// <summary>
-        /// Removes specified parametr from the collection.
+        /// Removes the specified parameter from the collection.
         /// </summary>
-        /// <param name="name">Parameter name.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
+        /// <param name="name">The parameter name.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="name"/> is <see langword="null"/>.</exception>
         public void Remove(string name)
         {
             if(name == null){
@@ -161,9 +160,9 @@ namespace LumiSoft.Net.MIME
         #region method ToArray
 
         /// <summary>
-        /// Copies header fields parameters to new array.
+        /// Copies the parameters to a new array.
         /// </summary>
-        /// <returns>Returns header fields parameters array.</returns>
+        /// <returns>An array containing the parameters in the collection.</returns>
         public MIME_h_Parameter[] ToArray()
         {
             MIME_h_Parameter[] retVal = new MIME_h_Parameter[m_pParameters.Count];
@@ -178,47 +177,37 @@ namespace LumiSoft.Net.MIME
         #region method ToString
 
         /// <summary>
-        /// Returns header field parameters as string.
+        /// Returns the parameters in serialized header-field format.
         /// </summary>
-        /// <returns>Returns header field parameters as string.</returns>
+        /// <returns>The serialized parameters.</returns>
         public override string ToString()
         {
-            return ToString(null);
+            return ToString(true);
         }
 
         /// <summary>
-        /// Returns header field parameters as string.
+        /// Returns header field parameters as a serialized string.
         /// </summary>
-        /// <param name="charset">Charset to use to encode 8-bit characters. Value null means parameters not encoded.</param>
-        /// <returns>Returns header field parameters as string.</returns>
-        public string ToString(Encoding? charset)
+        /// <param name="utf8">
+        /// If <see langword="true"/>, parameter values are written as UTF-8
+        /// text without RFC 2231 encoding. If <see langword="false"/>,
+        /// non-ASCII values are encoded using UTF-8 and RFC 2231.
+        /// </param>
+        /// <returns>The serialized header field parameters.</returns>
+        public string ToString(bool utf8)
         {
-            /* RFC 2231.
-             *      If parameter conatins 8-bit byte, we need to encode parameter value
-             *      If parameter value length bigger than MIME maximum allowed line length,
-             *      we need split value.
-            */
-
-            if(charset == null){
-                charset = Encoding.Default;
-            }
-
             StringBuilder retVal = new StringBuilder();
             foreach(MIME_h_Parameter parameter in this.ToArray()){
                 if(string.IsNullOrEmpty(parameter.Value)){
                     retVal.Append(";\r\n\t" + parameter.Name);
                 }
                 // We don't need to encode or split value.
-                else if((Net_Utils.IsAscii(parameter.Value)) && parameter.Value.Length < 76){
+                else if((utf8 ||Net_Utils.IsAscii(parameter.Value))){
                     retVal.Append(";\r\n\t" + parameter.Name + "=" + TextUtils.QuoteString(parameter.Value));
-                }
-                // Use RFC 2047 to encode parameter.
-                else if(m_EncodeRfc2047){
-                    retVal.Append(";\r\n\t" + parameter.Name + "=" + TextUtils.QuoteString(MIME_Encoding_EncodedWord.EncodeS(MIME_EncodedWordEncoding.B,Encoding.UTF8,false,parameter.Value)));
                 }
                 // We need to RFC 2231 encode/split value.
                 else{
-                    byte[] byteValue = charset!.GetBytes(parameter.Value);
+                    byte[] byteValue = Encoding.UTF8.GetBytes(parameter.Value);
 
                     List<string> values = new List<string>();            
                     // Do encoding/splitting.
@@ -249,8 +238,8 @@ namespace LumiSoft.Net.MIME
 
                     for(int i=0;i<values.Count;i++){
                         // Only fist value entry has charset and language info.
-                        if(charset != null && i == 0){
-                            retVal.Append(";\r\n\t" + parameter.Name + "*" + i.ToString() + "*=" + charset.WebName + "''" + values[i]);
+                        if(i == 0){
+                            retVal.Append(";\r\n\t" + parameter.Name + "*" + i.ToString() + "*=" + Encoding.UTF8.WebName + "''" + values[i]);
                         }
                         else{
                             retVal.Append(";\r\n\t" + parameter.Name + "*" + i.ToString() + "*=" + values[i]);
@@ -267,28 +256,28 @@ namespace LumiSoft.Net.MIME
         #region method Parse
 
         /// <summary>
-        /// Parses parameters from the specified value.
+        /// Parses parameters from the specified serialized value.
         /// </summary>
-        /// <param name="value">Header field parameters string.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>value</b> is null reference.</exception>
+        /// <param name="value">The serialized parameter value.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is <see langword="null"/>.</exception>
         public void Parse(string value)
         {
             if(value == null){
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
             }
 
             Parse(new MIME_Reader(value));
         }
 
         /// <summary>
-        /// Parses parameters from the specified reader.
+        /// Parses parameters from the specified MIME reader.
         /// </summary>
-        /// <param name="reader">MIME reader.</param>
-        /// <exception cref="ArgumentNullException">Is raised when <b>reader</b> is null reference.</exception>
+        /// <param name="reader">The reader positioned at the parameter text.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="reader"/> is <see langword="null"/>.</exception>
         public void Parse(MIME_Reader reader)
         {
             if(reader == null){
-                throw new ArgumentNullException("reader");
+                throw new ArgumentNullException(nameof(reader));
             }
 
             /* RFC 2231.
@@ -384,12 +373,12 @@ namespace LumiSoft.Net.MIME
         #region static method DecodeExtOctet
 
         /// <summary>
-        /// Decodes non-ascii text with MIME <b>ext-octet</b> method. Defined in RFC 2231 7.
+        /// Decodes RFC 2231 percent-encoded octets using the specified character encoding.
         /// </summary>
-        /// <param name="text">Text to decode,</param>
-        /// <param name="charset">Charset to use.</param>
-        /// <returns>Returns decoded text.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>text</b> or <b>charset</b> is null.</exception>
+        /// <param name="text">The text containing RFC 2231 percent escapes.</param>
+        /// <param name="charset">The character encoding used to decode the resulting bytes.</param>
+        /// <returns>The decoded text.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="text"/> or <paramref name="charset"/> is <see langword="null"/>.</exception>
         private static string DecodeExtOctet(string text,Encoding charset)
         {
             if(text == null){
@@ -420,18 +409,18 @@ namespace LumiSoft.Net.MIME
         #region interface IEnumerator
 
         /// <summary>
-        /// Gets generic enumerator.
+        /// Returns an enumerator that iterates through the parameters.
         /// </summary>
-        /// <returns>Returns generic enumerator.</returns>
+        /// <returns>An enumerator for the parameters.</returns>
         public IEnumerator<MIME_h_Parameter> GetEnumerator()
         {
             return m_pParameters.Values.GetEnumerator();
         }
 
         /// <summary>
-        /// Gets non-generic enumerator.
+        /// Returns an enumerator that iterates through the parameters.
         /// </summary>
-        /// <returns>Returns non-generic enumerator.</returns>
+        /// <returns>An enumerator for the parameters.</returns>
         IEnumerator IEnumerable.GetEnumerator()
         {
             return m_pParameters.Values.GetEnumerator();
@@ -442,10 +431,9 @@ namespace LumiSoft.Net.MIME
         #region Properties implementation
 
         /// <summary>
-        /// Gets if this header field parameters are modified since it has loaded.
+        /// Gets a value indicating whether the parameters have been modified
+        /// since they were parsed.
         /// </summary>
-        /// <remarks>All new added header fields has <b>IsModified = true</b>.</remarks>
-        /// <exception cref="ObjectDisposedException">Is riased when this class is disposed and this property is accessed.</exception>
         public bool IsModified
         {
             get{
@@ -465,7 +453,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets owner MIME header field.
+        /// Gets the MIME header field that owns this collection.
         /// </summary>
         public MIME_h Owner
         {
@@ -473,7 +461,7 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets number of items in the collection.
+        /// Gets the number of parameters in the collection.
         /// </summary>
         public int Count
         {
@@ -481,16 +469,17 @@ namespace LumiSoft.Net.MIME
         }
 
         /// <summary>
-        /// Gets or sets specified header field parameter value. Value null means not specified.
+        /// Gets or sets a parameter value. A <see langword="null"/> value
+        /// means that the parameter is not specified.
         /// </summary>
-        /// <param name="name">Header field name.</param>
-        /// <returns>Returns specified header field value or null if specified parameter doesn't exist.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>name</b> is null reference.</exception>
+        /// <param name="name">The parameter name.</param>
+        /// <returns>The parameter value, or <see langword="null"/> if the parameter does not exist.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="name"/> is <see langword="null"/>.</exception>
         public string? this[string name]
         {
             get{
                 if(name == null){
-                    throw new ArgumentNullException("name");
+                    throw new ArgumentNullException(nameof(name));
                 }
 
                 MIME_h_Parameter? retVal = null;
@@ -504,7 +493,7 @@ namespace LumiSoft.Net.MIME
 
             set{
                 if(name == null){
-                    throw new ArgumentNullException("name");
+                    throw new ArgumentNullException(nameof(name));
                 }
 
                 MIME_h_Parameter? retVal = null;
@@ -515,16 +504,6 @@ namespace LumiSoft.Net.MIME
                     m_pParameters.Add(name,new MIME_h_Parameter(name,value));
                 }
             }
-        }
-
-        /// <summary>
-        /// If true RFC 2047 is used to encode parameters, if false RFC 2231 is used.
-        /// </summary>
-        public bool EncodeRfc2047
-        {
-            get{ return m_EncodeRfc2047; }
-
-            set{ m_EncodeRfc2047 = value; }
         }
 
         #endregion

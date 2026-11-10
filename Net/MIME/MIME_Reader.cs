@@ -292,7 +292,7 @@ namespace LumiSoft.Net.MIME
                             retVal.Append(MIME_Utils.QDecode(Encoding.GetEncoding(match.Groups["charset"].Value),match.Groups["value"].Value));
                         }
                         else if(string.Equals(match.Groups["encoding"].Value,"B",StringComparison.InvariantCultureIgnoreCase)){
-                            retVal.Append(Encoding.GetEncoding(match.Groups["charset"].Value).GetString(Net_Utils.FromBase64(Encoding.Default.GetBytes(match.Groups["value"].Value))));
+                            retVal.Append(Encoding.GetEncoding(match.Groups["charset"].Value).GetString(Convert.FromBase64String(match.Groups["value"].Value)));
                         }
                         // Failed to parse encoded-word, leave it as is. RFC 2047 6.3.
                         else{
@@ -445,7 +445,7 @@ namespace LumiSoft.Net.MIME
                             return MIME_Utils.QDecode(Encoding.GetEncoding(m.Groups["charset"].Value),m.Groups["value"].Value);
                         }
                         else if(string.Equals(m.Groups["encoding"].Value,"B",StringComparison.InvariantCultureIgnoreCase)){
-                            return Encoding.GetEncoding(m.Groups["charset"].Value).GetString(Net_Utils.FromBase64(Encoding.Default.GetBytes(m.Groups["value"].Value)));
+                            return Encoding.GetEncoding(m.Groups["charset"].Value).GetString(Convert.FromBase64String(m.Groups["value"].Value));
                         }
                         // Failed to parse encoded-word, leave it as is. RFC 2047 6.3.
                         else{
