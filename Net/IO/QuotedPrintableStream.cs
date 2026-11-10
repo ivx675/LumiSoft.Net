@@ -156,6 +156,7 @@ namespace LumiSoft.Net.IO
         /// <inheritdoc />
         public override int Read(byte[] buffer, int offset, int count)
         {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
             if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
@@ -171,6 +172,7 @@ namespace LumiSoft.Net.IO
         /// <inheritdoc />
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
             if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
@@ -182,6 +184,7 @@ namespace LumiSoft.Net.IO
         /// <inheritdoc />
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (!CanRead) throw new NotSupportedException();
 
             // 1. Drain any already-decoded bytes sitting in our output buffer first
@@ -287,6 +290,7 @@ namespace LumiSoft.Net.IO
         /// <inheritdoc />
         public override void Write(byte[] buffer, int offset, int count)
         {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
             if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
@@ -303,6 +307,7 @@ namespace LumiSoft.Net.IO
         /// <inheritdoc />
         public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
             if (count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
@@ -315,6 +320,7 @@ namespace LumiSoft.Net.IO
         /// <inheritdoc />
         public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
+            if (_disposed) throw new ObjectDisposedException(GetType().FullName);
             if (!CanWrite) throw new NotSupportedException();
             if (_isFinalized) throw new InvalidOperationException("Cannot write to a stream after FinishAsync() has been called.");
 
