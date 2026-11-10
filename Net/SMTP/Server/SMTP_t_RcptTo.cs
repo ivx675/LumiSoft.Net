@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace LumiSoft.Net.SMTP.Server
 {
@@ -79,6 +78,25 @@ namespace LumiSoft.Net.SMTP.Server
         public string Mailbox
         {
             get{ return m_Mailbox; }
+        }
+
+        /// <summary>
+        /// Gets the domain portion of the recipient mailbox.
+        /// </summary>
+        /// <remarks>
+        /// The domain is extracted from the <see cref="Mailbox"/> value by
+        /// taking the portion following the '@' character. For example,
+        /// the mailbox <c>user@example.com</c> returns <c>example.com</c>.
+        /// If the mailbox does not contain a domain part, an empty string
+        /// is returned.
+        /// </remarks>
+        public string Domain
+        {
+            get{
+                int index = m_Mailbox.LastIndexOf('@');
+
+                return index >= 0 ? m_Mailbox.Substring(index + 1) : string.Empty;
+            }
         }
 
         /// <summary>
