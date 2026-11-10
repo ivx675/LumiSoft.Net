@@ -73,6 +73,16 @@ namespace LumiSoft.Net.POP3.Server
         #region Properties implementation
 
         /// <summary>
+        /// Gets the POP3 session associated with this event. The session provides access
+        /// to connection state, authentication status, and server-side context required
+        /// to process the current POP3 command.
+        /// </summary>
+        public POP3_Session Session
+        {
+            get{ return m_pSession; }
+        }
+
+        /// <summary>
         /// Gets the <see cref="POP3_ServerMessage"/> instance that describes the
         /// message for which a stream is being requested. This object contains the
         /// server‑side metadata associated with the message, such as its sequence
