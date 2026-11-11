@@ -42,6 +42,32 @@ namespace LumiSoft.Net.IMAP
 
         /// <summary>
         /// Initializes a new instance of the <see cref="_IMAP_Reader"/> class for parsing
+        /// IMAP lexical elements from a caller-provided protocol line.
+        /// <para>
+        /// This constructor creates a line-only reader that operates exclusively on the
+        /// supplied <paramref name="line"/>. Methods that parse atoms, quoted strings,
+        /// dates, parenthesized lists, and other non-literal tokens work normally.
+        /// </para>
+        /// <para>
+        /// Literal processing is not available because no client or server session is
+        /// associated with the reader. Attempting to read a literal requires one of the
+        /// constructors that accepts an <see cref="IMAP_Client"/> or
+        /// <see cref="IMAP_Session"/> together with a line buffer.
+        /// </para>
+        /// </summary>
+        /// <param name="line">
+        /// The IMAP protocol line to parse.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown if <paramref name="line"/> is <c>null</c>.
+        /// </exception>
+        internal _IMAP_Reader(string line)
+        {
+            m_Line = line;
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="_IMAP_Reader"/> class for parsing
         /// IMAP lexical elements such as atoms, quoted strings, literals, astrings, and
         /// mailbox names. The reader operates on a single IMAP protocol line supplied by
         /// the caller and does not perform line‑based reading except when a literal
