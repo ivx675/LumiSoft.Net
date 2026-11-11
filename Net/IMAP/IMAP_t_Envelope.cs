@@ -199,6 +199,42 @@ namespace LumiSoft.Net.IMAP
 
         #endregion
 
+        #region static method ParseFromString
+
+        /// <summary>
+        /// Parses an IMAP ENVELOPE structure from its textual representation.
+        /// </summary>
+        /// <param name="envelope">
+        /// The ENVELOPE value to parse. The string must contain only the
+        /// parenthesized ENVELOPE structure and must not reference IMAP literals,
+        /// because this method operates on an in-memory string and performs no
+        /// network or stream I/O.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="IMAP_t_Envelope"/> instance populated from the specified
+        /// ENVELOPE data.
+        /// </returns>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="envelope"/> is <see langword="null"/> or empty.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Thrown if the supplied ENVELOPE structure is malformed.
+        /// </exception>
+        /// <remarks>
+        /// This method is intended for parsing ENVELOPE values that are already
+        /// available as a complete string.
+        /// </remarks>
+        public static IMAP_t_Envelope ParseFromString(string envelope)
+        {
+            if(string.IsNullOrEmpty(envelope)){
+                throw new ArgumentException("Envelope value may not be null or empty.",nameof(envelope));
+            }
+
+            return ParseAsync(new _IMAP_Reader(envelope)).GetAwaiter().GetResult();
+        }
+
+        #endregion
+
         #region static method FromMessage
 
         /// <summary>

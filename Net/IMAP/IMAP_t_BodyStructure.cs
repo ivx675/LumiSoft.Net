@@ -1,4 +1,5 @@
-﻿using LumiSoft.Net.Mail;
+﻿using LumiSoft.Net.IMAP.Client;
+using LumiSoft.Net.Mail;
 using LumiSoft.Net.MIME;
 using System;
 using System.Collections.Generic;
@@ -110,6 +111,44 @@ namespace LumiSoft.Net.IMAP
             }
 
             throw new Exception();
+        }
+
+        #endregion
+
+        #region static method ParseFromString
+
+        /// <summary>
+        /// Parses an IMAP BODYSTRUCTURE value from its textual representation.
+        /// </summary>
+        /// <param name="bodyStructure">
+        /// The BODYSTRUCTURE value to parse. The string must contain only the
+        /// BODYSTRUCTURE data and must not reference IMAP literals, because this
+        /// method operates entirely on an in-memory string and performs no network
+        /// or stream I/O.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="IMAP_t_BodyStructure"/> instance populated from the
+        /// specified BODYSTRUCTURE data.
+        /// </returns>
+        /// <exception cref="ArgumentException">
+        /// Thrown if <paramref name="bodyStructure"/> is <see langword="null"/> or empty.
+        /// </exception>
+        /// <exception cref="ParseException">
+        /// Thrown if the supplied BODYSTRUCTURE value is malformed.
+        /// </exception>
+        /// <remarks>
+        /// This method is intended for parsing BODYSTRUCTURE values that are already
+        /// available as a complete string. Unlike <c>ParseAsync</c>, it cannot process
+        /// literals because no IMAP client or server session is available to retrieve
+        /// literal payload data.
+        /// </remarks>
+        public static IMAP_t_BodyStructure ParseFromString(string bodyStructure)
+        {
+            if(string.IsNullOrEmpty(bodyStructure)){
+                throw new ArgumentException("BodyStructure value may not be null or empty.",nameof(bodyStructure));
+            }
+
+            return ParseAsync(new _IMAP_Reader(bodyStructure)).GetAwaiter().GetResult();
         }
 
         #endregion
