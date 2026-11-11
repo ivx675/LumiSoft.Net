@@ -11,86 +11,7 @@ namespace LumiSoft.Net.IMAP
 	/// Provides utility methods for IMAP.
 	/// </summary>
 	public class IMAP_Utils
-	{	        
-        #region static method MessageFlagsAdd
-
-        /// <summary>
-        /// Adds specified flags to flags list.
-        /// </summary>
-        /// <param name="flags">Current message flags.</param>
-        /// <param name="flagsToAdd">Flags to add.</param>
-        /// <returns>Returns new flags.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>flags</b> or <b>flagsToAdd</b> is null reference.</exception>
-        public static string[] MessageFlagsAdd(string[] flags,string[] flagsToAdd)
-        {
-            if(flags == null){
-                throw new ArgumentNullException("flags");
-            }
-            if(flagsToAdd == null){
-                throw new ArgumentNullException("flagsToAdd");
-            }
-
-            List<string> retVal = new List<string>();
-            retVal.AddRange(flags);
-
-            foreach(string flagToAdd in flagsToAdd){
-                bool contains = false;
-                foreach(string flag in flags){
-                    if(string.Equals(flag,flagToAdd,StringComparison.InvariantCultureIgnoreCase)){
-                        contains = true;
-                        break;
-                    }
-                }
-
-                if(!contains){
-                    retVal.Add(flagToAdd);
-                }
-            }
-
-            return retVal.ToArray();
-        }
-
-        #endregion
-
-        #region static method MessageFlagsRemove
-
-        /// <summary>
-        /// Removes specified flags from message flags list.
-        /// </summary>
-        /// <param name="flags">Message flags.</param>
-        /// <param name="flagsToRemove">Message flags to remove.</param>
-        /// <returns>Returns new message flags.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>flags</b> or <b>flagsToRemove</b> is null reference.</exception>
-        public static string[] MessageFlagsRemove(string[] flags,string[] flagsToRemove)
-        {
-            if(flags == null){
-                throw new ArgumentNullException("flags");
-            }
-            if(flagsToRemove == null){
-                throw new ArgumentNullException("flagsToRemove");
-            }
-
-            List<string> retVal = new List<string>();
-            foreach(string flag in flags){
-                bool remove = false;
-                foreach(string flagToRemove in flagsToRemove){
-                    if(string.Equals(flag,flagToRemove,StringComparison.InvariantCultureIgnoreCase)){
-                        remove = true;
-                        break;
-                    }
-                }
-
-                if(!remove){
-                    retVal.Add(flag);
-                }
-            }
-
-            return retVal.ToArray();
-        }
-
-        #endregion
-
-
+	{	
 		#region static method ParseDate
 
 		/// <summary>
@@ -464,45 +385,6 @@ namespace LumiSoft.Net.IMAP
         #endregion
 
 
-        #region static method NormalizeFolder
-
-        /// <summary>
-		/// Normalizes folder path.  Example: /Inbox/SubFolder/ will be Inbox/SubFolder.
-		/// </summary>
-		/// <param name="folder">Folder path to normalize.</param>
-		/// <returns>Returns normalized folder path.</returns>
-		public static string NormalizeFolder(string folder)
-		{
-			folder = folder.Replace("\\","/");
-			if(folder.StartsWith("/")){
-				folder = folder.Substring(1);
-			}
-			if(folder.EndsWith("/")){
-				folder = folder.Substring(0,folder.Length - 1);
-			}
-
-			return folder;
-		}
-
-		#endregion
-
-        #region static method IsValidFolderName
-
-        /// <summary>
-        /// Gets if the specified folder name is valid folder name.
-        /// </summary>
-        /// <param name="folder">Folder name.</param>
-        /// <returns>Returns true if specified folde name is valid.</returns>
-        public static bool IsValidFolderName(string folder)
-        {
-            // TODO: Path ?
-
-            return true;
-        }
-
-        #endregion
-
-
         #region static method MustUseLiteralString
 
         /// <summary>
@@ -600,54 +482,6 @@ namespace LumiSoft.Net.IMAP
 			return false;
 		}
 
-
-        #endregion
-
-
-
-        #region static method ReadString
-
-        /// <summary>
-        /// Reads IMAP string-literal/string/astring/nstring/utf8-quoted from string reader.
-        /// </summary>
-        /// <param name="reader">String reader.</param>
-        /// <returns>Returns IMAP string.</returns>
-        /// <exception cref="ArgumentNullException">Is raised when <b>reader</b> is null reference.</exception>
-        public static string? ReadString(StringReader reader)
-        {
-            if(reader == null){
-                throw new ArgumentNullException("reader");
-            }
-
-            reader.ReadToFirstChar();
-
-            // We have string-literal.
-            if(reader.SourceString.StartsWith("{")){
-                int literalSize = Convert.ToInt32(reader.ReadParenthesized());
-                // Literal has CRLF ending, skip it.
-                reader.ReadSpecifiedLength(2);
-                                                
-                return reader.ReadSpecifiedLength(literalSize);
-            }
-            // utf8-quoted old rfc 5738
-            else if(reader.StartsWith("*\"")){
-                reader.ReadSpecifiedLength(1);
-
-                return reader.ReadWord();
-            }
-            // string/astring/nstring
-            else{
-                // Accept chars '<' '>' in token.
-                string? word = reader.ReadWord(true,new char[]{' ',',',';','{','}','(',')','[',']','\r','\n'},false);
-                
-                // nstring
-                if(string.Equals(word,"NIL",StringComparison.InvariantCultureIgnoreCase)){
-                    return null;
-                }
-
-                return word;
-            }
-        }
 
         #endregion
 
