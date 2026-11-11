@@ -141,14 +141,22 @@ namespace LumiSoft.Net.IMAP.Server
         internal void UpdateFlags(IMAP_Flags_SetType setType,string[] flags)
         {
             if(flags == null){
-                throw new ArgumentNullException("flags");
+                throw new ArgumentNullException(nameof(flags));
             }
-
+        
             if(setType == IMAP_Flags_SetType.Add){
-                m_pFlags = IMAP_Utils.MessageFlagsAdd(m_pFlags,flags);
+                var newFlags = new HashSet<string>(m_pFlags);
+                foreach(var f in flags){
+                    newFlags.Add(f);
+                }
+                m_pFlags = newFlags.ToArray();
             }
             else if(setType == IMAP_Flags_SetType.Remove){
-                m_pFlags = IMAP_Utils.MessageFlagsRemove(m_pFlags,flags);
+                var newFlags = new HashSet<string>(m_pFlags);
+                foreach(var f in flags){
+                    newFlags.Remove(f);
+                }
+                m_pFlags = newFlags.ToArray();
             }
             else{
                 m_pFlags = flags;
