@@ -15,7 +15,7 @@ namespace LumiSoft.Net.IMAP.Server
         private IMAP_Session           m_pSession;
         private IMAP_r_ServerStatus    m_pResponse;
         private string                 m_Folder;
-        private int                    m_UidValidity = 0;
+        private long                   m_UidValidity = 0;
         private string[]               m_pFlags;
         private List<IMAP_MessageInfo> m_pMessagesInfo = [];
 
@@ -139,7 +139,7 @@ namespace LumiSoft.Net.IMAP.Server
         /// UIDVALIDITY is used by clients to determine whether previously
         /// cached message UIDs remain valid.
         /// </remarks>
-        public int UidValidity
+        public long UidValidity
         {
             get{ return m_UidValidity; }
 
