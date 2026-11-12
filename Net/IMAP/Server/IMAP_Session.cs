@@ -4168,7 +4168,7 @@ namespace LumiSoft.Net.IMAP.Server
 
                 criteria = await IMAP_t_Search_Key_Group.ParseAsync(imapReader);
             }
-            catch(ParseException){
+            catch(Exception x) when (x is ParseException or ArgumentException){
                 await imapReader.DrainRemainingCommandAsync();
                 await SendResponseAsync(new IMAP_r_ServerStatus(cmdTag,"BAD","Error in arguments."),true);
 
