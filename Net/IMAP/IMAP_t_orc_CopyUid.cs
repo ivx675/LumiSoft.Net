@@ -23,10 +23,10 @@ namespace LumiSoft.Net.IMAP
         public IMAP_t_orc_CopyUid(long targetMailboxUid,IMAP_t_SeqSet sourceSeqSet,IMAP_t_SeqSet targetSeqSet)
         {
             if(sourceSeqSet == null){
-                throw new ArgumentNullException("sourceSeqSet");
+                throw new ArgumentNullException(nameof(sourceSeqSet));
             }
             if(targetSeqSet == null){
-                throw new ArgumentNullException("targetSeqSet");
+                throw new ArgumentNullException(nameof(targetSeqSet));
             }
 
             m_TargetMailboxUid = targetMailboxUid;
@@ -85,7 +85,7 @@ namespace LumiSoft.Net.IMAP
         /// <returns></returns>
         public override string ToString()
         {
-            return "COPYUID " + "m_MailboxUid" + " " + "m_MessageUid";
+            return $"COPYUID {m_TargetMailboxUid} {m_pSourceSeqSet} {m_pTargetSeqSet}";
         }
 
         #endregion
