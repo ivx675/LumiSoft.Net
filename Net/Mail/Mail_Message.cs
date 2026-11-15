@@ -2691,7 +2691,7 @@ namespace LumiSoft.Net.Mail
 
                 foreach(MIME_Entity e in GetAllEntities(false)){
                     if(e.Body != null && string.Equals(e.Body.MediaType,MIME_MediaTypes.Text.plain,StringComparison.OrdinalIgnoreCase)){
-                        return ((MIME_b_Text)e.Body).Text;
+                        return ((MIME_b_Text)e.Body).GetText(true);
                     }
                 }
 
@@ -2748,7 +2748,7 @@ namespace LumiSoft.Net.Mail
 
                 foreach(MIME_Entity e in GetAllEntities(false)){
                     if(e.Body != null && string.Equals(e.Body.MediaType,MIME_MediaTypes.Text.html,StringComparison.OrdinalIgnoreCase)){
-                        return ((MIME_b_Text)e.Body).Text;
+                        return ((MIME_b_Text)e.Body).GetText(true);
                     }
                 }
 
