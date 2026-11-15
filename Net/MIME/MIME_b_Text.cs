@@ -75,6 +75,40 @@ namespace LumiSoft.Net.MIME
         #endregion
 
 
+        #region method GetText
+
+        /// <summary>
+        /// Retrieves the decoded text payload, with an optional fallback to UTF-8 
+        /// if the declared character set is unsupported or throws decoding errors.
+        /// </summary>
+        /// <param name="fallbackUtf8">
+        /// If <c>true</c>, intercepts encoding-related exceptions and decodes the raw bytes as UTF-8 
+        /// instead of throwing.
+        /// </param>
+        /// <returns>The decoded text string.</returns>
+        /// <exception cref="NotSupportedException">
+        /// Thrown when the encoding is unsupported and <paramref name="fallbackUtf8"/> is <c>false</c>.
+        /// </exception>
+        public string GetText(bool fallbackUtf8)
+        {
+            try{
+                return this.Text;
+            }
+            catch (Exception ex) when (
+                ex is ArgumentException || 
+                ex is NotSupportedException || 
+                ex is DecoderFallbackException)
+            {
+                if (fallbackUtf8) {
+                    return Encoding.UTF8.GetString(this.Data);
+                }
+
+                throw;
+            }
+        }
+
+        #endregion
+
         #region method SetText
 
         /// <summary>
