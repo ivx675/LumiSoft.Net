@@ -317,8 +317,13 @@ namespace LumiSoft.Net.MIME
 
             KeyValueCollection<string,_ParameterBuilder> parameters = new KeyValueCollection<string,_ParameterBuilder>();
 
+            string paramsString = (reader.ToEnd() ?? "").Trim();
+            if(paramsString.Length == 0){
+                return;
+            }
+
             // Parse all parameter parts.
-            string[] parameterParts = TextUtils.SplitQuotedString(reader.ToEnd() ?? "",';');
+            string[] parameterParts = TextUtils.SplitQuotedString(paramsString,';');
             foreach(string part in parameterParts){
                 if(string.IsNullOrEmpty(part)){
                     continue;
