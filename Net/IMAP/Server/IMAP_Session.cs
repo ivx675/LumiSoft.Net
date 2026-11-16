@@ -853,7 +853,7 @@ namespace LumiSoft.Net.IMAP.Server
             try{
                 userName = await imapReader.ReadStringAsync() ?? "";
 
-                if(imapReader.PeekIs('{')){
+                if(imapReader.PeekIsLiteral()){
                     bool log = false;
                     #if DEBUG
                         log = true;
@@ -2213,65 +2213,63 @@ namespace LumiSoft.Net.IMAP.Server
         private async Task _AppendAsync(string cmdTag,string cmdText)
         {
             /* RFC 9051 6.3.12. APPEND Command
+            Arguments:  mailbox name
+                        OPTIONAL flag list
+                        OPTIONAL date-time string
+                        OPTIONAL UTF8 modifier
+                        message literal
+            Responses:  no specific responses for this command
+            Result:     OK  - APPEND completed
+                        NO  - unable to append the message
+                        BAD - command unknown or arguments invalid
 
-                Arguments:  mailbox name
-                            OPTIONAL flag list
-                            OPTIONAL date-time string
-                            message literal
+            The APPEND command appends the specified message to the end of the
+            destination mailbox.
 
-                Responses:  no specific responses for this command
+            The message literal should contain a valid RFC 5322 message.
 
-                Result:     OK  - APPEND completed
-                            NO  - unable to append the message
-                            BAD - command unknown or arguments invalid
+            The server may accept messages that do not contain all required
+            header fields, for example draft messages.
 
-                The APPEND command appends the specified message to the end of the
-                destination mailbox.
+            If a flag list is supplied, the specified flags are assigned to the
+            appended message. Otherwise, the message is created with no flags
+            set unless server policy specifies otherwise.
 
-                The message literal should contain a valid RFC 5322 message.
-                The server may accept messages that do not contain all required
-                header fields, for example draft messages.
+            If a date-time value is supplied, it becomes the INTERNALDATE of
+            the appended message. Otherwise, the current date and time are used.
 
-                If a flag list is supplied, the specified flags are assigned to the
-                appended message. Otherwise, the message is created with no flags
-                set unless server policy specifies otherwise.
+            If the UTF8 modifier is supplied (supported via server extensions 
+            such as RFC 6855 / IMAP4rev2 when enabled), it indicates that the 
+            appended message and/or its metadata utilize UTF-8 encoded characters.
 
-                If a date-time value is supplied, it becomes the INTERNALDATE of
-                the appended message. Otherwise, the current date and time are used.
+            If APPEND fails for any reason, the mailbox must remain unchanged;
+            partial appends are not permitted.
 
-                If APPEND fails for any reason, the mailbox must remain unchanged;
-                partial appends are not permitted.
+            If the destination mailbox does not exist, the server MUST return
+            a NO response. If mailbox creation might succeed, the server SHOULD
+            include the [TRYCREATE] response code.
 
-                If the destination mailbox does not exist, the server MUST return
-                a NO response. If mailbox creation might succeed, the server SHOULD
-                include the [TRYCREATE] response code.
+            If the destination mailbox is currently selected, the server SHOULD
+            notify connected clients of the new message using the appropriate
+            untagged mailbox update responses.
 
-                If the destination mailbox is currently selected, the server SHOULD
-                notify connected clients of the new message using the appropriate
-                untagged mailbox update responses.
+            Servers supporting UIDPLUS (RFC 4315) may include an APPENDUID
+            response code in the tagged OK response.
 
-                Servers supporting UIDPLUS (RFC 4315) may include an APPENDUID
-                response code in the tagged OK response.
-
-                Example:
-
-                    C: A003 APPEND saved-messages (\Seen) "07-Feb-1994 21:52:25 -0800" {310}
-                    S: + Ready for literal data
-                    C: Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)
-                    C: From: Fred Foobar <foobar@Blurdybloop.COM>
-                    C: Subject: afternoon meeting
-                    C: To: mooch@owatagu.siam.edu
-                    C: Message-Id: <B27397-0100000@Blurdybloop.COM>
-                    C: MIME-Version: 1.0
-                    C: Content-Type: text/plain; charset=US-ASCII
-                    C:
-                    C: Hello Joe, do you think we can meet at 3:30 tomorrow?
-                    C:
-                    S: A003 OK APPEND completed
-
-                Note: APPEND is not a message delivery mechanism because it does
-                not provide a way to supply SMTP envelope information.
-            */
+            Example:
+                C: A003 APPEND saved-messages (\Seen) "07-Feb-1994 21:52:25 -0800" {310}
+                S: + Ready for literal data
+                C: Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)
+                C: From: Fred Foobar <foobar@Blurdybloop.COM>
+                C: Subject: afternoon meeting
+                C: To: mooch@owatagu.siam.edu
+                C: Message-Id: <B27397-0100000@Blurdybloop.COM>
+                C: MIME-Version: 1.0
+                C: Content-Type: text/plain; charset=UTF-8
+                C:
+                C: Hello Joe, do you think we can meet at 3:30 tomorrow?
+                C:
+                S: A003 OK APPEND completed.*/
 
             var imapReader = new _IMAP_Reader(cmdText,new byte[8000],this);
 
@@ -2294,8 +2292,9 @@ namespace LumiSoft.Net.IMAP.Server
                 if(imapReader.PeekIs('(')){
                     flags = imapReader.ReadParenthesized().Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
                 }
+
                 // We have optional date-time.
-                if(!imapReader.PeekIs('{')){
+                if(!imapReader.PeekIsLiteral()){
                     try{
                         dateTime = IMAP_Utils.ParseDate(await imapReader.ReadStringAsync() ?? "");
                     }
