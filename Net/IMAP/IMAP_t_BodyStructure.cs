@@ -288,7 +288,7 @@ namespace LumiSoft.Net.IMAP
 
             int linesCount = 0;
             if(entity.Body is MIME_b_Text b2){
-                linesCount = b2.Text.Split('\n').Length;
+                linesCount = b2.GetText(true).Split('\n').Length;
             }
 
             // Single-part entity
