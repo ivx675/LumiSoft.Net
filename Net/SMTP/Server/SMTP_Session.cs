@@ -337,6 +337,9 @@ namespace LumiSoft.Net.SMTP.Server
             if(Supports(SMTP_ServiceExtensions.DSN)){
                 ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.DSN));
             }
+            if(Supports(SMTP_ServiceExtensions.SMTPUTF8)){
+                ehloLines.Add(new SMTP_t_ReplyLine(250,SMTP_ServiceExtensions.SMTPUTF8));
+            }
             
             List<string> sasl = new List<string>();
             foreach(AUTH_SASL_ServerMechanism authMechanism in this.Authentications.Values){
@@ -698,6 +701,7 @@ namespace LumiSoft.Net.SMTP.Server
                   - AUTH=<address>       // RFC 2554
                   - RET=<type>           // FULL or HDRS (RFC 3461)
                   - ENVID=<string>       // DSN envelope identifier (RFC 3461)
+                  - SMTPUTF8             // SMTP Extension for Internationalized Email. Defined in RFC 6531.
                   - Additional parameters may appear depending on supported extensions.
 
                 parameter rules:
@@ -759,11 +763,12 @@ namespace LumiSoft.Net.SMTP.Server
                 return;
             }
 
-            string         address = "";
-            int?           size    = null;
-            string?        body    = null;
-            SMTP_t_DSN_Ret ret     = SMTP_t_DSN_Ret.NotSpecified;
-            string?        envID   = null;
+            string         address  = "";
+            int?           size     = null;
+            string?        body     = null;
+            SMTP_t_DSN_Ret ret      = SMTP_t_DSN_Ret.NotSpecified;
+            string?        envID    = null;
+            bool           smtpUtf8 = false;
 
             // Mailbox not between <>.
             if(!cmdText.StartsWith("<") || cmdText.IndexOf('>') == -1){
@@ -793,14 +798,9 @@ namespace LumiSoft.Net.SMTP.Server
             string[] parameters = string.IsNullOrEmpty(cmdText) ? new string[0] : cmdText.Split((string[]?)null,StringSplitOptions.RemoveEmptyEntries);
             foreach(string parameter in parameters){
                 string[] name_value = parameter.Split(new char[]{'='},2);
-                if(name_value.Length != 2){
-                    string text = "Syntax error in parameters or arguments.";
-                    await SendResponseAsync(new SMTP_ServerResponse(501,new SMTP_t_EnhancedStatusCode(5,5,2),text));
 
-                    return;
-                }
                 string name  = name_value[0].ToUpper();
-                string value = name_value[1];
+                string value = name_value.Length == 2 ? name_value[1] : "";
 
                 // SIZE
                 if(name == "SIZE" && Supports(SMTP_ServiceExtensions.SIZE)){
@@ -865,6 +865,10 @@ namespace LumiSoft.Net.SMTP.Server
                 // AUTH
                 else if(name == "AUTH"){
                 }
+                // SMTPUTF8
+                else if(name == "SMTPUTF8" && Supports(SMTP_ServiceExtensions.SMTPUTF8)){
+                    smtpUtf8 = true;
+                }
                 // Unsupported parameter.
                 else{
                     string text = "Parameter not recognized or not supported.";
@@ -876,7 +880,7 @@ namespace LumiSoft.Net.SMTP.Server
 
             #endregion
 
-            var from     = new SMTP_t_MailFrom(address,size,body,ret,envID);
+            var from     = new SMTP_t_MailFrom(address,size,body,ret,envID,smtpUtf8);
             var response = new SMTP_ServerResponse(250,null,"OK.");
 
             // Raise event MailFromAsync.
@@ -1493,18 +1497,18 @@ namespace LumiSoft.Net.SMTP.Server
         #endregion
 
 
+        #region method IsValidEmailSyntax
+
         private bool IsValidEmailSyntax(string address)
         {
-            if (string.IsNullOrEmpty(address))
-            {
+            if (string.IsNullOrEmpty(address)) {
                 return false;
             }
 
             int atIndex = address.IndexOf('@');
     
             // Must have '@', not at the start or end, and only one '@'
-            if (atIndex > 0 && atIndex < address.Length - 1 && address.IndexOf('@', atIndex + 1) == -1)
-            {
+            if (atIndex > 0 && atIndex < address.Length - 1 && address.IndexOf('@', atIndex + 1) == -1) {
                 string localPart = address.Substring(0, atIndex);
                 string domainPart = address.Substring(atIndex + 1);
 
@@ -1514,14 +1518,15 @@ namespace LumiSoft.Net.SMTP.Server
                                         !domainPart.StartsWith("-") && !domainPart.EndsWith("-");
                 bool noSpaces = !address.Contains(' ') && !address.Contains('\t');
 
-                if (hasDot && validDomainEdges && noSpaces)
-                {
+                if (hasDot && validDomainEdges && noSpaces) {
                     return true;
                 }
             }
 
             return false;
         }
+
+        #endregion
 
         #region method Reset
 

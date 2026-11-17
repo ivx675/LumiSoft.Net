@@ -123,5 +123,10 @@ namespace LumiSoft.Net.SMTP
         /// Future Message Release. Defined in RFC 4865.
         /// </summary>
         public static readonly string FUTURERELEASE = "FUTURERELEASE";
+
+        /// <summary>
+        /// SMTP Extension for Internationalized Email. Defined in RFC 6531.
+        /// </summary>
+        public static readonly string SMTPUTF8 = "SMTPUTF8";
     }
 }

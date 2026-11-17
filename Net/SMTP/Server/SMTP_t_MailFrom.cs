@@ -5,7 +5,8 @@ using System.Text;
 namespace LumiSoft.Net.SMTP.Server
 {
     /// <summary>
-    /// This class holds MAIL FROM: command value.
+    /// Represents the value of an SMTP MAIL FROM command, including the
+    /// reverse-path mailbox and any associated ESMTP parameters.
     /// </summary>
     public class SMTP_t_MailFrom
     {
@@ -25,12 +26,12 @@ namespace LumiSoft.Net.SMTP.Server
         /// </param>
         /// <param name="size">
         /// The SIZE parameter value, indicating the message size declared by the
-        /// client. A value of zero means the parameter was not supplied.
+        /// client. A value of <c>null</c> indicates that the parameter was not supplied.
         /// </param>
         /// <param name="body">
         /// The BODY parameter value (7BIT, 8BITMIME, or BINARYMIME). Modern servers
         /// typically validate this parameter but do not enforce it, except for
-        /// BINARYMIME which requires CHUNKING/BDAT support.
+        /// BINARYMIME, which requires CHUNKING/BDAT support.
         /// </param>
         /// <param name="ret">
         /// The DSN RET parameter (FULL or HDRS), specifying the amount of message
@@ -40,13 +41,17 @@ namespace LumiSoft.Net.SMTP.Server
         /// The DSN ENVID parameter, providing a client-supplied envelope identifier.
         /// May be <c>null</c> if not present.
         /// </param>
+        /// <param name="smtpUtf8">
+        /// Indicates whether the SMTPUTF8 parameter was supplied with the MAIL FROM
+        /// command, as defined by RFC 6531.
+        /// </param>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="mailbox"/> is <c>null</c>.
         /// </exception>
-        public SMTP_t_MailFrom(string mailbox,int? size,string? body,SMTP_t_DSN_Ret ret,string? envid)
+        public SMTP_t_MailFrom(string mailbox,int? size,string? body,SMTP_t_DSN_Ret ret,string? envid,bool smtpUtf8)
         {
             if(mailbox == null){
-                throw new ArgumentNullException("mailbox");
+                throw new ArgumentNullException(nameof(mailbox));
             }
 
             m_Mailbox = mailbox;
@@ -54,6 +59,7 @@ namespace LumiSoft.Net.SMTP.Server
             m_Body    = body;
             m_RET     = ret;
             m_ENVID   = envid;
+            SmtpUtf8  = smtpUtf8;
         }
 
 
@@ -125,6 +131,23 @@ namespace LumiSoft.Net.SMTP.Server
         public string? ENVID
         {
             get{ return m_ENVID; }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether the SMTPUTF8 parameter was supplied
+        /// with the MAIL FROM command, as defined by RFC 6531.
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if the client specified the SMTPUTF8 parameter;
+        /// otherwise, <c>false</c>.
+        /// </value>
+        /// <remarks>
+        /// When <c>true</c>, the client requests SMTPUTF8 support and the
+        /// envelope and message headers may contain UTF-8 characters.
+        /// </remarks>
+        public bool SmtpUtf8
+        {
+            get;
         }
 
         #endregion

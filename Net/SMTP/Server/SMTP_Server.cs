@@ -30,6 +30,7 @@ namespace LumiSoft.Net.SMTP.Server
             m_pServiceExtentions.Add(SMTP_ServiceExtensions.STARTTLS);
             m_pServiceExtentions.Add(SMTP_ServiceExtensions._8BITMIME);
             m_pServiceExtentions.Add(SMTP_ServiceExtensions.CHUNKING);
+            m_pServiceExtentions.Add(SMTP_ServiceExtensions.SMTPUTF8);
         }
 
 
@@ -72,7 +73,7 @@ namespace LumiSoft.Net.SMTP.Server
 
         /// <summary>
         /// Gets or sets SMTP server supported service extentions.
-        /// Supported values: PIPELINING,SIZE,STARTTLS,8BITMIME,CHUNKING,DSN.
+        /// Supported values: PIPELINING,SIZE,STARTTLS,8BITMIME,CHUNKING,DSN,SMTPUTF8.
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
         /// <exception cref="ArgumentNullException">Is raised when null reference passed.</exception>
@@ -88,7 +89,7 @@ namespace LumiSoft.Net.SMTP.Server
 
             set{
                 if(value == null){
-                    throw new ArgumentNullException("ServiceExtentions");
+                    throw new ArgumentNullException(nameof(value));
                 }
 
                 m_pServiceExtentions.Clear();
@@ -111,6 +112,9 @@ namespace LumiSoft.Net.SMTP.Server
                     }
                     else if(extention.ToUpper() == SMTP_ServiceExtensions.DSN){
                         m_pServiceExtentions.Add(SMTP_ServiceExtensions.DSN);
+                    }
+                    else if(extention.ToUpper() == SMTP_ServiceExtensions.SMTPUTF8){
+                        m_pServiceExtentions.Add(SMTP_ServiceExtensions.SMTPUTF8);
                     }
                 }
             }

@@ -509,7 +509,7 @@ namespace LumiSoft.Net.SMTP.Relay
                     messageSize,
                     IsDsnSupported() ? m_pRelayItem.DSN_Ret : SMTP_t_DSN_Ret.NotSpecified,
                     IsDsnSupported() ? m_pRelayItem.EnvelopeID : null,
-                    CancellationToken.None
+                    cancellationToken: CancellationToken.None
                 );
                 await m_pSmtpClient.RcptToAsync(
                     this.To,

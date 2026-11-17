@@ -868,104 +868,89 @@ namespace LumiSoft.Net.SMTP.Client
         #endregion
 
         #region method MailFrom
-
+                
         /// <summary>
-        /// Synchronously sends the SMTP <c>MAIL FROM</c> command using the specified
-        /// sender address and an optional <c>SIZE</c> parameter, depending on the
-        /// server's advertised capabilities.
+        /// Sends the SMTP <c>MAIL FROM</c> command using the specified sender address
+        /// and optional ESMTP extension parameters.
         /// </summary>
         /// <param name="from">
-        /// The envelope sender address to present to the server.
+        /// The sender email address supplied to the SMTP server in the
+        /// <c>MAIL FROM</c> command. This value may differ from the address
+        /// specified in the message's <c>From:</c> header. Specify an empty
+        /// string to use the null reverse-path ("&lt;&gt;").
         /// </param>
         /// <param name="messageSize">
-        /// The message size in bytes. A value of <c>-1</c> indicates that no
-        /// <c>SIZE</c> parameter should be sent. The <c>SIZE</c> parameter is only
-        /// included when the server supports the extension and the value is greater
-        /// than zero.
-        /// </param>
-        /// <exception cref="ObjectDisposedException">
-        /// Thrown if the client instance has already been disposed.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// Thrown if the client is not connected.
-        /// </exception>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown if <paramref name="from"/> is <c>null</c>.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="from"/> is an empty string.
-        /// </exception>
-        /// <exception cref="SMTP_ClientException">
-        /// Thrown when the server does not return a successful <c>250</c> reply,
-        /// indicating that the <c>MAIL FROM</c> command failed.
-        /// </exception>
-        /// <remarks>
-        /// This overload sends the <c>MAIL FROM</c> command without any delivery
-        /// status notification parameters. It delegates to the full method that
-        /// supports <c>RET</c> and <c>ENVID</c>, passing default values for both.
-        /// </remarks>
-        /// <returns>
-        /// The SMTP reply produced by the remote endpoint.  
-        /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
-        /// the final reply code that represents the outcome of the operation.
-        /// </returns>
-        public SMTP_ServerResponse MailFrom(string from,long messageSize)
-        {
-            return MailFrom(from,messageSize,SMTP_t_DSN_Ret.NotSpecified,null);
-        }
-
-        /// <summary>
-        /// Synchronously sends the SMTP <c>MAIL FROM</c> command using the specified
-        /// sender address and optional ESMTP parameters such as <c>SIZE</c>,
-        /// <c>RET</c>, and <c>ENVID</c>, depending on the server's advertised
-        /// capabilities.
-        /// </summary>
-        /// <param name="from">
-        /// The envelope sender address to present to the server.
-        /// </param>
-        /// <param name="messageSize">
-        /// The message size in bytes. A value of <c>-1</c> indicates that no
-        /// <c>SIZE</c> parameter should be sent. The <c>SIZE</c> parameter is only
-        /// included when the server supports the extension and the value is greater
-        /// than zero.
+        /// The message size in bytes. A value less than or equal to zero indicates
+        /// that no <c>SIZE</c> parameter should be sent. The <c>SIZE</c> parameter
+        /// is included only when the server advertises support for the extension
+        /// and a positive value is specified.
         /// </param>
         /// <param name="ret">
-        /// The delivery status notification return option. Used only when the
-        /// server supports the <c>DSN</c> extension.
+        /// The delivery status notification return option. The default value is
+        /// <see cref="SMTP_t_DSN_Ret.NotSpecified"/>. This parameter is included
+        /// only when the server advertises support for the <c>DSN</c> extension.
         /// </param>
         /// <param name="envid">
-        /// An optional envelope identifier included in delivery status notifications.
-        /// Used only when the server supports the <c>DSN</c> extension.
+        /// An optional envelope identifier associated with the message for delivery
+        /// status notification tracking. The default value is <c>null</c>. This
+        /// parameter is included only when specified and the server advertises
+        /// support for the <c>DSN</c> extension.
+        /// </param>
+        /// <param name="smtpUtf8">
+        /// Specifies whether the <c>SMTPUTF8</c> parameter, defined by RFC 6531,
+        /// should be included in the <c>MAIL FROM</c> command. The default value
+        /// is <c>false</c>.
+        ///
+        /// Set this parameter to <c>true</c> when internationalized email addresses
+        /// containing non-ASCII characters are used in the <c>MAIL FROM</c> or
+        /// <c>RCPT TO</c> commands. For example, the address
+        /// <c>jüri@example.com</c> requires <c>SMTPUTF8</c>.
+        ///
+        /// When <c>true</c>, the <c>SMTPUTF8</c> parameter is always sent. No
+        /// capability check is performed by this method. If the server does not
+        /// support the <c>SMTPUTF8</c> extension, it is expected to reject the
+        /// command.
         /// </param>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the client instance has already been disposed.
         /// </exception>
         /// <exception cref="InvalidOperationException">
-        /// Thrown if the client is not connected.
+        /// Thrown if the client is not connected or if <c>EHLO</c> or <c>HELO</c>
+        /// has not been issued before calling this method.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="from"/> is <c>null</c>.
         /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="from"/> is an empty string.
-        /// </exception>
         /// <exception cref="SMTP_ClientException">
-        /// Thrown when the server does not return a successful <c>250</c> reply,
-        /// indicating that the <c>MAIL FROM</c> command failed.
+        /// Thrown when the server rejects the <c>MAIL FROM</c> command and does not
+        /// return a successful <c>250</c> reply.
         /// </exception>
         /// <remarks>
-        /// This method blocks the calling thread until the <c>MAIL FROM</c>
-        /// operation completes. The asynchronous implementation constructs the
-        /// command and conditionally appends ESMTP parameters based on the server's
-        /// advertised capabilities. On success, the current envelope sender value is
-        /// stored internally so subsequent recipient commands can be issued.
+        /// <para>
+        /// This method blocks the calling thread until the SMTP operation completes.
+        /// </para>
+        /// <para>
+        /// This method is a synchronous wrapper around
+        /// <see cref="MailFromAsync(string,long,SMTP_t_DSN_Ret,string?,bool,CancellationToken)"/>
+        /// and provides identical behavior.
+        /// </para>
+        /// <para>
+        /// If the command succeeds, the specified MAIL FROM address is stored
+        /// internally and becomes the current sender address for subsequent
+        /// <c>RCPT TO</c> and message transfer commands.
+        /// </para>
         /// </remarks>
         /// <returns>
-        /// The SMTP reply produced by the remote endpoint.  
-        /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
-        /// the final reply code that represents the outcome of the operation.
+        /// The server response to the <c>MAIL FROM</c> command. The returned
+        /// <see cref="SMTP_ServerResponse"/> contains the complete SMTP reply,
+        /// including all reply lines and the final reply code.
         /// </returns>
-        public SMTP_ServerResponse MailFrom(string from,long messageSize,SMTP_t_DSN_Ret ret,string? envid)
+        public SMTP_ServerResponse MailFrom(
+            string from,
+            long messageSize,
+            SMTP_t_DSN_Ret ret = SMTP_t_DSN_Ret.NotSpecified,
+            string? envid = null,
+            bool smtpUtf8 = false)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -976,125 +961,105 @@ namespace LumiSoft.Net.SMTP.Client
 
             using var cts = new CancellationTokenSource(this.Timeout);
             
-            return MailFromAsync(from,messageSize,ret,envid,cts.Token).GetAwaiter().GetResult();
+            return MailFromAsync(from,messageSize,ret,envid,smtpUtf8,cts.Token).GetAwaiter().GetResult();
         }
 
         #endregion
 
         #region method MailFromAsync
-
-        /// <summary>
-        /// Sends the SMTP <c>MAIL FROM</c> command asynchronously using the specified
-        /// sender address and an optional <c>SIZE</c> parameter, depending on the
-        /// server's advertised capabilities.
-        /// </summary>
-        /// <param name="from">
-        /// The envelope sender address to present to the server.
-        /// </param>
-        /// <param name="messageSize">
-        /// The message size in bytes. A value of <c>-1</c> indicates that no
-        /// <c>SIZE</c> parameter should be sent. The <c>SIZE</c> parameter is only
-        /// included when the server supports the extension and the value is greater
-        /// than zero.
-        /// </param>
-        /// <param name="cancellationToken">
-        /// A token that may be used to cancel the asynchronous read operation.
-        /// </param>
-        /// <exception cref="ObjectDisposedException">
-        /// Thrown if the client instance has already been disposed.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// Thrown if <c>EhloHeloAsync</c> has not been issued before calling this method.
-        /// </exception>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown if <paramref name="from"/> is <c>null</c>.
-        /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="from"/> is an empty string.
-        /// </exception>
-        /// <exception cref="SMTP_ClientException">
-        /// Thrown when the server does not return a successful <c>250</c> reply,
-        /// indicating that the <c>MAIL FROM</c> command failed.
-        /// </exception>
-        /// <remarks>
-        /// This overload sends the <c>MAIL FROM</c> command without any delivery
-        /// status notification parameters. It delegates to the full asynchronous
-        /// method that supports <c>RET</c> and <c>ENVID</c>, passing default values
-        /// for both.
-        /// </remarks>
-        /// <returns>
-        /// A task that completes with the SMTP reply produced by the remote endpoint.  
-        /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
-        /// the final reply code that represents the outcome of the operation.
-        /// </returns>
-        public ValueTask<SMTP_ServerResponse> MailFromAsync(string from,long messageSize,CancellationToken cancellationToken = default)
-        {
-            return MailFromAsync(from,messageSize,SMTP_t_DSN_Ret.NotSpecified,null,cancellationToken);
-        }
-
+                                
         /// <summary>
         /// Sends the SMTP <c>MAIL FROM</c> command using the specified sender address
-        /// and optional ESMTP parameters such as <c>SIZE</c>, <c>RET</c>, and
-        /// <c>ENVID</c>, depending on the server's advertised capabilities.
+        /// and optional ESMTP extension parameters.
         /// </summary>
         /// <param name="from">
-        /// The envelope sender address to present to the server.
+        /// The sender email address supplied to the SMTP server in the
+        /// <c>MAIL FROM</c> command. This value may differ from the address
+        /// specified in the message's <c>From:</c> header. Specify an empty
+        /// string to use the null reverse-path ("&lt;&gt;").
         /// </param>
         /// <param name="messageSize">
-        /// The message size in bytes. A value of <c>-1</c> indicates that no
-        /// <c>SIZE</c> parameter should be sent. The <c>SIZE</c> parameter is only
-        /// included when the server supports the extension and the value is greater
-        /// than zero.
+        /// The message size in bytes. A value less than or equal to zero indicates
+        /// that no <c>SIZE</c> parameter should be sent. The <c>SIZE</c> parameter
+        /// is included only when the server advertises support for the extension
+        /// and a positive value is specified.
         /// </param>
         /// <param name="ret">
-        /// The delivery status notification return option. Used only when the
-        /// server supports the <c>DSN</c> extension.
+        /// The delivery status notification return option. The default value is
+        /// <see cref="SMTP_t_DSN_Ret.NotSpecified"/>. This parameter is included
+        /// only when the server advertises support for the <c>DSN</c> extension.
         /// </param>
         /// <param name="envid">
-        /// An optional envelope identifier included in delivery status notifications.
-        /// Used only when the server supports the <c>DSN</c> extension.
+        /// An optional envelope identifier associated with the message for delivery
+        /// status notification tracking. The default value is <c>null</c>. This
+        /// parameter is included only when specified and the server advertises
+        /// support for the <c>DSN</c> extension.
+        /// </param>
+        /// <param name="smtpUtf8">
+        /// Specifies whether the <c>SMTPUTF8</c> parameter, defined by RFC 6531,
+        /// should be included in the <c>MAIL FROM</c> command. The default value
+        /// is <c>false</c>.
+        ///
+        /// Set this parameter to <c>true</c> when internationalized email addresses
+        /// containing non-ASCII characters are used in the <c>MAIL FROM</c> or
+        /// <c>RCPT TO</c> commands. For example, the address
+        /// <c>jüri@example.com</c> requires <c>SMTPUTF8</c>.
+        ///
+        /// When <c>true</c>, the <c>SMTPUTF8</c> parameter is always sent. No
+        /// capability check is performed by this method. If the server does not
+        /// support the <c>SMTPUTF8</c> extension, it is expected to reject the
+        /// command.
         /// </param>
         /// <param name="cancellationToken">
-        /// A token that may be used to cancel the asynchronous read operation.
+        /// A token that can be used to cancel the asynchronous operation.
         /// </param>
         /// <exception cref="ObjectDisposedException">
         /// Thrown if the client instance has already been disposed.
         /// </exception>
         /// <exception cref="InvalidOperationException">
-        /// Thrown if <c>EhloHeloAsync</c> has not been issued before calling this method.
+        /// Thrown if the client is not connected or if <c>EHLO</c> or <c>HELO</c>
+        /// has not been issued before calling this method.
         /// </exception>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="from"/> is <c>null</c>.
         /// </exception>
-        /// <exception cref="ArgumentException">
-        /// Thrown if <paramref name="from"/> is an empty string.
-        /// </exception>
         /// <exception cref="SMTP_ClientException">
-        /// Thrown when the server does not return a successful <c>250</c> reply,
-        /// indicating that the <c>MAIL FROM</c> command failed.
+        /// Thrown when the server rejects the <c>MAIL FROM</c> command and does not
+        /// return a successful <c>250</c> reply.
         /// </exception>
         /// <remarks>
         /// <para>
-        /// This method constructs the <c>MAIL FROM</c> command and conditionally
-        /// appends ESMTP parameters based on the server's advertised capabilities.
-        /// The <c>SIZE</c> parameter is included only when the server supports the
-        /// message size extension and a positive size value is provided.
+        /// This method constructs and sends the SMTP <c>MAIL FROM</c> command as
+        /// defined by RFC 5321.
+        /// </para>
+        /// <para>
+        /// The <c>SIZE</c> parameter is included only when the server advertises
+        /// support for the SMTP Service Extension for Message Size Declaration
+        /// and a positive <paramref name="messageSize"/> value is provided.
         /// </para>
         /// <para>
         /// The <c>RET</c> and <c>ENVID</c> parameters are included only when the
-        /// server supports delivery status notifications via the <c>DSN</c> extension.
+        /// server advertises support for the <c>DSN</c> extension.
         /// </para>
         /// <para>
-        /// On success, the current envelope sender value is stored internally so
-        /// subsequent recipient commands can be issued.
+        /// If the command succeeds, the specified MAIL FROM address is stored
+        /// internally and becomes the current sender address for subsequent
+        /// <c>RCPT TO</c> and message transfer commands.
         /// </para>
         /// </remarks>
         /// <returns>
-        /// A task that completes with the SMTP reply produced by the remote endpoint.  
-        /// The returned <see cref="SMTP_ServerResponse"/> contains all reply lines and
-        /// the final reply code that represents the outcome of the operation.
+        /// A task that completes with the server response to the
+        /// <c>MAIL FROM</c> command. The returned
+        /// <see cref="SMTP_ServerResponse"/> contains the complete SMTP reply,
+        /// including all reply lines and the final reply code.
         /// </returns>
-        public async ValueTask<SMTP_ServerResponse> MailFromAsync(string from,long messageSize,SMTP_t_DSN_Ret ret,string? envid,CancellationToken cancellationToken = default)
+        public async ValueTask<SMTP_ServerResponse> MailFromAsync(
+            string from,
+            long messageSize,
+            SMTP_t_DSN_Ret ret = SMTP_t_DSN_Ret.NotSpecified,
+            string? envid = null,
+            bool smtpUtf8 = false,
+            CancellationToken cancellationToken = default)
         {
             if(this.IsDisposed){
                 throw new ObjectDisposedException(this.GetType().Name);
@@ -1134,6 +1099,9 @@ namespace LumiSoft.Net.SMTP.Client
             }
             if(SupportsCapability("DSN") && !string.IsNullOrEmpty(envid)){
                 cmd.Append(" ENVID=" + envid);
+            }
+            if(smtpUtf8){
+                cmd.Append(" SMTPUTF8");
             }
             cmd.Append("\r\n");
 
@@ -2520,7 +2488,7 @@ namespace LumiSoft.Net.SMTP.Client
                 if(!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)){
                     await smtp.AuthAsync(smtp.AuthGetStrongestMethod(userName,password),cancellationToken);
                 }
-                await smtp.MailFromAsync(from,messageSize,cancellationToken);
+                await smtp.MailFromAsync(from,messageSize,cancellationToken: cancellationToken);
                 foreach(string t in to){
                     await smtp.RcptToAsync(t,cancellationToken);
                 }
