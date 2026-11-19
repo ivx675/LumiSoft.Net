@@ -151,6 +151,8 @@ namespace LumiSoft.Net.POP3.Server
 
                 // Command loop, while QUIT or fatal error happens.
                 while(!this.IsDisposed){
+                    SetStatusText("Waiting for command");
+
                     // Read command line.
                     ReadLineResult responseline = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
                     // Server closed connection.
@@ -165,6 +167,8 @@ namespace LumiSoft.Net.POP3.Server
                     string[] cmd_args = line.Split(new char[]{' '},2);
                     string   cmd      = cmd_args[0].ToUpperInvariant();
                     string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
+
+                    SetStatusText($"Executing {cmd}");
 
                     // Hide password from log.
                     if(cmd == "PASS"){

@@ -506,6 +506,8 @@ namespace LumiSoft.Net.IMAP.Server
 
                 // Command loop, while QUIT or fatal error happens.
                 while(!this.IsDisposed){
+                    SetStatusText("Waiting for command");
+
                     // Read command line.
                     ReadLineResult readLineResult = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
                     // Server closed connection.
@@ -526,6 +528,8 @@ namespace LumiSoft.Net.IMAP.Server
                     string   cmdTag   = cmd_args[0];
                     string   cmd      = cmd_args[1].ToUpperInvariant();
                     string   args     = cmd_args.Length == 3 ? cmd_args[2] : "";
+
+                    SetStatusText($"Executing {cmd}");
 
                     // Log.
                     if(this.Server.Logger != null){

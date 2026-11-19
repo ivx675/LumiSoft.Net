@@ -24,6 +24,7 @@ namespace LumiSoft.Net.TCP
         private object                    m_pServer       = new object();
         private string                    m_ID            = "";
         private DateTime                  m_ConnectTime;
+        private string                    m_StatusText    = "";
         private string                    m_LocalHostName = "";
         private IPEndPoint?               m_pLocalEP      = null;
         private IPEndPoint?               m_pRemoteEP     = null;
@@ -174,6 +175,19 @@ namespace LumiSoft.Net.TCP
 
         #endregion
 
+        #region method SetStatusText
+
+        /// <summary>
+        /// Sets human-readable description of the session's current activity.
+        /// </summary>
+        /// <param name="statusText">Status text.</param>
+        internal void SetStatusText(string statusText)
+        {
+            m_StatusText = statusText;
+        }
+
+        #endregion
+
 
         #region method SwitchToSecureAsync
 
@@ -222,7 +236,7 @@ namespace LumiSoft.Net.TCP
         }
 
         #endregion
-// Remove ME:
+
         #region method Disconnect
 
         /// <summary>
@@ -421,6 +435,14 @@ namespace LumiSoft.Net.TCP
         }
 
         /// <summary>
+        /// Gets human-readable description of the session's current activity.
+        /// </summary>
+        public string StatusText
+        {
+            get => m_StatusText;
+        }
+
+        /// <summary>
         /// Gets local host name.
         /// </summary>
         /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
@@ -593,6 +615,7 @@ namespace LumiSoft.Net.TCP
         }
                                 
         #endregion
+        
 
         #region Events Implementation
 

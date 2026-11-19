@@ -198,6 +198,8 @@ namespace LumiSoft.Net.SMTP.Server
                 
                 // Command loop, while QUIT or fatal error happens.
                 while(!this.IsDisposed){
+                    SetStatusText("Waiting for command");
+
                     // Read command line.
                     ReadLineResult responseline = await this.TcpStream.ReadLineAsync(new byte[8000],SizeExceededAction.JunkAndThrowException);
                     // Server closed connection.
@@ -214,6 +216,8 @@ namespace LumiSoft.Net.SMTP.Server
                     string[] cmd_args = line.Split(new char[]{' '},2);
                     string   cmd      = cmd_args[0].ToUpperInvariant();
                     string   args     = cmd_args.Length == 2 ? cmd_args[1] : "";
+
+                    SetStatusText($"Executing {cmd}");
 
                     // RFC 5321 3.1.
                     if(m_SessionRejected && cmd != "QUIT"){
