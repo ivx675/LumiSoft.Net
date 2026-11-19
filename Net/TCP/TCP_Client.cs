@@ -28,12 +28,14 @@ namespace LumiSoft.Net.TCP
         private SmartStream? m_pTcpStream   = null;
         private Logger?      m_pLogger      = null;
         private int          m_Timeout      = 61000;
+        private Dictionary<string,object> m_pTags;
 
         /// <summary>
         /// Default constructor.
         /// </summary>
         public TCP_Client()
         {
+            m_pTags = new Dictionary<string,object>(StringComparer.OrdinalIgnoreCase);
         }
 
         #region method Dispose
@@ -1890,6 +1892,21 @@ namespace LumiSoft.Net.TCP
             get{ return m_Timeout; }
 
             set{ m_Timeout = value; }
+        }
+
+        /// <summary>
+        /// Gets user data items collection.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">Is raised when this object is disposed and this property is accessed.</exception>
+        public Dictionary<string,object> Tags
+        {
+            get{ 
+                if(m_IsDisposed){
+                    throw new ObjectDisposedException("TCP_Client");
+                }
+
+                return m_pTags; 
+            }
         }
 
         #endregion
