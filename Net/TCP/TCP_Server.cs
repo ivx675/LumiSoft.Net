@@ -207,6 +207,10 @@ namespace LumiSoft.Net.TCP
                 }
                 listener.Bind(ep.IPEndPoint);
                 listener.Listen(backlog:500);
+
+                lock (m_pListeningSockets) { 
+                    m_pListeningSockets.Add(listener); 
+                }
     
                 while(m_IsRunning){
                     try{
@@ -228,6 +232,11 @@ namespace LumiSoft.Net.TCP
                 }
             }
             finally{
+                lock (m_pListeningSockets) { 
+                    if(listener != null) {
+                        m_pListeningSockets.Remove(listener);
+                    }
+                }
                 listener?.Dispose();
             }
         }
@@ -245,19 +254,19 @@ namespace LumiSoft.Net.TCP
                 throw new ArgumentNullException(nameof(ep));
             }
 
-            m_ConnectionsProcessed++;
+            Interlocked.Increment(ref m_ConnectionsProcessed);
                                 
             try{
                 T session = new T();
                 session.Init(this,socket,ep.HostName,ep.TlsMode == TCP_ServerTlsMode.Implicit,ep.Certificate);
 
                 // Maximum allowed connections exceeded, reject connection.
-                if(m_MaxConnections != 0 && m_pSessions.Count > m_MaxConnections){
+                if(m_MaxConnections != 0 && m_pSessions.Count >= m_MaxConnections){
                     OnMaxConnectionsExceeded(session);
                     session.Dispose();
                 }
                 // Maximum allowed connections per IP exceeded, reject connection.
-                else if(m_MaxConnectionsPerIP != 0 && m_pSessions.GetConnectionsPerIP(session.RemoteEndPoint.Address) > m_MaxConnectionsPerIP){
+                else if(m_MaxConnectionsPerIP != 0 && m_pSessions.GetConnectionsPerIP(session.RemoteEndPoint.Address) >= m_MaxConnectionsPerIP){
                     OnMaxConnectionsPerIPExceeded(session);
                     session.Dispose();
                 }
@@ -286,24 +295,36 @@ namespace LumiSoft.Net.TCP
         #region method TimeoutScan
 
         /// <summary>
-        /// Scans all active sessions and disconnects those whose last activity
-        /// exceeds the configured idle timeout. Ensures timed‑out sessions invoke
-        /// their timeout handler and are disposed if not already closed.
+        /// Scans all active sessions and disconnects those whose last activity exceeds the configured
+        /// <see cref="SessionIdleTimeout"/> threshold.
         /// </summary>
+        /// <remarks>
+        /// If the server is disposed, not running, or <see cref="SessionIdleTimeout"/> is set to <c>0</c>,
+        /// the scan exits immediately without disconnecting any sessions. Individual session exceptions
+        /// (such as a session disposing concurrently during iteration) are safely suppressed, while
+        /// unexpected scan-level errors are routed to <see cref="OnError(Exception)"/>.
+        /// </remarks>
         private void TimeoutScan()
         {
-            try{
-                foreach(T session in this.Sessions.ToArray()){
-                    try{
-                        if(DateTime.Now > session.TcpStream.LastActivity.AddSeconds(m_SessionIdleTimeout)){                            
+            if (m_IsDisposed || !m_IsRunning || m_SessionIdleTimeout <= 0) {
+                return;
+            }
+
+            try {
+                DateTime cutoffTime = DateTime.Now.AddSeconds(-m_SessionIdleTimeout);
+
+                foreach (T session in m_pSessions.ToArray()) {
+                    try {
+                        if (session.TcpStream.LastActivity < cutoffTime) {
                             session.OnTimeoutI();
                         }
                     }
-                    catch{
+                    catch {
+                        // Ignore individual session errors (e.g., session already disposed mid-scan).
                     }
                 }
             }
-            catch (Exception x){
+            catch (Exception x) {
                 OnError(x);
             }
         }
@@ -426,7 +447,7 @@ namespace LumiSoft.Net.TCP
                 if(m_IsDisposed){
                     throw new ObjectDisposedException("TCP_Server");
                 }
-                if(m_MaxConnectionsPerIP < 0){
+                if(value < 0){
                     throw new ArgumentException("Property 'MaxConnectionsPerIP' value must be >= 0.");
                 }
 
