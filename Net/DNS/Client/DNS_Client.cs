@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -20,10 +21,9 @@ namespace LumiSoft.Net.DNS.Client
         private bool                                  m_IsDisposed    = false;
         private IPAddress[]                           m_DnsServers    = [];
 		private bool                                  m_UseDnsCache   = true;
-        private Dictionary<int,DNS_ClientTransaction> m_pTransactions;
+        private readonly ConcurrentDictionary<int,DNS_ClientTransaction> m_pTransactions;
         private Socket                                m_pIPv4Socket;
         private Socket?                               m_pIPv6Socket;
-        private Random                                m_pRandom;
         private DNS_ClientCache                       m_pCache;
 
 		/// <summary>
@@ -58,8 +58,7 @@ namespace LumiSoft.Net.DNS.Client
 		/// </summary>
 		public DNS_Client()
 		{
-            m_pTransactions = new Dictionary<int,DNS_ClientTransaction>();
-            m_pRandom = new Random();
+            m_pTransactions = new ConcurrentDictionary<int,DNS_ClientTransaction>();
             m_pCache = new DNS_ClientCache();
 
             m_pIPv4Socket = new Socket(AddressFamily.InterNetwork,SocketType.Dgram,ProtocolType.Udp);
@@ -183,30 +182,28 @@ namespace LumiSoft.Net.DNS.Client
 				}
 			}
 
-            // Create transaction ID.
-            int transactionID = 0;
-            lock(m_pTransactions){
-                while(true){
-                    transactionID = m_pRandom.Next(0xFFFF);
+            DNS_ClientTransaction retVal;
+            while(true){
+                int transactionID = Random.Shared.Next(0x10000);
 
-                    // We got not used transaction ID.
-                    if(!m_pTransactions.ContainsKey(transactionID)){
-                        break;
-                    }
+                retVal = new DNS_ClientTransaction(
+                    this,
+                    dnsServers,
+                    transactionID,
+                    queryType,
+                    queryText,
+                    timeout);
+
+                if(m_pTransactions.TryAdd(transactionID,retVal)){
+                    break;
                 }
             }
 
-            DNS_ClientTransaction retVal = new DNS_ClientTransaction(this,dnsServers,transactionID,queryType,queryText,timeout);
-            retVal.StateChanged += delegate(object? s1,EventArgs<DNS_ClientTransaction> e1){
+            retVal.StateChanged += (s,e) => {
                 if(retVal.State == DNS_ClientTransactionState.Disposed){
-                    lock(m_pTransactions){
-                        m_pTransactions.Remove(e1.Value.ID);
-                    }
+                    m_pTransactions.TryRemove(e.Value.ID,out _);
                 }
             };
-            lock(m_pTransactions){
-                m_pTransactions.Add(retVal.ID,retVal);
-            }
 
             return retVal;
         }
@@ -488,7 +485,7 @@ namespace LumiSoft.Net.DNS.Client
 
         private async Task ReadResponsesLoopAsync(Socket socket)
         {            
-            var buffer = new byte[1500];
+            var buffer = new byte[4096];
 
             EndPoint remoteEP = socket.AddressFamily == AddressFamily.InterNetwork
                 ? new IPEndPoint(IPAddress.Any,0)
@@ -502,7 +499,7 @@ namespace LumiSoft.Net.DNS.Client
                     var packet = new byte[result.ReceivedBytes];
                     Buffer.BlockCopy(buffer, 0, packet, 0, result.ReceivedBytes);
 
-                    _ = ProcessResponseAsync(((IPEndPoint)result.RemoteEndPoint).Address, packet);
+                    ProcessResponse(((IPEndPoint)result.RemoteEndPoint).Address, packet);
                 }
                 catch(ObjectDisposedException){
                     // Socket closed → exit loop
@@ -516,9 +513,9 @@ namespace LumiSoft.Net.DNS.Client
 
         #endregion
 
-        #region method ProcessResponseAsync
+        #region method ProcessResponse
 
-        private async Task ProcessResponseAsync(IPAddress serverIP,byte[] packet)
+        private void ProcessResponse(IPAddress serverIP,byte[] packet)
         {
             try{
                 DNS_ServerResponse serverResponse = DNS_ServerResponse.Parse(packet);
@@ -695,8 +692,17 @@ namespace LumiSoft.Net.DNS.Client
                 in length (including the length octet).
             */
 
-            int dataLength = (int)data[offset++];
-            string retVal = Encoding.Default.GetString(data,offset,dataLength);
+            if(offset >= data.Length){
+                throw new InvalidDataException();
+            }
+
+            int dataLength = data[offset++];
+
+            if(offset + dataLength > data.Length){
+                throw new InvalidDataException();
+            }
+            
+            string retVal = Encoding.ASCII.GetString(data,offset,dataLength);
             offset += dataLength;
 
             return retVal;

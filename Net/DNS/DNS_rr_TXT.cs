@@ -1,6 +1,6 @@
-using System;
-
 using LumiSoft.Net.DNS.Client;
+using System;
+using System.Text;
 
 namespace LumiSoft.Net.DNS
 {
@@ -44,9 +44,15 @@ namespace LumiSoft.Net.DNS
         {
             // TXT RR
 
-            string text = DNS_Client.ReadCharacterString(reply,ref offset);
+            int endOffset = offset + rdLength;
 
-			return new DNS_rr_TXT(name,text,ttl);
+            StringBuilder text = new StringBuilder();
+
+            while(offset < endOffset) {
+                text.Append(DNS_Client.ReadCharacterString(reply, ref offset));
+            }
+
+            return new DNS_rr_TXT(name,text.ToString(),ttl);
         }
 
         #endregion
