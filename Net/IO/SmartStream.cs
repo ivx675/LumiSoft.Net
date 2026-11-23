@@ -42,24 +42,36 @@ namespace LumiSoft.Net.IO
             m_LastActivity = DateTime.Now;
         }
 
-        #region method Dispose
-
         /// <summary>
-        /// Cleans up any resources being used.
+        /// Releases the resources used by the current <see cref="SmartStream"/> instance.
+        /// When this instance owns the underlying stream, the wrapped stream is also disposed.
         /// </summary>
-        public new void Dispose()
+        /// <param name="disposing">
+        /// <see langword="true"/> to release managed resources; otherwise <see langword="false"/>.
+        /// </param>
+        /// <remarks>
+        /// This method is part of the standard .NET disposal pattern. After disposal,
+        /// all attempts to access the stream will throw <see cref="ObjectDisposedException"/>.
+        /// </remarks>
+        protected override void Dispose(bool disposing)
         {
-            if(m_IsDisposed){
+            if (m_IsDisposed)
                 return;
-            }
+
             m_IsDisposed = true;
 
-            if(m_IsOwner){
-                m_pStream.Dispose();
-            }
-        }
+            if (disposing) {
+                if (m_IsOwner) {
+                    m_pStream?.Dispose();
+                }
 
-        #endregion
+                m_pReadBuffer = Array.Empty<byte>();
+            }
+
+            m_pStream = Stream.Null;
+
+            base.Dispose(disposing);
+        }
                                
 
         #region method ReadLine
@@ -1403,25 +1415,6 @@ namespace LumiSoft.Net.IO
 
         #endregion
 
-
-        #region override method Close
-
-        /// <summary>
-        /// Closes current stream and releases any resources.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException"></exception>
-        public override void Close()
-        {
-            if(m_IsDisposed){
-                throw new ObjectDisposedException("SmartStream");
-            }
-
-            base.Close();
-
-            m_pStream.Close();
-        }
-
-        #endregion
 
         #region override method Flush
 
