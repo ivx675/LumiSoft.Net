@@ -1,6 +1,6 @@
 # LumiSoft.Net
 
-A cross‑platform .NET networking library providing **client and server components** for multiple Internet protocols: **SMTP, POP3, IMAP, FTP**, plus **DNS, MIME, WebDav, STUN, UPnP**.
+A cross‑platform .NET networking library providing **client and server components** for multiple Internet protocols: **SMTP, POP3, IMAP, FTP**, plus **DNS, MIME, WebDav, STUN.
 
 ---
 
@@ -26,17 +26,26 @@ A cross‑platform .NET networking library providing **client and server compone
 
 - **FTP Client & Server**
 - **WebDav Client**
-- **UPnP Client**
 - **STUN Client**
 
 ---
 
 ## Version History
 
-### 10.5.0 (xx.11.2026)
+### 10.6.0 (23.11.2026)
 
 #### SMTP Client/Server
-- Added SMTPUTF8 support
+- Implemented SMTPUTF8 support
+
+#### MIME/Mail_Message
+- Implemented DKIM signing and verification in the DkimService class.
+
+Many other improvements and fixes, many of which were required by the new lsMailServer project, 
+a fully operational .NET SMTP, POP3, and IMAP server. See the Git change log for additional details.
+https://github.com/ivx675/LumiSoft.Net/activity
+
+Feel free to try out the new lsMailServer:
+https://github.com/ivx675/lsMailServer
 
 ### 10.5.0 (10.11.2026)
 
