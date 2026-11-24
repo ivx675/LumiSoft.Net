@@ -79,6 +79,25 @@ namespace LumiSoft.Net.SMTP.Server
         }
 
         /// <summary>
+        /// Gets the domain portion of the mailbox.
+        /// </summary>
+        /// <remarks>
+        /// The domain is extracted from the <see cref="Mailbox"/> value by
+        /// taking the portion following the '@' character. For example,
+        /// the mailbox <c>user@example.com</c> returns <c>example.com</c>.
+        /// If the mailbox does not contain a domain part, an empty string
+        /// is returned.
+        /// </remarks>
+        public string Domain
+        {
+            get{
+                int index = m_Mailbox.LastIndexOf('@');
+
+                return index >= 0 ? m_Mailbox.Substring(index + 1) : string.Empty;
+            }
+        }
+
+        /// <summary>
         /// Gets the SIZE parameter value supplied in the MAIL FROM command.
         /// </summary>
         /// <value>
