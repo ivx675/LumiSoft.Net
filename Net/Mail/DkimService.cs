@@ -232,9 +232,11 @@ namespace LumiSoft.Net.Mail
         #region method VerifySignatureAsync
 
         /// <summary>
-        /// Verifies the topmost <c>DKIM-Signature</c> header in
+        /// Verifies the <c>DKIM-Signature</c> headers in
         /// <paramref name="signedMessageStream"/> against the public key
         /// retrieved from DNS and returns the verification result.
+        /// Per RFC 6376 §6.1, if multiple <c>DKIM-Signature</c> headers are present, verification succeeds
+        /// as soon as at least one signature passes cryptographic validation.
         /// </summary>
         /// <param name="signedMessageStream">
         /// The raw RFC 5322 signed email message stream. Must be readable and positioned at the start of the headers.
@@ -242,11 +244,12 @@ namespace LumiSoft.Net.Mail
         /// </param>
         /// <param name="allowSha1">
         /// When <see langword="true"/>, allows verifying legacy <c>a=rsa-sha1</c> signatures. Defaults to <see langword="false"/>
-        /// per RFC 8301, throwing <see cref="NotSupportedException"/> for <c>rsa-sha1</c>.
+        /// per RFC 8301.
         /// </param>
         /// <param name="cancellationToken">
         /// A token to monitor for cancellation requests.
-        /// </param><returns>
+        /// </param>
+        /// <returns>
         /// A task whose result contains the outcome of the DKIM verification operation.
         /// </returns>
         /// <exception cref="ArgumentNullException">
@@ -254,11 +257,6 @@ namespace LumiSoft.Net.Mail
         /// </exception>
         /// <exception cref="ArgumentException">
         /// Thrown if <paramref name="signedMessageStream"/> is not readable.
-        /// </exception>
-        /// <exception cref="NotSupportedException">
-        /// Thrown when the signature uses an unsupported algorithm, such as
-        /// <c>ed25519-sha256</c>, a disabled <c>rsa-sha1</c> signature, or an unknown
-        /// <c>a=</c> algorithm value.
         /// </exception>
         public static async Task<DkimVerificationResult> VerifySignatureAsync(
             Stream signedMessageStream,
@@ -274,127 +272,192 @@ namespace LumiSoft.Net.Mail
             try {
                 using var reader = new SmartStream(signedMessageStream, false);
 
-                // 1. Read raw headers and locate the topmost DKIM-Signature header.
+                // 1. Read raw headers and collect all DKIM-Signature headers (top-to-bottom per RFC 6376 §6.1).
                 List<HeaderField> headers = await ReadHeadersAsync(reader, cancellationToken).ConfigureAwait(false);
 
-                HeaderField? dkimHeader = headers.FirstOrDefault(
-                    h => string.Equals(h.NameLower, "dkim-signature", StringComparison.OrdinalIgnoreCase));
+                List<HeaderField> dkimHeaders = headers
+                    .Where(h => string.Equals(h.NameLower, "dkim-signature", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
 
-                if (dkimHeader == null || dkimHeader.RawValueBytes.Length == 0)
+                if (dkimHeaders.Count == 0)
                     return DkimVerificationResult.Fail("DKIM verification failed: no DKIM-Signature header found.");
 
-                string unfoldedDkimText = Encoding.Latin1.GetString(dkimHeader.RawValueBytes)
-                    .Replace("\r\n", " ")
-                    .Replace("\n", " ");
-                Dictionary<string, string> tags = ParseDkimTags(unfoldedDkimText);
+                long bodyStartPosition = signedMessageStream.CanSeek ? signedMessageStream.Position : -1;
+                var bodyHashCache = new Dictionary<(bool IsRelaxedBody, HashAlgorithmName Algorithm), string>();
+                var failureReasons = new List<string>(dkimHeaders.Count);
 
-                if (tags.TryGetValue("v", out string? version) && version.Trim() != "1")
-                    return DkimVerificationResult.Fail($"DKIM verification failed: unsupported DKIM version '{version}'.");
+                // 2. Evaluate each DKIM-Signature header; pass as soon as any signature succeeds (RFC 6376 §6.1).
+                for (int sigIndex = 0; sigIndex < dkimHeaders.Count; sigIndex++) {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    HeaderField dkimHeader = dkimHeaders[sigIndex];
 
-                // 2. Validate signing algorithm (a=).
-                string algorithm = tags.TryGetValue("a", out string? aVal) && !string.IsNullOrWhiteSpace(aVal)
-                    ? aVal.Trim().ToLowerInvariant()
-                    : "rsa-sha256";
+                    if (dkimHeader.RawValueBytes.Length == 0) {
+                        failureReasons.Add("empty DKIM-Signature header.");
+                        continue;
+                    }
 
-                HashAlgorithmName hashAlgorithm = algorithm switch {
-                    "rsa-sha256" => HashAlgorithmName.SHA256,
-                    "rsa-sha1" when allowSha1 => HashAlgorithmName.SHA1,
-                    "rsa-sha1" => throw new NotSupportedException("DKIM algorithm 'rsa-sha1' is deprecated (RFC 8301) and not enabled."),
-                    "ed25519-sha256" => throw new NotSupportedException("DKIM algorithm 'ed25519-sha256' is not supported yet."),
-                    _ => throw new NotSupportedException($"Unsupported DKIM signing algorithm '{algorithm}'.")
-                };
+                    string unfoldedDkimText = Encoding.Latin1.GetString(dkimHeader.RawValueBytes)
+                        .Replace("\r\n", " ")
+                        .Replace("\n", " ");
+                    Dictionary<string, string> tags = ParseDkimTags(unfoldedDkimText);
 
-                // 3. Validate mandatory DKIM tags (d=, s=, h=, bh=, b=).
-                if (!tags.TryGetValue("d", out string? domain) || string.IsNullOrWhiteSpace(domain))
-                    return DkimVerificationResult.Fail("DKIM verification failed: missing 'd=' domain tag.");
-                if (!tags.TryGetValue("s", out string? selector) || string.IsNullOrWhiteSpace(selector))
-                    return DkimVerificationResult.Fail("DKIM verification failed: missing 's=' selector tag.");
-                if (!tags.TryGetValue("h", out string? hVal) || string.IsNullOrWhiteSpace(hVal))
-                    return DkimVerificationResult.Fail("DKIM verification failed: missing 'h=' signed headers tag.");
-                if (!tags.TryGetValue("bh", out string? bhExpectedRaw) || string.IsNullOrWhiteSpace(bhExpectedRaw))
-                    return DkimVerificationResult.Fail("DKIM verification failed: missing 'bh=' body hash tag.");
-                if (!tags.TryGetValue("b", out string? bSignatureRaw) || string.IsNullOrWhiteSpace(bSignatureRaw))
-                    return DkimVerificationResult.Fail("DKIM verification failed: missing 'b=' signature tag.");
+                    if (tags.TryGetValue("v", out string? version) && version.Trim() != "1") {
+                        failureReasons.Add($"unsupported DKIM version '{version}'.");
+                        continue;
+                    }
 
-                domain = domain.Trim().ToLowerInvariant();
-                selector = selector.Trim().ToLowerInvariant();
+                    // Validate signing algorithm (a=). Skip unsupported algorithms so remaining signatures can still be checked.
+                    string algorithm = tags.TryGetValue("a", out string? aVal) && !string.IsNullOrWhiteSpace(aVal)
+                        ? aVal.Trim().ToLowerInvariant()
+                        : "rsa-sha256";
 
-                // Check optional expiration timestamp (x=).
-                if (tags.TryGetValue("x", out string? xVal) && long.TryParse(xVal.Trim(), out long expiresUnix)) {
-                    if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiresUnix)
-                        return DkimVerificationResult.Fail("DKIM verification failed: signature has expired (x=).");
-                }
-
-                // 4. Parse canonicalization mode (c=header/body, defaults to simple/simple per RFC 6376 §3.5).
-                (bool isRelaxedHeader, bool isRelaxedBody) = ParseCanonicalizationTag(
-                    tags.TryGetValue("c", out string? cVal) ? cVal : null);
-
-                // 5. Stream body bytes directly into IncrementalHash and verify bh= before DNS lookup.
-                string computedBhBase64 = await ComputeStreamingBodyHashBase64Async(
-                    reader,
-                    isRelaxedBody,
-                    hashAlgorithm,
-                    cancellationToken).ConfigureAwait(false);
-
-                string normalizedExpectedBh = RemoveAllWhitespace(bhExpectedRaw);
-                if (!string.Equals(computedBhBase64, normalizedExpectedBh, StringComparison.Ordinal))
-                    return DkimVerificationResult.Fail("DKIM verification failed: body hash (bh=) mismatch.");
-
-                // 6. Reconstruct exact DKIM-Signature header value with b= emptied (preserving raw folding/tags).
-                byte[] unsignedDkimRawBytes = StripBTagValueBytes(dkimHeader.RawValueBytes);
-
-                var signedHeaderNames = hVal
-                    .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Select(h => h.ToLowerInvariant())
-                    .ToList();
-
-                var candidateHeaders = headers
-                    .Where(h => !ReferenceEquals(h, dkimHeader))
-                    .ToList();
-
-                byte[] headerDigest = ComputeHeaderDigest(
-                    candidateHeaders,
-                    signedHeaderNames,
-                    unsignedDkimRawBytes,
-                    isRelaxedHeader,
-                    hashAlgorithm);
-
-                // 7. Resolve public key from DNS and verify RSA signature.
-                string? dnsRecordOrPem = 
-                    await ResolveDkimPublicKeyFromDnsAsync(selector, domain, cancellationToken).ConfigureAwait(false);
-
-                if (string.IsNullOrWhiteSpace(dnsRecordOrPem))
-                    return DkimVerificationResult.Fail($"DKIM verification failed: no public key found in DNS for '{selector}._domainkey.{domain}'.");
-
-                string publicKeyPem = ExtractPemFromDnsRecord(dnsRecordOrPem);
-                if (string.IsNullOrWhiteSpace(publicKeyPem))
-                    return DkimVerificationResult.Fail($"DKIM verification failed: DNS record for '{selector}._domainkey.{domain}' contained an empty or revoked 'p=' public key.");
-
-                try {
-                    byte[] claimedSignatureBytes = Convert.FromBase64String(RemoveAllWhitespace(bSignatureRaw));
-
-                    using RSA rsa = RSA.Create();
-                    rsa.ImportFromPem(publicKeyPem);
-
-                    bool isValid = rsa.VerifyHash(
-                        headerDigest,
-                        claimedSignatureBytes,
-                        hashAlgorithm,
-                        RSASignaturePadding.Pkcs1);
-
-                    if(isValid) {
-                        return DkimVerificationResult.Success();
+                    HashAlgorithmName hashAlgorithm;
+                    if (algorithm == "rsa-sha256") {
+                        hashAlgorithm = HashAlgorithmName.SHA256;
+                    }
+                    else if (algorithm == "rsa-sha1" && allowSha1) {
+                        hashAlgorithm = HashAlgorithmName.SHA1;
+                    }
+                    else if (algorithm == "rsa-sha1") {
+                        failureReasons.Add("DKIM algorithm 'rsa-sha1' is deprecated (RFC 8301) and not enabled.");
+                        continue;
                     }
                     else {
-                        return DkimVerificationResult.Fail("DKIM verification failed: RSA cryptographic signature mismatch.");
+                        failureReasons.Add($"unsupported DKIM signing algorithm '{algorithm}'.");
+                        continue;
+                    }
+
+                    // 3. Validate mandatory DKIM tags (d=, s=, h=, bh=, b=).
+                    if (!tags.TryGetValue("d", out string? domain) || string.IsNullOrWhiteSpace(domain)) {
+                        failureReasons.Add("missing 'd=' domain tag.");
+                        continue;
+                    }
+                    if (!tags.TryGetValue("s", out string? selector) || string.IsNullOrWhiteSpace(selector)) {
+                        failureReasons.Add("missing 's=' selector tag.");
+                        continue;
+                    }
+                    if (!tags.TryGetValue("h", out string? hVal) || string.IsNullOrWhiteSpace(hVal)) {
+                        failureReasons.Add("missing 'h=' signed headers tag.");
+                        continue;
+                    }
+                    if (!tags.TryGetValue("bh", out string? bhExpectedRaw) || string.IsNullOrWhiteSpace(bhExpectedRaw)) {
+                        failureReasons.Add("missing 'bh=' body hash tag.");
+                        continue;
+                    }
+                    if (!tags.TryGetValue("b", out string? bSignatureRaw) || string.IsNullOrWhiteSpace(bSignatureRaw)) {
+                        failureReasons.Add("missing 'b=' signature tag.");
+                        continue;
+                    }
+
+                    domain = domain.Trim().ToLowerInvariant();
+                    selector = selector.Trim().ToLowerInvariant();
+                    string sigLabel = $"[{selector}._domainkey.{domain}]";
+
+                    // Check optional expiration timestamp (x=).
+                    if (tags.TryGetValue("x", out string? xVal) && long.TryParse(xVal.Trim(), out long expiresUnix)) {
+                        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expiresUnix) {
+                            failureReasons.Add($"{sigLabel} signature has expired (x=).");
+                            continue;
+                        }
+                    }
+
+                    // 4. Parse canonicalization mode (c=header/body, defaults to simple/simple per RFC 6376 §3.5).
+                    (bool isRelaxedHeader, bool isRelaxedBody) = ParseCanonicalizationTag(
+                        tags.TryGetValue("c", out string? cVal) ? cVal : null);
+
+                    // 5. Stream body bytes directly into IncrementalHash (cached per canonicalization/hash pair) and verify bh= before DNS lookup.
+                    var cacheKey = (isRelaxedBody, hashAlgorithm);
+                    if (!bodyHashCache.TryGetValue(cacheKey, out string? computedBhBase64)) {
+                        if (bodyHashCache.Count == 0) {
+                            computedBhBase64 = await ComputeStreamingBodyHashBase64Async(
+                                reader,
+                                isRelaxedBody,
+                                hashAlgorithm,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        else {
+                            if (!signedMessageStream.CanSeek || bodyStartPosition < 0) {
+                                failureReasons.Add($"{sigLabel} stream is non-seekable for multiple body canonicalizations.");
+                                continue;
+                            }
+                            signedMessageStream.Position = bodyStartPosition;
+                            using var bodyReader = new SmartStream(signedMessageStream, false);
+                            computedBhBase64 = await ComputeStreamingBodyHashBase64Async(
+                                bodyReader,
+                                isRelaxedBody,
+                                hashAlgorithm,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        bodyHashCache[cacheKey] = computedBhBase64;
+                    }
+
+                    string normalizedExpectedBh = RemoveAllWhitespace(bhExpectedRaw);
+                    if (!string.Equals(computedBhBase64, normalizedExpectedBh, StringComparison.Ordinal)) {
+                        failureReasons.Add($"{sigLabel} body hash (bh=) mismatch.");
+                        continue;
+                    }
+
+                    // 6. Reconstruct exact DKIM-Signature header value with b= emptied (preserving raw folding/tags).
+                    byte[] unsignedDkimRawBytes = StripBTagValueBytes(dkimHeader.RawValueBytes);
+
+                    var signedHeaderNames = hVal
+                        .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(h => h.ToLowerInvariant())
+                        .ToList();
+
+                    var candidateHeaders = headers
+                        .Where(h => !ReferenceEquals(h, dkimHeader))
+                        .ToList();
+
+                    byte[] headerDigest = ComputeHeaderDigest(
+                        candidateHeaders,
+                        signedHeaderNames,
+                        unsignedDkimRawBytes,
+                        isRelaxedHeader,
+                        hashAlgorithm);
+
+                    // 7. Resolve public key from DNS and verify RSA signature.
+                    string? dnsRecordOrPem =
+                        await ResolveDkimPublicKeyFromDnsAsync(selector, domain, cancellationToken).ConfigureAwait(false);
+
+                    if (string.IsNullOrWhiteSpace(dnsRecordOrPem)) {
+                        failureReasons.Add($"{sigLabel} no public key found in DNS.");
+                        continue;
+                    }
+
+                    string publicKeyPem = ExtractPemFromDnsRecord(dnsRecordOrPem);
+                    if (string.IsNullOrWhiteSpace(publicKeyPem)) {
+                        failureReasons.Add($"{sigLabel} DNS record contained an empty or revoked 'p=' public key.");
+                        continue;
+                    }
+
+                    try {
+                        byte[] claimedSignatureBytes = Convert.FromBase64String(RemoveAllWhitespace(bSignatureRaw));
+
+                        using RSA rsa = RSA.Create();
+                        rsa.ImportFromPem(publicKeyPem);
+
+                        bool isValid = rsa.VerifyHash(
+                            headerDigest,
+                            claimedSignatureBytes,
+                            hashAlgorithm,
+                            RSASignaturePadding.Pkcs1);
+
+                        if (isValid) {
+                            return DkimVerificationResult.Success();
+                        }
+
+                        failureReasons.Add($"{sigLabel} RSA cryptographic signature mismatch.");
+                    }
+                    catch (FormatException) {
+                        failureReasons.Add($"{sigLabel} 'b=' signature is not valid Base64.");
+                    }
+                    catch (CryptographicException ex) {
+                        failureReasons.Add($"{sigLabel} cryptographic verification error ({ex.Message}).");
                     }
                 }
-                catch (FormatException) {
-                    return DkimVerificationResult.Fail("DKIM verification failed: 'b=' signature is not valid Base64.");
-                }
-                catch (CryptographicException ex) {
-                    return DkimVerificationResult.Fail($"DKIM verification failed: cryptographic verification error ({ex.Message}).");
-                }
+
+                return DkimVerificationResult.Fail($"DKIM verification failed: {string.Join(" | ", failureReasons)}");
             }
             finally {
                 if (originalPosition >= 0 && signedMessageStream.CanSeek) {
