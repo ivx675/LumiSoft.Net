@@ -1,449 +1,824 @@
-﻿using LumiSoft.Net.DNS;
-using LumiSoft.Net.DNS.Client;
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
+using LumiSoft.Net.DNS;
+using LumiSoft.Net.DNS.Client;
 
-namespace LumiSoft.Net.SMTP.Server 
+namespace LumiSoft.Net.SMTP.Server
 {
     /// <summary>
-    /// Represents an exception encountered during SMTP sender validation.
-    /// </summary>
-    public class SMTP_ValidatorException : Exception
-    {
-        /// <summary>
-        /// Gets a value indicating whether the failure is temporary (<c>true</c>, mapping to 4xx) 
-        /// or permanent (<c>false</c>, mapping to 5xx).
-        /// </summary>
-        public bool IsTemporary { get; }
-
-        /// <summary>
-        /// Gets the descriptive error text for the validation failure.
-        /// </summary>
-        public string ErrorText { get; }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="SMTP_ValidatorException"/> class with the specified error state and message.
-        /// </summary>
-        /// <param name="isTemporary">Indicates whether the error is a transient/temporary issue (4xx).</param>
-        /// <param name="errorText">The description of the validation failure.</param>
-        public SMTP_ValidatorException(bool isTemporary, string errorText) : base(errorText)
-        {
-            IsTemporary = isTemporary;
-            ErrorText = errorText;
-        }
-    }
-
-    /// <summary>
-    /// Provides strict SMTP sender validation via reverse DNS (PTR), SPF record evaluation, 
-    /// and MX/Domain IP fallback authorization.
+    /// Provides inbound SMTP sender validation via reverse DNS (PTR), SPF record evaluation,
+    /// and MX/Domain IP fallback authorization without exception-driven control flow.
     /// </summary>
     public static class SMTP_SenderValidator
     {
-        #region static method ValidateAsync
+        #region record Result
 
         /// <summary>
-        /// Validates the remote sender using a strict PTR and SPF check. 
-        /// For normal mail, validation targets the sender's domain; for null senders (&lt;&gt;), 
-        /// it falls back to evaluating against the client's EHLO hostname.
-        /// Throws an <see cref="SMTP_ValidatorException"/> upon failure.
+        /// Represents the outcome of an inbound SMTP sender validation check,
+        /// returning an <see cref="SMTP_ServerResponse"/> without throwing exceptions for policy failures.
         /// </summary>
-        /// <param name="remoteIP">The IP address of the connecting client.</param>
-        /// <param name="ehloName">The EHLO/HELO hostname provided by the client (used for null senders).</param>
-        /// <param name="mailFrom">The MAIL FROM address (can be empty <c>&lt;&gt;</c> for bounce messages).</param>
-        /// <returns>A task that represents the asynchronous validation operation.</returns>
-        /// <exception cref="ArgumentNullException">Thrown if <paramref name="remoteIP"/> is <c>null</c>.</exception>
-        /// <exception cref="ArgumentException">Thrown if <paramref name="ehloName"/> is <c>null</c> or empty.</exception>
-        /// <exception cref="SMTP_ValidatorException">Thrown if the sender fails PTR, SPF (including SoftFail <c>~all</c>), or MX authorization checks.</exception>
-        public static async Task ValidateAsync(IPAddress remoteIP, string ehloName, string mailFrom)
+        /// <param name="IsValid"><see langword="true"/> if the sender passed validation; otherwise <see langword="false"/>.</param>
+        /// <param name="MatchedRule">A diagnostic identifier for the rule or check that passed, or <see langword="null"/> if rejected.</param>
+        /// <param name="Response">The <see cref="SMTP_ServerResponse"/> to send to the SMTP client.</param>
+        public sealed record Result(
+            bool IsValid,
+            string? MatchedRule,
+            SMTP_ServerResponse Response)
         {
-            if(remoteIP == null){
-                throw new ArgumentNullException(nameof(remoteIP));
-            }
-            if(string.IsNullOrEmpty(ehloName)){
-                throw new ArgumentException("EHLO name cannot be null or empty.", nameof(ehloName));
-            }
-            if(string.IsNullOrEmpty(mailFrom)){
-                throw new ArgumentException("Mail From address cannot be null or empty.", nameof(mailFrom));
-            }
+            /// <summary>
+            /// Creates a passing <see cref="Result"/> with SMTP <c>250 2.1.0</c>.
+            /// </summary>
+            /// <param name="matchedRule">The validation check or mechanism that succeeded.</param>
+            /// <returns>A passing <see cref="Result"/>.</returns>
+            public static Result Pass(string matchedRule) => new(
+                true,
+                matchedRule,
+                new SMTP_ServerResponse(
+                    250,
+                    new SMTP_t_EnhancedStatusCode(2, 1, 0),
+                    "Sender validation PASSED successfully."));
 
-            string domainToValidate;
-            bool isNullSender = string.IsNullOrEmpty(mailFrom);
+            /// <summary>
+            /// Creates a temporary rejection <see cref="Result"/> with SMTP <c>451</c> and RFC 3463 enhanced status code.
+            /// </summary>
+            /// <param name="errorText">The diagnostic reason for the temporary failure.</param>
+            /// <param name="subject">The RFC 3463 subject code (defaults to <c>4</c> for network/routing).</param>
+            /// <param name="detail">The RFC 3463 detail code (defaults to <c>43</c> for <c>4.4.3</c>).</param>
+            /// <returns>A temporary failure <see cref="Result"/>.</returns>
+            public static Result TemporaryError(string errorText, int subject = 4, int detail = 43) => new(
+                false,
+                null,
+                new SMTP_ServerResponse(
+                    451,
+                    new SMTP_t_EnhancedStatusCode(4, subject, detail),
+                    $"Temporary Error (Try Again Later): {errorText}"));
 
-            if(isNullSender){
-                // For bounce messages (<>), evaluate SPF/PTR against the EHLO domain
-                domainToValidate = ehloName;
-            }
-            else{
-                // For normal messages, extract the domain from the address
-                int atIndex = mailFrom.IndexOf('@');
-                domainToValidate = mailFrom.Substring(atIndex + 1);
-            }
-
-            // ==========================================
-            // STEP 1: Strict PTR Check against EHLO
-            // ==========================================
-            await TryVerifyPtrAsync(remoteIP, ehloName);
-
-            // ==========================================
-            // STEP 2: Check SPF (or fallback to MX if none exists)
-            // ==========================================
-            bool spfRecordFound = await TryEvaluateSpfAsync(domainToValidate,remoteIP);
-
-            // If no SPF record was published at all, fallback to strict MX/Domain IP authorization
-            if(!spfRecordFound){
-                await VerifyMxOrDomainFallbackAsync(domainToValidate, remoteIP);
-            }
+            /// <summary>
+            /// Creates a permanent rejection <see cref="Result"/> with SMTP <c>550</c> and RFC 3463 enhanced status code.
+            /// </summary>
+            /// <param name="errorText">The diagnostic reason for the permanent rejection.</param>
+            /// <param name="subject">The RFC 3463 subject code (defaults to <c>7</c> for security/policy).</param>
+            /// <param name="detail">The RFC 3463 detail code (defaults to <c>1</c> for <c>5.7.1</c>).</param>
+            /// <returns>A permanent failure <see cref="Result"/>.</returns>
+            public static Result PermanentReject(string errorText, int subject = 7, int detail = 1) => new(
+                false,
+                null,
+                new SMTP_ServerResponse(
+                    550,
+                    new SMTP_t_EnhancedStatusCode(5, subject, detail),
+                    $"Permanent Rejection (Policy Violation): {errorText}"));
         }
 
         #endregion
 
-
-        #region static method TryVerifyPtrAsync
+        #region enum StepStatus
 
         /// <summary>
-        /// Performs a reverse DNS lookup on the remote IP and verifies that the resulting hostname matches the provided EHLO name.
+        /// Internal classification of an individual validation step's result.
+        /// </summary>
+        private enum StepStatus
+        {
+            Pass,
+            NotApplicable,
+            TemporaryFailure,
+            PermanentFailure
+        }
+
+        #endregion
+
+        #region recod StepOutcome
+
+        /// <summary>
+        /// Internal result wrapper produced by individual PTR, SPF, and MX/Domain fallback checks.
+        /// </summary>
+        private sealed record StepOutcome(
+            StepStatus Status,
+            string? MatchedRule,
+            Result? FailureResult)
+        {
+            public static StepOutcome Passed(string matchedRule) => new(StepStatus.Pass, matchedRule, null);
+            public static StepOutcome None() => new(StepStatus.NotApplicable, null, null);
+            public static StepOutcome TempFail(Result result) => new(StepStatus.TemporaryFailure, null, result);
+            public static StepOutcome PermFail(Result result) => new(StepStatus.PermanentFailure, null, result);
+        }
+
+        #endregion
+
+        private const int MaxSpfLookups = 10;
+
+        #region method ValidateAsync
+
+        /// <summary>
+        /// Validates the remote sender using a PTR check against <paramref name="ehloName"/> and an SPF check
+        /// (with MX/Domain IP fallback when no SPF record exists). For null senders (<c>&lt;&gt;</c>), validation
+        /// targets the client's EHLO hostname; for normal senders, it targets the <c>MAIL FROM</c> domain.
         /// </summary>
         /// <param name="remoteIP">The remote client IP address.</param>
-        /// <param name="ehloName">The EHLO name presented by the client.</param>
-        /// <returns>A task representing the asynchronous operation.</returns>
-        private static async Task TryVerifyPtrAsync(IPAddress remoteIP, string ehloName)
+        /// <param name="ehloName">The EHLO/HELO hostname presented by the client.</param>
+        /// <param name="mailFrom">The envelope <c>MAIL FROM</c> address (may be empty or <c>&lt;&gt;</c> for bounce messages).</param>
+        /// <returns>A <see cref="Result"/> containing the pass/fail state and <see cref="SMTP_ServerResponse"/>.</returns>
+        public static async Task<Result> ValidateAsync(
+            IPAddress? remoteIP,
+            string? ehloName,
+            string? mailFrom)
         {
-            try{
-                IPHostEntry ptrEntry = await Dns.GetHostEntryAsync(remoteIP);
-                bool ptrMatches = ptrEntry.HostName.Equals(ehloName, StringComparison.OrdinalIgnoreCase) ||
-                    (ptrEntry.Aliases.Any(a => a.Equals(ehloName, StringComparison.OrdinalIgnoreCase)));
+            if (remoteIP == null) {
+                return Result.PermanentReject(
+                    "Remote client IP address is missing.",
+                    subject: 7,
+                    detail: 1);
+            }
 
-                if(!ptrMatches){
-                    throw new SMTP_ValidatorException(false, $"Strict PTR check failed: Reverse DNS for '{remoteIP}' ('{ptrEntry.HostName}') does not match EHLO name '{ehloName}'.");
+            IPAddress normalizedIp = remoteIP.IsIPv4MappedToIPv6 ? remoteIP.MapToIPv4() : remoteIP;
+
+            StepOutcome ptrOutcome = await VerifyPtrAsync(normalizedIp, ehloName).ConfigureAwait(false);
+            if (ptrOutcome.Status == StepStatus.TemporaryFailure && ptrOutcome.FailureResult != null) {
+                return ptrOutcome.FailureResult;
+            }
+            if (ptrOutcome.Status == StepStatus.PermanentFailure && ptrOutcome.FailureResult != null) {
+                return ptrOutcome.FailureResult;
+            }
+
+            string normalizedMailbox = NormalizeMailbox(mailFrom);
+            string? targetDomain = ExtractValidationDomain(normalizedMailbox, ehloName);
+            if (string.IsNullOrWhiteSpace(targetDomain)) {
+                return Result.PermanentReject(
+                    "Unable to determine a valid sender or EHLO domain for validation.",
+                    subject: 7,
+                    detail: 1);
+            }
+
+            var visitedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            StepOutcome spfOutcome = await EvaluateSpfRecursiveAsync(targetDomain, normalizedIp, visitedDomains, lookupCount: 0)
+                .ConfigureAwait(false);
+
+            if (spfOutcome.Status == StepStatus.Pass && spfOutcome.MatchedRule != null) {
+                return Result.Pass(spfOutcome.MatchedRule);
+            }
+            if (spfOutcome.Status == StepStatus.TemporaryFailure && spfOutcome.FailureResult != null) {
+                return spfOutcome.FailureResult;
+            }
+            if (spfOutcome.Status == StepStatus.PermanentFailure && spfOutcome.FailureResult != null) {
+                return spfOutcome.FailureResult;
+            }
+
+            // No SPF record published for targetDomain: fall back to host A/AAAA and MX target IPs.
+            StepOutcome fallbackOutcome = await VerifyMxOrDomainFallbackAsync(targetDomain, normalizedIp)
+                .ConfigureAwait(false);
+
+            if (fallbackOutcome.Status == StepStatus.Pass && fallbackOutcome.MatchedRule != null) {
+                return Result.Pass(fallbackOutcome.MatchedRule);
+            }
+            if (fallbackOutcome.Status == StepStatus.TemporaryFailure && fallbackOutcome.FailureResult != null) {
+                return fallbackOutcome.FailureResult;
+            }
+
+            return fallbackOutcome.FailureResult ?? Result.PermanentReject(
+                $"Sender validation failed for domain '{targetDomain}' and IP '{normalizedIp}'.",
+                subject: 7,
+                detail: 1);
+        }
+
+        #endregion
+
+
+        #region method VerifyPtrAsync
+
+        /// <summary>
+        /// Verifies reverse DNS (PTR) for <paramref name="remoteIP"/> and checks that at least one resolved
+        /// PTR hostname matches <paramref name="ehloName"/>.
+        /// </summary>
+        private static async Task<StepOutcome> VerifyPtrAsync(IPAddress remoteIP, string? ehloName)
+        {
+            string cleanEhlo = (ehloName ?? string.Empty).Trim().TrimEnd('.');
+            if (string.IsNullOrWhiteSpace(cleanEhlo)) {
+                return StepOutcome.PermFail(Result.PermanentReject(
+                    "Missing EHLO/HELO hostname for PTR validation.",
+                    subject: 7,
+                    detail: 25));
+            }
+
+            try {
+                if (remoteIP.AddressFamily != AddressFamily.InterNetwork &&
+                    remoteIP.AddressFamily != AddressFamily.InterNetworkV6)
+                {
+                    return StepOutcome.PermFail(Result.PermanentReject(
+                        $"Unsupported IP address format '{remoteIP}' for PTR lookup.",
+                        subject: 7,
+                        detail: 25));
                 }
+
+                DNS_ServerResponse? ptrResponse = await DNS_Client.Static
+                    .QueryAsync(remoteIP.ToString(), DNS_RecordType.PTR, 1000)
+                    .ConfigureAwait(false);
+
+                if (ptrResponse == null) {
+                    return StepOutcome.TempFail(Result.TemporaryError(
+                        $"No DNS response received for PTR query on IP '{remoteIP}'."));
+                }
+
+                if (ptrResponse.ResponseCode == DNS_ResponseCode.ServerFailure) {
+                    return StepOutcome.TempFail(Result.TemporaryError(
+                        $"Temporary DNS SERVFAIL querying PTR for '{remoteIP}'."));
+                }
+
+                if (ptrResponse.ResponseCode == DNS_ResponseCode.NameError ||
+                    ptrResponse.ResponseCode != DNS_ResponseCode.NoError)
+                {
+                    return StepOutcome.PermFail(Result.PermanentReject(
+                        $"PTR lookup failed for IP '{remoteIP}' ({ptrResponse.ResponseCode}).",
+                        subject: 7,
+                        detail: 25));
+                }
+
+                List<string> ptrHosts = ptrResponse.Answers.PTR
+                    .Select(p => (p.DomainName ?? string.Empty).Trim().TrimEnd('.'))
+                    .Where(h => !string.IsNullOrWhiteSpace(h))
+                    .ToList();
+
+                if (ptrHosts.Any(h => string.Equals(h, cleanEhlo, StringComparison.OrdinalIgnoreCase))) {
+                    return StepOutcome.Passed($"ptr:{cleanEhlo}");
+                }
+
+                return StepOutcome.PermFail(Result.PermanentReject(
+                    $"PTR mismatch: IP '{remoteIP}' resolves to [{string.Join(", ", ptrHosts)}], expected '{cleanEhlo}'.",
+                    subject: 7,
+                    detail: 25));
             }
-            catch(SMTP_ValidatorException){
-                throw;
+            catch (Exception ex) when (IsTransientException(ex)) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS error during PTR lookup for '{remoteIP}': {ex.Message}"));
             }
-            catch{
-                // Transient DNS errors or missing PTR records are non-fatal; 
-                // allow flow to fall through to SPF / MX authorization checks.
+            catch (Exception ex) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"Unexpected error during PTR lookup for '{remoteIP}': {ex.Message}"));
             }
         }
 
         #endregion
 
-        #region static method TryEvaluateSpfAsync
+        #region method EvaluateSpfRecursiveAsync
 
         /// <summary>
-        /// Checks if an SPF record exists for the domain and evaluates it against the remote IP.
-        /// Returns true if an SPF record was found and evaluated (regardless of whether the IP passed or failed),
-        /// or false if no SPF record exists at all.
+        /// Evaluates SPF TXT records for <paramref name="domain"/> recursively, running independent
+        /// <c>include:</c>, <c>a:</c>, and <c>mx:</c> checks concurrently.
+        /// Returns <see cref="StepStatus.NotApplicable"/> when no SPF record exists for <paramref name="domain"/>.
         /// </summary>
-        private static async Task<bool> TryEvaluateSpfAsync(string domain, IPAddress remoteIP)
+        private static async Task<StepOutcome> EvaluateSpfRecursiveAsync(
+            string domain,
+            IPAddress remoteIP,
+            HashSet<string> visitedDomains,
+            int lookupCount,
+            bool failOnRevisit = true)
         {
-            return await EvaluateSpfRecursiveAsync(domain, remoteIP, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-        }
-
-        #endregion
-
-        #region static method EvaluateSpfRecursiveAsync
-
-        /// <summary>
-        /// Recursively evaluates SPF records, processing mechanisms and handling included domains or redirects.
-        /// Throws an <see cref="SMTP_ValidatorException"/> if an SPF record is found but the IP is explicitly unauthorized.
-        /// </summary>
-        /// <returns>A task returning <c>true</c> if an SPF record was found and evaluated; <c>false</c> if no SPF record exists.</returns>
-        private static async Task<bool> EvaluateSpfRecursiveAsync(string domain, IPAddress remoteIP, HashSet<string> visitedDomains)
-        {
-            if(!visitedDomains.Add(domain)){
-                return false;
+            string cleanDomain = domain.Trim().TrimEnd('.').ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(cleanDomain)) {
+                return StepOutcome.None();
             }
 
-            try{
-                DNS_ServerResponse? response = await DNS_Client.Static.QueryAsync(domain, DNS_RecordType.TXT, 1000);
-                if(response == null || response.ResponseCode != DNS_ResponseCode.NoError){
-                    if(response != null && response.ResponseCode == DNS_ResponseCode.ServerFailure){
-                        throw new SMTP_ValidatorException(true, $"Temporary DNS failure querying TXT records for '{domain}'.");
+            if (lookupCount >= MaxSpfLookups) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"SPF lookup limit ({MaxSpfLookups}) exceeded while evaluating '{cleanDomain}'."));
+            }
+
+            if (!visitedDomains.Add(cleanDomain)) {
+                return failOnRevisit
+                    ? StepOutcome.TempFail(Result.TemporaryError(
+                        $"SPF loop detected for domain '{cleanDomain}'."))
+                    : StepOutcome.None();
+            }
+
+            try {
+                DNS_ServerResponse? txtResponse = await DNS_Client.Static
+                    .QueryAsync(cleanDomain, DNS_RecordType.TXT, 1000)
+                    .ConfigureAwait(false);
+
+                if (txtResponse == null) {
+                    return StepOutcome.TempFail(Result.TemporaryError(
+                        $"No DNS response received for SPF TXT query on '{cleanDomain}'."));
+                }
+
+                if (txtResponse.ResponseCode == DNS_ResponseCode.ServerFailure) {
+                    return StepOutcome.TempFail(Result.TemporaryError(
+                        $"Temporary DNS SERVFAIL querying SPF TXT for '{cleanDomain}'."));
+                }
+
+                if (txtResponse.ResponseCode == DNS_ResponseCode.NameError) {
+                    return StepOutcome.None();
+                }
+
+                if (txtResponse.ResponseCode != DNS_ResponseCode.NoError) {
+                    return StepOutcome.TempFail(Result.TemporaryError(
+                        $"Unexpected DNS response code '{txtResponse.ResponseCode}' querying SPF for '{cleanDomain}'."));
+                }
+
+                var spfRecords = new List<string>();
+                foreach (var txtAnswer in txtResponse.Answers.TXT) {
+                    string txtValue = txtAnswer.Text;
+                    if (txtValue.StartsWith("v=spf1", StringComparison.OrdinalIgnoreCase) &&
+                        (txtValue.Length == 6 || char.IsWhiteSpace(txtValue[6])))
+                    {
+                        spfRecords.Add(txtValue);
                     }
-                    return false; // No SPF record found
                 }
 
-                
-                string? spfRecord = null;
-                foreach(var answer in response.Answers.TXT){
-                    if(answer.Text.StartsWith("v=spf1", StringComparison.OrdinalIgnoreCase)){
-                        spfRecord = answer.Text;
-
-                        break;
-                    }
+                if (spfRecords.Count == 0) {
+                    return StepOutcome.None();
                 }
 
-                if(string.IsNullOrEmpty(spfRecord)){
-                    return false; // No SPF record found
+                if (spfRecords.Count > 1) {
+                    return StepOutcome.PermFail(Result.PermanentReject(
+                        $"Multiple SPF records published for '{cleanDomain}'.",
+                        subject: 7,
+                        detail: 23));
                 }
 
+                string spfRecord = spfRecords[0];
                 string[] parts = spfRecord.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                StepOutcome? explicitAllOutcome = null;
+                StepOutcome? deferredPermFail = null;
 
-                foreach(var part in parts.Skip(1)){
-                    if(part.StartsWith("redirect=", StringComparison.OrdinalIgnoreCase)){
-                        string redirectDomain = part.Substring(9);
-                        // A redirect record exists, evaluate the target domain's SPF
-                        return await EvaluateSpfRecursiveAsync(redirectDomain, remoteIP, visitedDomains);
+                var includedDomains = new List<string>();
+                var aTargetDomains = new List<string>();
+                var mxTargetDomains = new List<string>();
+                bool hasRedirect = false;
+                string? redirectDomain = null;
+
+                foreach (string rawPart in parts.Skip(1)) {
+                    string part = StripQualifier(rawPart, out char qualifier);
+
+                    if (part.StartsWith("redirect=", StringComparison.OrdinalIgnoreCase)) {
+                        string candidateRedirect = part.Substring(9).Trim().TrimEnd('.');
+                        if (!string.IsNullOrEmpty(candidateRedirect)) {
+                            hasRedirect = true;
+                            redirectDomain = candidateRedirect;
+                        }
                     }
-                    else if (part.StartsWith("ip4:", StringComparison.OrdinalIgnoreCase)){
-                        if (IpMatchesCidr(remoteIP, part.Substring(4))) return true;
+                    else if (part.StartsWith("ip4:", StringComparison.OrdinalIgnoreCase)) {
+                        string cidrSpec = part.Substring(4);
+                        if (IpMatchesCidr(remoteIP, cidrSpec)) {
+                            return EvaluateQualifierMatch(qualifier, $"spf:ip4:{cidrSpec}@{cleanDomain}", cleanDomain, remoteIP);
+                        }
                     }
-                    else if (part.StartsWith("ip6:", StringComparison.OrdinalIgnoreCase)){
-                        if (IpMatchesCidr(remoteIP, part.Substring(4))) return true;
+                    else if (part.StartsWith("ip6:", StringComparison.OrdinalIgnoreCase)) {
+                        string cidrSpec = part.Substring(4);
+                        if (IpMatchesCidr(remoteIP, cidrSpec)) {
+                            return EvaluateQualifierMatch(qualifier, $"spf:ip6:{cidrSpec}@{cleanDomain}", cleanDomain, remoteIP);
+                        }
                     }
-                    else if (part.StartsWith("include:", StringComparison.OrdinalIgnoreCase)){
-                        string includedDomain = part.Substring(8);
-                        if (await EvaluateSpfRecursiveAsync(includedDomain, remoteIP, visitedDomains)) return true;
+                    else if (part.StartsWith("include:", StringComparison.OrdinalIgnoreCase)) {
+                        string includedDomain = part.Substring(8).Trim().TrimEnd('.');
+                        if (!string.IsNullOrEmpty(includedDomain)) {
+                            includedDomains.Add(includedDomain);
+                        }
                     }
-                    else if (part.Equals("a", StringComparison.OrdinalIgnoreCase) || part.StartsWith("a:", StringComparison.OrdinalIgnoreCase)){
-                        string targetDomain = part.StartsWith("a:") ? part.Substring(2) : domain;
-                        if (await DomainHasIpAsync(targetDomain, remoteIP)) return true;
+                    else if (part.Equals("a", StringComparison.OrdinalIgnoreCase) ||
+                             part.StartsWith("a:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string targetDomain = (part.StartsWith("a:", StringComparison.OrdinalIgnoreCase)
+                            ? part.Substring(2)
+                            : cleanDomain).Trim().TrimEnd('.');
+                        if (!string.IsNullOrEmpty(targetDomain)) {
+                            aTargetDomains.Add(targetDomain);
+                        }
                     }
-                    else if (part.Equals("mx", StringComparison.OrdinalIgnoreCase) || part.StartsWith("mx:", StringComparison.OrdinalIgnoreCase)){
-                        string targetDomain = part.StartsWith("mx:") ? part.Substring(3) : domain;
-                        if (await MxHasIpAsync(targetDomain, remoteIP)) return true;
+                    else if (part.Equals("mx", StringComparison.OrdinalIgnoreCase) ||
+                             part.StartsWith("mx:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string targetDomain = (part.StartsWith("mx:", StringComparison.OrdinalIgnoreCase)
+                            ? part.Substring(3)
+                            : cleanDomain).Trim().TrimEnd('.');
+                        if (!string.IsNullOrEmpty(targetDomain)) {
+                            mxTargetDomains.Add(targetDomain);
+                        }
                     }
-                    else if (part.StartsWith("-all", StringComparison.OrdinalIgnoreCase)){
-                        // SPF record exists, but IP matched hard fail (-all)
-                        throw new SMTP_ValidatorException(false, $"SPF policy violation: IP '{remoteIP}' is not authorized by the SPF record for '{domain}'.");
+                    else if (part.Equals("all", StringComparison.OrdinalIgnoreCase)) {
+                        if (qualifier == '+') {
+                            return StepOutcome.Passed($"spf:+all@{cleanDomain}");
+                        }
+                        if (qualifier == '-') {
+                            explicitAllOutcome ??= StepOutcome.PermFail(Result.PermanentReject(
+                                $"SPF policy violation: IP '{remoteIP}' is rejected by '-all' on '{cleanDomain}'.",
+                                subject: 7,
+                                detail: 23));
+                        }
+                        // ~all or ?all: do not return early before checking includes/a/mx/redirect.
                     }
                 }
 
-                // If we reached here, an SPF record exists, but the IP didn't match any positive rule 
-                // (e.g., ~all, ?all, or all). Since an SPF record *was* found, reject immediately 
-                // with a proper SPF failure instead of falling back to MX!
-                throw new SMTP_ValidatorException(false, $"SPF policy violation: IP '{remoteIP}' is not authorized by the SPF record for '{domain}'.");
+                int nextLookupCount = lookupCount + 1;
+
+                if (includedDomains.Count > 0 || aTargetDomains.Count > 0 || mxTargetDomains.Count > 0) {
+                    var parallelTasks = new List<Task<StepOutcome>>(
+                        includedDomains.Count + aTargetDomains.Count + mxTargetDomains.Count);
+
+                    foreach (string incDomain in includedDomains) {
+                        parallelTasks.Add(EvaluateSpfRecursiveAsync(
+                            incDomain,
+                            remoteIP,
+                            new HashSet<string>(
+                                visitedDomains,
+                                StringComparer.OrdinalIgnoreCase),
+                            nextLookupCount,
+                            failOnRevisit: false));
+                    }
+
+                    foreach (string aDomain in aTargetDomains) {
+                        parallelTasks.Add(DomainHasIpAsync(aDomain, remoteIP));
+                    }
+
+                    foreach (string mxDomain in mxTargetDomains) {
+                        parallelTasks.Add(MxHasIpAsync(mxDomain, remoteIP));
+                    }
+
+                    StepOutcome[] parallelOutcomes = await Task.WhenAll(parallelTasks).ConfigureAwait(false);
+
+                    foreach (StepOutcome outcome in parallelOutcomes) {
+                        if (outcome.Status == StepStatus.Pass || outcome.Status == StepStatus.TemporaryFailure) {
+                            return outcome;
+                        }
+                        if (outcome.Status == StepStatus.PermanentFailure && outcome.FailureResult != null) {
+                            deferredPermFail ??= outcome;
+                        }
+                    }
+                }
+
+                if (hasRedirect && !string.IsNullOrEmpty(redirectDomain)) {
+                    StepOutcome redirectOutcome = await EvaluateSpfRecursiveAsync(
+                        redirectDomain,
+                        remoteIP,
+                        new HashSet<string>(
+                            visitedDomains,
+                            StringComparer.OrdinalIgnoreCase),
+                        nextLookupCount,
+                        failOnRevisit: true).ConfigureAwait(false);
+
+                    if (redirectOutcome.Status == StepStatus.Pass || redirectOutcome.Status == StepStatus.TemporaryFailure) {
+                        return redirectOutcome;
+                    }
+                    if (redirectOutcome.Status == StepStatus.PermanentFailure && redirectOutcome.FailureResult != null) {
+                        deferredPermFail ??= redirectOutcome;
+                    }
+                }
+
+                return deferredPermFail ?? explicitAllOutcome ?? StepOutcome.PermFail(Result.PermanentReject(
+                    $"SPF policy violation: IP '{remoteIP}' is not authorized by the SPF record for '{cleanDomain}'.",
+                    subject: 7,
+                    detail: 23));
             }
-            catch (SMTP_ValidatorException){
-                throw; // Preserve original validation exception (temporary or permanent)
+            catch (Exception ex) when (IsTransientException(ex)) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS timeout/error during SPF evaluation for '{cleanDomain}': {ex.Message}"));
             }
-            catch (Exception ex) when (IsTransientException(ex)){
-                throw new SMTP_ValidatorException(true, $"Temporary DNS timeout/error during SPF evaluation for '{domain}': {ex.Message}");
-            }
-            catch (Exception ex){
-                // If it's a generic unhandled exception during lookup, treat as a temporary DNS error
-                throw new SMTP_ValidatorException(true, $"DNS processing error for SPF records on '{domain}': {ex.Message}");
+            catch (Exception ex) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"DNS processing error for SPF records on '{cleanDomain}': {ex.Message}"));
             }
         }
 
         #endregion
 
-        #region static method IpMatchesCidr
+        #region method EvaluateQualifierMatch
 
-        /// <summary>
-        /// Determines whether an IP address matches a given CIDR block notation (IPv4 or IPv6).
-        /// </summary>
-        /// <param name="address">The IP address to check.</param>
-        /// <param name="cidrBlock">The CIDR block string (e.g., "192.168.1.0/24").</param>
-        /// <returns><c>true</c> if the IP address matches the CIDR block; otherwise, <c>false</c>.</returns>
-        private static bool IpMatchesCidr(IPAddress address, string cidrBlock)
+        private static StepOutcome EvaluateQualifierMatch(char qualifier, string ruleName, string domain, IPAddress remoteIP)
         {
-            try{
-                var parts = cidrBlock.Split('/');
-                string ipPart = parts[0];
-                int prefixLength = -1;
+            return qualifier switch
+            {
+                '-' => StepOutcome.PermFail(Result.PermanentReject(
+                    $"SPF policy violation: IP '{remoteIP}' matched fail mechanism '{ruleName}' on '{domain}'.",
+                    subject: 7,
+                    detail: 23)),
+                _ => StepOutcome.Passed(ruleName)
+            };
+        }
 
-                if(parts.Length > 1 && int.TryParse(parts[1], out int parsedPrefix)){
-                    prefixLength = parsedPrefix;
-                }
+        #endregion
 
-                if(!IPAddress.TryParse(ipPart, out IPAddress? networkIp)){
-                    return false;
-                }
+        #region method StripQualifier
 
-                if(address.AddressFamily != networkIp.AddressFamily){
-                    return false;
-                }
-
-                byte[] addressBytes = address.GetAddressBytes();
-                byte[] networkBytes = networkIp.GetAddressBytes();
-
-                if (prefixLength == -1){
-                    return address.Equals(networkIp);
-                }
-
-                int maxPrefix = address.AddressFamily == AddressFamily.InterNetwork ? 32 : 128; // Note: AddressFamily.InterNetwork context
-                if (prefixLength < 0 || prefixLength > maxPrefix){
-                    return false;
-                }
-
-                int bytesToCheck = prefixLength / 8;
-                int remainingBits = prefixLength % 8;
-
-                for(int i = 0; i < bytesToCheck; i++){
-                    if(addressBytes[i] != networkBytes[i]){
-                        return false;
-                    }
-                }
-
-                if(remainingBits > 0 && bytesToCheck < addressBytes.Length){
-                    int mask = (byte)(0xFF << (8 - remainingBits));
-                    if ((addressBytes[bytesToCheck] & mask) != (networkBytes[bytesToCheck] & mask)){
-                        return false;
-                    }
-                }
-
-                return true;
+        private static string StripQualifier(string token, out char qualifier)
+        {
+            if (token.Length > 0 && (token[0] == '+' || token[0] == '-' || token[0] == '~' || token[0] == '?')) {
+                qualifier = token[0];
+                return token.Substring(1);
             }
-            catch{
+
+            qualifier = '+';
+            return token;
+        }
+
+        #endregion
+
+        #region method IpMatchesCidr
+
+        private static bool IpMatchesCidr(IPAddress remoteIP, string cidrSpec)
+        {
+            if (string.IsNullOrWhiteSpace(cidrSpec)) {
                 return false;
             }
-        }
 
-        #endregion
+            string trimmed = cidrSpec.Trim();
+            int slashIndex = trimmed.IndexOf('/');
+            string ipPart = slashIndex >= 0 ? trimmed.Substring(0, slashIndex) : trimmed;
 
-        #region static method DomainHasIpAsync
-
-        /// <summary>
-        /// Resolves a domain's host addresses and checks if any match the specified remote IP address.
-        /// Properly differentiates between transient DNS errors (throwing temporary exceptions) and permanent failures.
-        /// </summary>
-        /// <param name="domain">The target domain to resolve.</param>
-        /// <param name="remoteIP">The remote IP address to verify against domain IPs.</param>
-        /// <returns>A task returning <c>true</c> if a match is found; otherwise, <c>false</c>.</returns>
-        private static async Task<bool> DomainHasIpAsync(string domain, IPAddress remoteIP)
-        {
-            try{
-                IPAddress[] ips = await Dns.GetHostAddressesAsync(domain);
-                return ips != null && ips.Any(ip => ip.Equals(remoteIP));
-            }
-            catch (Exception ex) when (IsTransientException(ex)){
-                throw new SMTP_ValidatorException(true, $"Temporary DNS error resolving host addresses for '{domain}': {ex.Message}");
-            }
-            catch{
-                // Permanent resolution failure (e.g., NXDOMAIN) -> domain has no matching IP
+            if (!IPAddress.TryParse(ipPart, out IPAddress? networkAddress) || networkAddress == null) {
                 return false;
             }
-        }
 
-        #endregion
+            if (networkAddress.IsIPv4MappedToIPv6) {
+                networkAddress = networkAddress.MapToIPv4();
+            }
 
-        #region static method MxHasIpAsync
+            if (remoteIP.AddressFamily != networkAddress.AddressFamily) {
+                return false;
+            }
 
-        /// <summary>
-        /// Queries a domain's MX records, resolves their target host addresses, and checks if any match the specified remote IP address.
-        /// </summary>
-        /// <param name="domain">The target domain whose MX records should be queried.</param>
-        /// <param name="remoteIP">The remote IP address to verify.</param>
-        /// <returns>A task returning <c>true</c> if a match is found; otherwise, <c>false</c>.</returns>
-        private static async Task<bool> MxHasIpAsync(string domain, IPAddress remoteIP)
-        {
-            try{
-                DNS_ServerResponse? mxResponse = await DNS_Client.Static.QueryAsync(domain, DNS_RecordType.MX, 1000);
-                if(mxResponse == null || mxResponse.ResponseCode != DNS_ResponseCode.NoError){
-                    if(mxResponse != null && mxResponse.ResponseCode == DNS_ResponseCode.ServerFailure){
-                        throw new SMTP_ValidatorException(true, $"Temporary DNS failure querying MX records for '{domain}'.");
-                    }
+            byte[] ipBytes = remoteIP.GetAddressBytes();
+            byte[] netBytes = networkAddress.GetAddressBytes();
+            int maxPrefix = ipBytes.Length * 8;
+
+            int prefixLength = maxPrefix;
+            if (slashIndex >= 0) {
+                string prefixStr = trimmed.Substring(slashIndex + 1);
+                if (!int.TryParse(prefixStr, out prefixLength) || prefixLength < 0 || prefixLength > maxPrefix) {
                     return false;
                 }
-                
-                foreach (var mx in mxResponse.Answers.MX){
-                    if(!string.IsNullOrEmpty(mx.Host)){
-                        try{
-                            IPAddress[] mxIps = await Dns.GetHostAddressesAsync(mx.Host);
-                            if (mxIps != null && mxIps.Any(ip => ip.Equals(remoteIP))) return true;
-                        }
-                        catch (Exception ex) when (IsTransientException(ex)){
-                            throw new SMTP_ValidatorException(true, $"Temporary DNS error resolving MX host '{mx.Host}': {ex.Message}");
-                        }
-                        catch { }
-                    }
+            }
+
+            int fullBytes = prefixLength / 8;
+            int remBits = prefixLength % 8;
+
+            for (int i = 0; i < fullBytes; i++) {
+                if (ipBytes[i] != netBytes[i]) {
+                    return false;
                 }
             }
-            catch (SMTP_ValidatorException){
-                throw;
-            }
-            catch (Exception ex) when (IsTransientException(ex)){
-                throw new SMTP_ValidatorException(true, $"Temporary DNS timeout/error querying MX records for '{domain}': {ex.Message}");
-            }
-            catch { }
 
-            return false;
+            if (remBits > 0 && fullBytes < ipBytes.Length) {
+                int mask = (0xFF << (8 - remBits)) & 0xFF;
+                if ((ipBytes[fullBytes] & mask) != (netBytes[fullBytes] & mask)) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         #endregion
 
-        #region static method VerifyMxOrDomainFallbackAsync
+        #region method ExtractValidationDomain
+
+        private static string? ExtractValidationDomain(string normalizedMailbox, string? ehloName)
+        {
+            if (!string.IsNullOrEmpty(normalizedMailbox)) {
+                int atIndex = normalizedMailbox.LastIndexOf('@');
+                if (atIndex > 0 && atIndex < normalizedMailbox.Length - 1) {
+                    return normalizedMailbox.Substring(atIndex + 1).Trim().TrimEnd('.');
+                }
+            }
+
+            string cleanEhlo = (ehloName ?? string.Empty).Trim().TrimEnd('.');
+            return string.IsNullOrWhiteSpace(cleanEhlo) ? null : cleanEhlo;
+        }
+
+        #endregion
+
+        #region method DomainHasIpAsync
 
         /// <summary>
-        /// Validates fallback authorization when no SPF record is present, checking both the domain's own IP addresses 
-        /// and its MX record host IP addresses against the remote client IP.
+        /// Resolves a domain's host A/AAAA addresses via <see cref="DNS_Client.Static"/> and checks whether any match <paramref name="remoteIP"/>.
         /// </summary>
-        /// <param name="senderDomain">The sender's domain extracted from MAIL FROM.</param>
-        /// <param name="remoteIP">The remote client IP address.</param>
-        /// <returns>A task representing the asynchronous operation.</returns>
-        private static async Task VerifyMxOrDomainFallbackAsync(string senderDomain, IPAddress remoteIP)
+        private static async Task<StepOutcome> DomainHasIpAsync(string domain, IPAddress remoteIP)
+        {
+            try {
+                IPAddress[] ips = await DNS_Client.Static.GetHostAddressesAsync(domain).ConfigureAwait(false);
+                if (ips != null && ips.Any(ip =>
+                    {
+                        IPAddress candidate = ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip;
+                        return candidate.Equals(remoteIP);
+                    }))
+                {
+                    return StepOutcome.Passed($"spf:a:{domain}");
+                }
+
+                return StepOutcome.None();
+            }
+            catch (Exception ex) when (IsTransientException(ex)) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS error resolving host addresses for '{domain}': {ex.Message}"));
+            }
+            catch {
+                return StepOutcome.None();
+            }
+        }
+
+        #endregion
+
+        #region method MxHasIpAsync
+
+        /// <summary>
+        /// Queries a domain's MX records, resolves their target host addresses via <see cref="DNS_Client.Static"/>,
+        /// and checks whether any match <paramref name="remoteIP"/>.
+        /// </summary>
+        private static async Task<StepOutcome> MxHasIpAsync(string domain, IPAddress remoteIP)
+        {
+            try {
+                DNS_ServerResponse? mxResponse = await DNS_Client.Static
+                    .QueryAsync(domain, DNS_RecordType.MX, 1000)
+                    .ConfigureAwait(false);
+
+                if (mxResponse == null || mxResponse.ResponseCode != DNS_ResponseCode.NoError) {
+                    if (mxResponse != null && mxResponse.ResponseCode == DNS_ResponseCode.ServerFailure) {
+                        return StepOutcome.TempFail(Result.TemporaryError(
+                            $"Temporary DNS failure querying MX records for '{domain}'."));
+                    }
+
+                    return StepOutcome.None();
+                }
+
+                List<string> mxHosts = mxResponse.Answers.MX
+                    .Select(mx => (mx.Host ?? string.Empty).Trim().TrimEnd('.'))
+                    .Where(host => !string.IsNullOrEmpty(host))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (mxHosts.Count > 0) {
+                    Task<StepOutcome>[] hostTasks = mxHosts
+                        .Select(host => DomainHasIpAsync(host, remoteIP))
+                        .ToArray();
+
+                    StepOutcome[] hostOutcomes = await Task.WhenAll(hostTasks).ConfigureAwait(false);
+
+                    foreach (StepOutcome hostOutcome in hostOutcomes) {
+                        if (hostOutcome.Status == StepStatus.TemporaryFailure) {
+                            return hostOutcome;
+                        }
+                        if (hostOutcome.Status == StepStatus.Pass) {
+                            return StepOutcome.Passed($"spf:mx:{hostOutcome.MatchedRule?.Split(':').LastOrDefault() ?? domain}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (IsTransientException(ex)) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS timeout/error querying MX records for '{domain}': {ex.Message}"));
+            }
+            catch {
+                // Non-transient DNS failure -> no matching MX IP.
+            }
+
+            return StepOutcome.None();
+        }
+
+        #endregion
+
+        #region method VerifyMxOrDomainFallbackAsync
+
+        /// <summary>
+        /// Validates fallback authorization when no SPF record is published, checking both the domain's own
+        /// host IP addresses and its MX record host IP addresses via <see cref="DNS_Client.Static"/> against <paramref name="remoteIP"/>.
+        /// </summary>
+        private static async Task<StepOutcome> VerifyMxOrDomainFallbackAsync(string senderDomain, IPAddress remoteIP)
         {
             var authorizedIPs = new HashSet<IPAddress>();
             bool dnsQuerySucceeded = false;
 
-            // 1. Resolve domain's own IP addresses
-            try{
-                IPAddress[] domainIps = await Dns.GetHostAddressesAsync(senderDomain);
-                foreach(var ip in domainIps){
-                    authorizedIPs.Add(ip);
+            Task<(IPAddress[]? Ips, StepOutcome? TempError)> domainTask = ResolveHostAddressesSafeAsync(senderDomain);
+            Task<(DNS_ServerResponse? Response, StepOutcome? TempError)> mxQueryTask = QueryMxRecordsSafeAsync(senderDomain);
+
+            await Task.WhenAll(domainTask, mxQueryTask).ConfigureAwait(false);
+
+            var domainResult = await domainTask.ConfigureAwait(false);
+            if (domainResult.TempError != null) {
+                return domainResult.TempError;
+            }
+            if (domainResult.Ips != null && domainResult.Ips.Length > 0) {
+                foreach (IPAddress ip in domainResult.Ips) {
+                    authorizedIPs.Add(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip);
                 }
                 dnsQuerySucceeded = true;
             }
-            catch (Exception ex) when (IsTransientException(ex)){
-                throw new SMTP_ValidatorException(true, $"Temporary DNS error resolving host addresses for '{senderDomain}': {ex.Message}");
-            }
-            catch { }
 
-            // 2. Resolve domain's MX records and their IP addresses
-            try{
-                DNS_ServerResponse? mxResponse = await DNS_Client.Static.QueryAsync(senderDomain, DNS_RecordType.MX, 1000);
-                if(mxResponse != null && mxResponse.ResponseCode == DNS_ResponseCode.NoError){
-                    foreach(var mx in mxResponse.Answers.MX){
-                        if(!string.IsNullOrEmpty(mx.Host)){
-                            try{
-                                IPAddress[] mxIps = await Dns.GetHostAddressesAsync(mx.Host);
-                                foreach (var ip in mxIps){
-                                    authorizedIPs.Add(ip);
-                                }
+            var mxResult = await mxQueryTask.ConfigureAwait(false);
+            if (mxResult.TempError != null) {
+                return mxResult.TempError;
+            }
+            if (mxResult.Response != null && mxResult.Response.ResponseCode == DNS_ResponseCode.NoError) {
+                List<string> mxHosts = mxResult.Response.Answers.MX
+                    .Select(mx => (mx.Host ?? string.Empty).Trim().TrimEnd('.'))
+                    .Where(host => !string.IsNullOrEmpty(host))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (mxHosts.Count > 0) {
+                    Task<(IPAddress[]? Ips, StepOutcome? TempError)>[] mxHostTasks = mxHosts
+                        .Select(host => ResolveHostAddressesSafeAsync(host))
+                        .ToArray();
+
+                    (IPAddress[]? Ips, StepOutcome? TempError)[] mxHostResults =
+                        await Task.WhenAll(mxHostTasks).ConfigureAwait(false);
+
+                    foreach (var hostRes in mxHostResults) {
+                        if (hostRes.TempError != null) {
+                            return hostRes.TempError;
+                        }
+                        if (hostRes.Ips != null) {
+                            foreach (IPAddress ip in hostRes.Ips) {
+                                authorizedIPs.Add(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip);
                             }
-                            catch { }
                         }
                     }
-                    dnsQuerySucceeded = true;
                 }
-                else if (mxResponse != null && mxResponse.ResponseCode == DNS_ResponseCode.ServerFailure){
-                    throw new SMTP_ValidatorException(true, $"Temporary DNS failure querying MX records for '{senderDomain}'.");
-                }
-            }
-            catch (SMTP_ValidatorException){
-                throw;
-            }
-            catch (Exception ex) when (IsTransientException(ex)){
-                throw new SMTP_ValidatorException(true, $"Temporary DNS timeout/error querying MX records for '{senderDomain}': {ex.Message}");
-            }
-            catch { }
 
-            // 3. Verify if remoteIP matches any authorized IP
-            bool isAuthorized = authorizedIPs.Any(ip => ip.Equals(remoteIP));
-            if(!isAuthorized){
-                bool isTemp = !dnsQuerySucceeded;
-                string error = isTemp 
-                    ? $"Temporary DNS failure: Unable to resolve host or MX records for '{senderDomain}'."
-                    : $"Sender validation failed: No valid SPF record found, and remote IP '{remoteIP}' is not listed in domain host or MX records for '{senderDomain}'.";
-            
-                throw new SMTP_ValidatorException(isTemp, error);
+                dnsQuerySucceeded = true;
+            }
+
+            if (authorizedIPs.Any(ip => ip.Equals(remoteIP))) {
+                return StepOutcome.Passed($"fallback:mx-or-a:{senderDomain}");
+            }
+
+            if (!dnsQuerySucceeded) {
+                return StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS failure: Unable to resolve host or MX records for '{senderDomain}'."));
+            }
+
+            return StepOutcome.PermFail(Result.PermanentReject(
+                $"Sender validation failed: No valid SPF record found, and remote IP '{remoteIP}' is not listed in domain host or MX records for '{senderDomain}'.",
+                subject: 7,
+                detail: 1));
+        }
+
+        #endregion
+
+        #region method ResolveHostAddressesSafeAsync
+
+        private static async Task<(IPAddress[]? Ips, StepOutcome? TempError)> ResolveHostAddressesSafeAsync(string targetDomain)
+        {
+            try {
+                IPAddress[] ips = await DNS_Client.Static.GetHostAddressesAsync(targetDomain).ConfigureAwait(false);
+                return (ips, null);
+            }
+            catch (Exception ex) when (IsTransientException(ex)) {
+                return (null, StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS error resolving host addresses for '{targetDomain}': {ex.Message}")));
+            }
+            catch {
+                return (null, null);
             }
         }
 
         #endregion
 
-        #region static method IsTransientException
+        #region method QueryMxRecordsSafeAsync
 
-        /// <summary>
-        /// Determines whether an exception represents a transient network or timeout error.
-        /// </summary>
-        /// <param name="ex">The exception to evaluate.</param>
-        /// <returns><c>true</c> if the exception is transient; otherwise, <c>false</c>.</returns>
+        private static async Task<(DNS_ServerResponse? Response, StepOutcome? TempError)> QueryMxRecordsSafeAsync(string targetDomain)
+        {
+            try {
+                DNS_ServerResponse? mxResponse = await DNS_Client.Static
+                    .QueryAsync(targetDomain, DNS_RecordType.MX, 1000)
+                    .ConfigureAwait(false);
+
+                if (mxResponse != null && mxResponse.ResponseCode == DNS_ResponseCode.ServerFailure) {
+                    return (null, StepOutcome.TempFail(Result.TemporaryError(
+                        $"Temporary DNS failure querying MX records for '{targetDomain}'.")));
+                }
+
+                return (mxResponse, null);
+            }
+            catch (Exception ex) when (IsTransientException(ex)) {
+                return (null, StepOutcome.TempFail(Result.TemporaryError(
+                    $"Temporary DNS timeout/error querying MX records for '{targetDomain}': {ex.Message}")));
+            }
+            catch {
+                return (null, null);
+            }
+        }
+
+        #endregion
+
+        #region method NormalizeMailbox
+
+        private static string NormalizeMailbox(string? mailbox)
+        {
+            if (string.IsNullOrWhiteSpace(mailbox)) {
+                return string.Empty;
+            }
+
+            string trimmed = mailbox.Trim();
+            if (trimmed.StartsWith('<') && trimmed.EndsWith('>') && trimmed.Length >= 2) {
+                trimmed = trimmed.Substring(1, trimmed.Length - 2).Trim();
+            }
+
+            return trimmed;
+        }
+
+        #endregion
+
+        #region method IsTransientException
+
         private static bool IsTransientException(Exception ex)
         {
             return ex is TimeoutException ||
