@@ -112,14 +112,16 @@ namespace LumiSoft.Net.SMTP.Server
         #region method ValidateAsync
 
         /// <summary>
-        /// Validates the remote sender using a PTR check against <paramref name="ehloName"/> and an SPF check
-        /// (with MX/Domain IP fallback when no SPF record exists). For null senders (<c>&lt;&gt;</c>), validation
-        /// targets the client's EHLO hostname; for normal senders, it targets the <c>MAIL FROM</c> domain.
+        /// Validates an incoming SMTP sender against domain resolution, SPF policy evaluation,
+        /// MX/domain IP fallback (when no SPF record is published), and PTR verification.
         /// </summary>
-        /// <param name="remoteIP">The remote client IP address.</param>
-        /// <param name="ehloName">The EHLO/HELO hostname presented by the client.</param>
-        /// <param name="mailFrom">The envelope <c>MAIL FROM</c> address (may be empty or <c>&lt;&gt;</c> for bounce messages).</param>
-        /// <returns>A <see cref="Result"/> containing the pass/fail state and <see cref="SMTP_ServerResponse"/>.</returns>
+        /// <param name="remoteIP">The remote client IP address initiating the SMTP connection.</param>
+        /// <param name="ehloName">The hostname or domain provided in the client's <c>EHLO</c>/<c>HELO</c> command.</param>
+        /// <param name="mailFrom">The reverse-path (<c>MAIL FROM</c>) sender address or mailbox.</param>
+        /// <returns>
+        /// A <see cref="Task{TResult}"/> resolving to a <see cref="Result"/> indicating whether validation
+        /// passed, temporarily failed, or was permanently rejected.
+        /// </returns>
         public static async Task<Result> ValidateAsync(
             IPAddress? remoteIP,
             string? ehloName,
@@ -132,15 +134,8 @@ namespace LumiSoft.Net.SMTP.Server
                     detail: 1);
             }
 
+            // Normalize IPv4-mapped IPv6 addresses (e.g. ::ffff:192.0.2.1) to standard IPv4 for consistent matching.
             IPAddress normalizedIp = remoteIP.IsIPv4MappedToIPv6 ? remoteIP.MapToIPv4() : remoteIP;
-
-            StepOutcome ptrOutcome = await VerifyPtrAsync(normalizedIp, ehloName).ConfigureAwait(false);
-            if (ptrOutcome.Status == StepStatus.TemporaryFailure && ptrOutcome.FailureResult != null) {
-                return ptrOutcome.FailureResult;
-            }
-            if (ptrOutcome.Status == StepStatus.PermanentFailure && ptrOutcome.FailureResult != null) {
-                return ptrOutcome.FailureResult;
-            }
 
             string normalizedMailbox = NormalizeMailbox(mailFrom);
             string? targetDomain = ExtractValidationDomain(normalizedMailbox, ehloName);
@@ -151,6 +146,7 @@ namespace LumiSoft.Net.SMTP.Server
                     detail: 1);
             }
 
+            // Evaluate SPF first so legitimate senders with valid SPF (and split/pool PTR records) pass cleanly.
             var visitedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             StepOutcome spfOutcome = await EvaluateSpfRecursiveAsync(targetDomain, normalizedIp, visitedDomains, lookupCount: 0)
                 .ConfigureAwait(false);
@@ -174,6 +170,15 @@ namespace LumiSoft.Net.SMTP.Server
             }
             if (fallbackOutcome.Status == StepStatus.TemporaryFailure && fallbackOutcome.FailureResult != null) {
                 return fallbackOutcome.FailureResult;
+            }
+
+            // Only run the PTR check after SPF and MX/Domain IP fallback do not pass.
+            StepOutcome ptrOutcome = await VerifyPtrAsync(normalizedIp, ehloName).ConfigureAwait(false);
+            if (ptrOutcome.Status == StepStatus.TemporaryFailure && ptrOutcome.FailureResult != null) {
+                return ptrOutcome.FailureResult;
+            }
+            if (ptrOutcome.Status == StepStatus.PermanentFailure && ptrOutcome.FailureResult != null) {
+                return ptrOutcome.FailureResult;
             }
 
             return fallbackOutcome.FailureResult ?? Result.PermanentReject(
